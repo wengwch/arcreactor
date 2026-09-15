@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: arc-reactor
+  main:
+    web-application-type: servlet
+    keep-alive: true
+  datasource:
+    url: "${DATABASE_URL:jdbc:mysql://localhost:3306/arc_reactor?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}"
+    username: "${DATABASE_USER:arc_reactor}"
+    password: "${DATABASE_PASSWORD:arc_reactor}"
+    hikari:
+      pool-name: arc-reactor-mysql
+      maximum-pool-size: "${DATABASE_POOL_SIZE:10}"
+      auto-commit: false
+mybatis:
+  mapper-locations: "classpath*:/mapper/**/*.xml"
+  configuration:
+    map-underscore-to-camel-case: true
+    default-executor-type: reuse
+
+openstack:
+  enabled: "${OPENSTACK_ENABLED:false}"
+  default-cluster: "${OPENSTACK_DEFAULT_CLUSTER:default}"
+  token-refresh-before-expiry: "${OPENSTACK_TOKEN_REFRESH_BEFORE_EXPIRY:PT10M}"
+  member-role-id: "${OS_MEMBER_ROLE_ID:}"
+  admin-role-id: "${OS_ADMIN_ROLE_ID:}"
+  clusters:
+    default:
+      auth-url: "${OS_AUTH_URL:}"
+      username: "${OS_USERNAME:}"
+      password: "${OS_PASSWORD:}"
+      user-domain-id: "${OS_USER_DOMAIN_ID:default}"
+      default-project-id: "${OS_PROJECT_ID:}"
+      default-region: "${OS_REGION_NAME:}"
+      endpoint-interface: "${OS_INTERFACE:public}"
+
+
+pekko:
+  instance:
+    ask-timeout: 3s

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.HypervisorProjectionMapper">
+
+    <insert id="upsertCapacity">
+        INSERT INTO hypervisor_resource(
+          hypervisor_id, status, availability_zone, traits, total_vcpu, total_memory_mb,
+          total_gpu, resource_version, updated_at)
+        VALUES (#{hypervisorId}, 'ACTIVE', #{availabilityZone}, '[]', #{totalVcpu},
+          #{totalMemoryMb}, #{totalGpu}, #{version}, #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+          availability_zone = IF(resource_version &lt; VALUES(resource_version), VALUES(availability_zone), availability_zone),
+          total_vcpu = IF(resource_version &lt; VALUES(resource_version), VALUES(total_vcpu), total_vcpu),
+          total_memory_mb = IF(resource_version &lt; VALUES(resource_version), VALUES(total_memory_mb), total_memory_mb),
+          total_gpu = IF(resource_version &lt; VALUES(resource_version), VALUES(total_gpu), total_gpu),
+          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
+          resource_version = GREATEST(resource_version, VALUES(resource_version))
+    </insert>
+
+    <delete id="deleteAllGpus">
+        DELETE FROM hypervisor_gpu
+        WHERE hypervisor_id = #{hypervisorId}
+    </delete>
+
+    <delete id="deleteGpusExcept">
+        DELETE FROM hypervisor_gpu
+        WHERE hypervisor_id = #{hypervisorId}
+          AND gpu_id NOT IN
+        <foreach collection="gpuIds" item="gpuId" open="(" separator="," close=")">
+            #{gpuId}
+        </foreach>
+    </delete>
+
+    <insert id="upsertGpu">
+        INSERT INTO hypervisor_gpu(
+          hypervisor_id, gpu_id, model, traits, assignment_status, resource_version, updated_at)
+        VALUES (#{hypervisorId}, #{gpuId}, #{model}, #{traits}, 'AVAILABLE', #{version}, #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+          model = IF(resource_version &lt; VALUES(resource_version), VALUES(model), model),
+          traits = IF(resource_version &lt; VALUES(resource_version), VALUES(traits), traits),
+          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
+          resource_version = GREATEST(resource_version, VALUES(resource_version))
+    </insert>
+
+    <update id="applyResourceDelta">
+        UPDATE hypervisor_resource SET
+          reserved_vcpu = reserved_vcpu + #{reservedVcpuDelta},
+          allocated_vcpu = allocated_vcpu + #{allocatedVcpuDelta},
+          reserved_memory_mb = reserved_memory_mb + #{reservedMemoryMbDelta},
+          allocated_memory_mb = allocated_memory_mb + #{allocatedMemoryMbDelta},
+          reserved_gpu = reserved_gpu + #{reservedGpuDelta},
+          allocated_gpu = allocated_gpu + #{allocatedGpuDelta},
+          resource_version = #{version}, updated_at = #{updatedAt}
+        WHERE hypervisor_id = #{hypervisorId} AND resource_version &lt; #{version}
+    </update>
+
+    <update id="applyStatus">
+        UPDATE hypervisor_resource
+        SET status = #{status}, resource_version = #{version}, updated_at = #{updatedAt}
+        WHERE hypervisor_id = #{hypervisorId} AND resource_version &lt; #{version}
+    </update>
+
+    <insert id="upsertAllocation">
+        INSERT INTO instance_allocation(
+          instance_id, hypervisor_id, reservation_id, vcpus, memory_mb, gpu_count,
+          allocation_status, resource_version, updated_at)
+        VALUES (#{instanceId}, #{hypervisorId}, #{reservationId}, #{vcpus}, #{memoryMb}, #{gpuCount},
+          'ALLOCATED', #{version}, #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+          allocation_status = IF(resource_version &lt; VALUES(resource_version), 'ALLOCATED', allocation_status),
+          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
+          resource_version = GREATEST(resource_version, VALUES(resource_version))
+    </insert>
+
+    <update id="markAllocationReleased">
+        UPDATE instance_allocation
+        SET allocation_status = 'RELEASED', resource_version = #{version}, updated_at = #{updatedAt}
+        WHERE instance_id = #{instanceId} AND resource_version &lt; #{version}
+    </update>
+
+    <update id="updateGpu">
+        UPDATE hypervisor_gpu
+        SET assignment_status = #{status}, reservation_id = #{reservationId}, instance_id = #{instanceId},
+          resource_version = #{version}, updated_at = #{updatedAt}
+        WHERE hypervisor_id = #{hypervisorId} AND gpu_id = #{gpuId}
+          AND resource_version &lt; #{version}
+    </update>
+
+</mapper>
