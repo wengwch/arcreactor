@@ -8,6 +8,7 @@ import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
 import org.apache.pekko.actor.typed.javadsl.TimerScheduler;
+import org.apache.pekko.cluster.sharding.typed.javadsl.EntityTypeKey;
 import org.apache.pekko.persistence.typed.PersistenceId;
 import org.apache.pekko.persistence.typed.RecoveryCompleted;
 import org.apache.pekko.persistence.typed.javadsl.*;
@@ -19,9 +20,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/** The sole authoritative writer for one hypervisor's resources. */
+/**
+ * The sole authoritative writer for one hypervisor's resources.
+ */
 public final class HypervisorActor
         extends EventSourcedBehavior<HypervisorCommand, HypervisorEvent, HypervisorState> {
+
+    public static final String ENTITY_TYPE = "Hypervisor";
+    public static final EntityTypeKey<HypervisorCommand> TYPE_KEY =
+            EntityTypeKey.create(HypervisorCommand.class, ENTITY_TYPE);
 
     private final String hypervisorId;
     private final ActorContext<HypervisorCommand> context;
@@ -286,7 +293,9 @@ public final class HypervisorActor
         else timers.startSingleTimer(timerKey(reservation.reservationId()), command, delay);
     }
 
-    private static String timerKey(String reservationId) { return "reservation-expiry:" + reservationId; }
+    private static String timerKey(String reservationId) {
+        return "reservation-expiry:" + reservationId;
+    }
 
     private static boolean sameReservation(Reservation existing, ReserveResources command) {
         return existing.requestId().equals(command.requestId())
