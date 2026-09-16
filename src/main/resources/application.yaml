@@ -6,8 +6,8 @@ spring:
     keep-alive: true
   datasource:
     url: "${DATABASE_URL:jdbc:mysql://localhost:3306/arc_reactor?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}"
-    username: "${DATABASE_USER:arc_reactor}"
-    password: "${DATABASE_PASSWORD:arc_reactor}"
+    username: "${DATABASE_USER:root}"
+    password: "${DATABASE_PASSWORD:123456}"
     hikari:
       pool-name: arc-reactor-mysql
       maximum-pool-size: "${DATABASE_POOL_SIZE:10}"

@@ -1,10 +1,8 @@
 package cn.veryai.arcreactor.actor.hypervisor.scheduler;
 
-import cn.veryai.arcreactor.actor.hypervisor.model.Gpu;
 import cn.veryai.arcreactor.actor.hypervisor.model.HypervisorStatus;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.HypervisorCandidate;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.SchedulingRequest;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.GpuRow;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorReadMapper;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorResourceRow;
 import com.google.gson.Gson;
@@ -39,8 +37,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
                         request.resources().memoryMb(),
                         request.constraints().availabilityZone(),
                         encode(request.constraints().requiredTraits()),
-                        request.resources().gpuRequest().count(),
-                        encode(request.resources().gpuRequest().requiredTraits()),
+                        request.resources().gpuRequest(),
                         queryLimit).stream()
                 .map(this::mapCandidate)
                 .toList(), blockingExecutor);
@@ -52,12 +49,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
                 row.totalVcpu(), row.reservedVcpu(), row.allocatedVcpu(),
                 row.totalMemoryMb(), row.reservedMemoryMb(), row.allocatedMemoryMb(),
                 row.totalGpu(), row.reservedGpu(), row.allocatedGpu(),
-                mapper.findAvailableGpus(row.hypervisorId()).stream().map(this::mapGpu).toList(),
                 row.resourceVersion());
-    }
-
-    private Gpu mapGpu(GpuRow row) {
-        return new Gpu(row.gpuId(), row.model(), decode(row.traitsJson()));
     }
 
     private static String encode(Set<String> values) {

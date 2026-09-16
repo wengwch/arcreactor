@@ -13,8 +13,5 @@ public interface HypervisorReadMapper {
             @Param("availabilityZone") String availabilityZone,
             @Param("requiredTraitsJson") String requiredTraitsJson,
             @Param("gpuCount") int gpuCount,
-            @Param("requiredGpuTraitsJson") String requiredGpuTraitsJson,
             @Param("limit") int limit);
-
-    List<GpuRow> findAvailableGpus(@Param("hypervisorId") String hypervisorId);
 }

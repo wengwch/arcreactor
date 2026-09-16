@@ -1,11 +1,10 @@
 package cn.veryai.arcreactor.actor.hypervisor.internal;
 
+import cn.veryai.arcreactor.actor.hypervisor.HypervisorActor;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
-import cn.veryai.arcreactor.actor.hypervisor.HypervisorRuntime;
 import cn.veryai.arcreactor.actor.hypervisor.command.CancelReservation;
 import cn.veryai.arcreactor.actor.hypervisor.command.ConfirmReservation;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
-import cn.veryai.arcreactor.actor.hypervisor.model.GpuRequest;
 import cn.veryai.arcreactor.actor.hypervisor.model.ResourceRequest;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ActionReply;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ConfirmReply;
@@ -34,7 +33,7 @@ public final class DefaultHypervisorPlacement implements HypervisorPlacement {
         SchedulingRequest schedulingRequest = new SchedulingRequest(
                 request.requestId(), request.reservationId(), request.instanceId(),
                 new ResourceRequest(resources.vcpus(), resources.memoryMb(),
-                        new GpuRequest(resources.gpuCount(), resources.requiredGpuTraits())),
+                        resources.gpuCount()),
                 request.reservationTtl(),
                 new PlacementConstraints(request.availabilityZone(), request.requiredTraits()));
         return schedulerService.schedule(schedulingRequest).thenApply(this::toPublicResult);
@@ -73,7 +72,7 @@ public final class DefaultHypervisorPlacement implements HypervisorPlacement {
 
     private org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef<HypervisorCommand> entityRef(
             String hypervisorId) {
-        return ClusterSharding.get(system).entityRefFor(HypervisorRuntime.TYPE_KEY, hypervisorId);
+        return ClusterSharding.get(system).entityRefFor(HypervisorActor.TYPE_KEY, hypervisorId);
     }
 
     private ScheduleResult toPublicResult(SchedulingResult result) {

@@ -4,4 +4,4 @@ import java.io.Serializable;
 
 public sealed interface HypervisorEvent extends Serializable permits ResourcesReserved, ReservationConfirmed,
         ReservationCancelled, ReservationExpired, ResourcesReleased, CapacityUpdated, HypervisorEnabled,
-        HypervisorDrainStarted, HypervisorMaintenanceEntered {}
+        HypervisorDrainStarted, HypervisorMaintenanceEntered, ReservationOutcomesCleaned {}

@@ -4,4 +4,4 @@ import java.io.Serializable;
 
 public sealed interface HypervisorCommand extends Serializable permits ReserveResources, ConfirmReservation,
         CancelReservation, ReleaseResources, ExpireReservation, EnableHypervisor, DrainHypervisor,
-        EnterMaintenance, UpdateCapacity, GetHypervisorState {}
+        EnterMaintenance, UpdateCapacity, GetHypervisorState, CleanReservationOutcomes {}

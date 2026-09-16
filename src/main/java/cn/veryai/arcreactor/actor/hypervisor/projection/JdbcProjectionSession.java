@@ -6,13 +6,13 @@ import org.apache.ibatis.session.defaults.DefaultSqlSession;
 import org.apache.ibatis.transaction.jdbc.JdbcTransaction;
 import org.apache.pekko.japi.function.Function;
 import org.apache.pekko.projection.jdbc.JdbcSession;
+import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Objects;
 
-/** Connection-scoped transaction shared by a projection handler and its offset update. */
 public final class JdbcProjectionSession implements JdbcSession {
     private final Connection connection;
     private final SqlSession sqlSession;

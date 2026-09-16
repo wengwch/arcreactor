@@ -132,6 +132,12 @@
             <artifactId>r2dbc-mysql</artifactId>
             <version>${r2dbc-mysql.version}</version>
         </dependency>
+        <!-- Pekko R2DBC 1.2.0 references PostgreSQL option constants even with the MySQL driver. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>r2dbc-postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
         <dependency>
             <groupId>org.apache.pekko</groupId>
             <artifactId>pekko-projection-core_${scala.binary.version}</artifactId>

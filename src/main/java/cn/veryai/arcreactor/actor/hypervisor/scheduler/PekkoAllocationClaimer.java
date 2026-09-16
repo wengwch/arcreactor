@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.hypervisor.scheduler;
 
-import cn.veryai.arcreactor.actor.hypervisor.HypervisorRuntime;
+import cn.veryai.arcreactor.actor.hypervisor.HypervisorActor;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
 import cn.veryai.arcreactor.actor.hypervisor.command.ReserveResources;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ReserveAccepted;
@@ -26,7 +26,7 @@ public final class PekkoAllocationClaimer implements AllocationClaimer {
     public CompletionStage<ClaimResult> tryReserve(HypervisorCandidate candidate, SchedulingRequest request) {
         return AskPattern.<HypervisorCommand, ReserveReply>ask(
                         ClusterSharding.get(system).entityRefFor(
-                                HypervisorRuntime.TYPE_KEY, candidate.hypervisorId()),
+                                HypervisorActor.TYPE_KEY, candidate.hypervisorId()),
                         replyTo -> new ReserveResources(request.requestId(), request.reservationId(),
                                 request.instanceId(), request.resources(), request.reservationTtl(), replyTo,
                                 request.constraints().availabilityZone(), request.constraints().requiredTraits()),

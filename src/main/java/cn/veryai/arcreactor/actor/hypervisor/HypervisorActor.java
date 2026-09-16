@@ -34,6 +34,8 @@ public final class HypervisorActor
     private final ActorContext<HypervisorCommand> context;
     private final TimerScheduler<HypervisorCommand> timers;
     private final Clock clock;
+    private final Duration outcomeRetention;
+    private final Duration outcomeCleanupInterval;
 
     public static Behavior<HypervisorCommand> create(String hypervisorId) {
         return create(hypervisorId, Clock.systemUTC());
@@ -46,11 +48,18 @@ public final class HypervisorActor
 
     private HypervisorActor(String hypervisorId, ActorContext<HypervisorCommand> context,
                             TimerScheduler<HypervisorCommand> timers, Clock clock) {
-        super(PersistenceId.of(HypervisorRuntime.ENTITY_TYPE, hypervisorId));
+        super(PersistenceId.of(ENTITY_TYPE, hypervisorId));
         this.hypervisorId = Objects.requireNonNull(hypervisorId);
         this.context = context;
         this.timers = timers;
         this.clock = clock;
+        var config = context.getSystem().settings().config();
+        outcomeRetention = config.getDuration("cloud.reservation.outcome-retention");
+        outcomeCleanupInterval = config.getDuration("cloud.reservation.outcome-cleanup-interval");
+        if (outcomeRetention.isNegative() || outcomeRetention.isZero()
+                || outcomeCleanupInterval.isNegative() || outcomeCleanupInterval.isZero()) {
+            throw new IllegalArgumentException("reservation outcome retention and cleanup interval must be positive");
+        }
     }
 
     @Override
@@ -71,6 +80,7 @@ public final class HypervisorActor
                 .onCommand(DrainHypervisor.class, this::onDrain)
                 .onCommand(EnterMaintenance.class, this::onMaintenance)
                 .onCommand(GetHypervisorState.class, this::onGetState)
+                .onCommand(CleanReservationOutcomes.class, this::onCleanReservationOutcomes)
                 .build();
     }
 
@@ -245,6 +255,16 @@ public final class HypervisorActor
                 .thenRun(next -> command.replyTo().tell(ActionReply.succeeded(false)));
     }
 
+    private Effect<HypervisorEvent, HypervisorState> onCleanReservationOutcomes(
+            HypervisorState state, CleanReservationOutcomes command) {
+        Instant now = clock.instant();
+        var expired = state.expiredReservationOutcomes(now.minus(outcomeRetention));
+        boolean missingTimestamps = !state.reservationOutcomeTimes().keySet()
+                .containsAll(state.reservationOutcomes().keySet());
+        if (expired.isEmpty() && !missingTimestamps) return Effect().none();
+        return Effect().persist(new ReservationOutcomesCleaned(expired, now));
+    }
+
     private Effect<HypervisorEvent, HypervisorState> onGetState(
             HypervisorState state, GetHypervisorState command) {
         command.replyTo().tell(state);
@@ -258,11 +278,13 @@ public final class HypervisorActor
                 .onEvent(ReservationConfirmed.class,
                         (state, event) -> state.confirm(event.reservation().reservationId(), event.allocatedAt()))
                 .onEvent(ReservationCancelled.class, (state, event) -> state.removeReservation(
-                        event.reservation().reservationId(), ReservationOutcome.CANCELLED))
+                        event.reservation().reservationId(), ReservationOutcome.CANCELLED, event.cancelledAt()))
                 .onEvent(ReservationExpired.class, (state, event) -> state.removeReservation(
-                        event.reservation().reservationId(), ReservationOutcome.EXPIRED))
+                        event.reservation().reservationId(), ReservationOutcome.EXPIRED, event.expiredAt()))
                 .onEvent(ResourcesReleased.class,
-                        (state, event) -> state.removeAllocation(event.allocation().instanceId()))
+                        (state, event) -> state.removeAllocation(event.allocation().instanceId(), event.releasedAt()))
+                .onEvent(ReservationOutcomesCleaned.class,
+                        (state, event) -> state.cleanReservationOutcomes(event.reservationIds(), event.cleanedAt()))
                 .onEvent(CapacityUpdated.class, (state, event) -> state.withCapacity(event.capacity()))
                 .onEvent(HypervisorEnabled.class, (state, event) -> state.withStatus(HypervisorStatus.ACTIVE))
                 .onEvent(HypervisorDrainStarted.class,
@@ -278,6 +300,9 @@ public final class HypervisorActor
             context.getLog().info("actor recovery completed hypervisorId={} resourceVersion={} reservations={}",
                     hypervisorId, state.version(), state.reservations().size());
             state.reservations().values().forEach(this::scheduleExpiration);
+            context.getSelf().tell(new CleanReservationOutcomes());
+            timers.startTimerWithFixedDelay("reservation-outcome-cleanup",
+                    new CleanReservationOutcomes(), outcomeCleanupInterval);
         }).build();
     }
 
@@ -302,7 +327,7 @@ public final class HypervisorActor
                 && existing.instanceId().equals(command.instanceId())
                 && existing.resources().vcpus() == command.resources().vcpus()
                 && existing.resources().memoryMb() == command.resources().memoryMb()
-                && existing.resources().gpuRequest().equals(command.resources().gpuRequest());
+                && existing.resources().gpuRequest() == command.resources().gpuRequest();
     }
 
     private static ReserveRejected rejected(ReserveResources command, ReserveRejected.Reason reason, String detail) {
