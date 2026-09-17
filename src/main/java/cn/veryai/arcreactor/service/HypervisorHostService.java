@@ -1,13 +1,13 @@
 package cn.veryai.arcreactor.service;
 
 import cn.veryai.arcreactor.entity.HypervisorHostEntity;
-import cn.veryai.arcreactor.mapper.HypervisorHostMapper;
-import cn.veryai.arcreactor.mapper.CpuTypeMapper;
-import cn.veryai.arcreactor.mapper.RamTypeMapper;
-import cn.veryai.arcreactor.mapper.DiskTypeMapper;
-import cn.veryai.arcreactor.mapper.GpuTypeMapper;
-import cn.veryai.arcreactor.mapper.HypervisorTypeMapper;
-import cn.veryai.arcreactor.mapper.RegionMapper;
+import cn.veryai.arcreactor.repo.HypervisorHostRepo;
+import cn.veryai.arcreactor.repo.CpuTypeRepo;
+import cn.veryai.arcreactor.repo.RamTypeRepo;
+import cn.veryai.arcreactor.repo.DiskTypeRepo;
+import cn.veryai.arcreactor.repo.GpuTypeRepo;
+import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
+import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.web.params.SaveHypervisorHostParam;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
@@ -25,21 +25,21 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class HypervisorHostService {
-    private final HypervisorHostMapper mapper;
-    private final CpuTypeMapper cpuTypeMapper;
-    private final RamTypeMapper ramTypeMapper;
-    private final DiskTypeMapper diskTypeMapper;
-    private final GpuTypeMapper gpuTypeMapper;
-    private final HypervisorTypeMapper hypervisorTypeMapper;
-    private final RegionMapper regionIdMapper;
+    private final HypervisorHostRepo repo;
+    private final CpuTypeRepo cpuTypeRepo;
+    private final RamTypeRepo ramTypeRepo;
+    private final DiskTypeRepo diskTypeRepo;
+    private final GpuTypeRepo gpuTypeRepo;
+    private final HypervisorTypeRepo hypervisorTypeRepo;
+    private final RegionRepo regionIdRepo;
 
 
     public List<HypervisorHostEntity> list() {
-        return mapper.findAll();
+        return repo.findAll();
     }
 
     public HypervisorHostEntity get(String id) {
-        HypervisorHostEntity entity = mapper.findById(id);
+        HypervisorHostEntity entity = repo.findById(id);
         if (entity == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Hypervisor host not found");
         }
@@ -51,7 +51,7 @@ public class HypervisorHostService {
         HypervisorHostEntity entity = toEntity(UUID.randomUUID().toString(), param);
         validate(entity);
         try {
-            mapper.insert(entity);
+            repo.insert(entity);
         } catch (DuplicateKeyException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Hypervisor host already exists");
         } catch (DataIntegrityViolationException exception) {
@@ -66,7 +66,7 @@ public class HypervisorHostService {
         HypervisorHostEntity entity = toEntity(id, param);
         validate(entity);
         try {
-            int updated = mapper.update(entity);
+            int updated = repo.update(entity);
             // MySQL may report zero for an unchanged row; distinguish it from a missing row.
             if (updated == 0) get(id);
         } catch (DuplicateKeyException exception) {
@@ -80,7 +80,7 @@ public class HypervisorHostService {
     @Transactional
     public void delete(String id) {
         try {
-            if (mapper.deleteById(id) == 0) {
+            if (repo.deleteById(id) == 0) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Hypervisor host not found");
             }
         } catch (DataIntegrityViolationException exception) {
@@ -90,27 +90,27 @@ public class HypervisorHostService {
 
     private void validate(HypervisorHostEntity entity) {
         if (entity.getCpuType() != null
-                && cpuTypeMapper.findById(entity.getCpuType()) == null) {
+                && cpuTypeRepo.findById(entity.getCpuType()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "cpuType does not exist");
         }
         if (entity.getRamType() != null
-                && ramTypeMapper.findById(entity.getRamType()) == null) {
+                && ramTypeRepo.findById(entity.getRamType()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "ramType does not exist");
         }
         if (entity.getDiskType() != null
-                && diskTypeMapper.findById(entity.getDiskType()) == null) {
+                && diskTypeRepo.findById(entity.getDiskType()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "diskType does not exist");
         }
         if (entity.getGpuType() != null
-                && gpuTypeMapper.findById(entity.getGpuType()) == null) {
+                && gpuTypeRepo.findById(entity.getGpuType()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "gpuType does not exist");
         }
         if (entity.getHypervisorType() != null
-                && hypervisorTypeMapper.findById(entity.getHypervisorType()) == null) {
+                && hypervisorTypeRepo.findById(entity.getHypervisorType()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "hypervisorType does not exist");
         }
         if (entity.getRegionId() != null
-                && regionIdMapper.findById(entity.getRegionId()) == null) {
+                && regionIdRepo.findById(entity.getRegionId()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "regionId does not exist");
         }
         if (entity.getUsedVcpus() > entity.getVcpus() || entity.getUsedRam() > entity.getRam()

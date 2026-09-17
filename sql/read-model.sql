@@ -67,22 +67,3 @@ CREATE TABLE IF NOT EXISTS hypervisor_gpu (
   updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (hypervisor_id, gpu_id)
 ) ENGINE=InnoDB;
-
-CREATE TABLE IF NOT EXISTS pekko_projection_offset_store (
-  projection_name VARCHAR(255) NOT NULL,
-  projection_key VARCHAR(255) NOT NULL,
-  current_offset VARCHAR(255) NOT NULL,
-  manifest VARCHAR(255) NOT NULL,
-  mergeable BOOLEAN NOT NULL,
-  last_updated BIGINT NOT NULL,
-  PRIMARY KEY (projection_name, projection_key),
-  INDEX projection_name_index (projection_name)
-) ENGINE=InnoDB;
-
-CREATE TABLE IF NOT EXISTS pekko_projection_management (
-  projection_name VARCHAR(255) NOT NULL,
-  projection_key VARCHAR(255) NOT NULL,
-  paused BOOLEAN NOT NULL,
-  last_updated BIGINT NOT NULL,
-  PRIMARY KEY (projection_name, projection_key)
-) ENGINE=InnoDB;

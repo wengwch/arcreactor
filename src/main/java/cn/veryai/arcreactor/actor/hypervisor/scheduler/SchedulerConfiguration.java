@@ -3,7 +3,7 @@ package cn.veryai.arcreactor.actor.hypervisor.scheduler;
 import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.internal.DefaultHypervisorPlacement;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorReadMapper;
+import cn.veryai.arcreactor.repo.HypervisorReadRepo;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
@@ -16,8 +16,8 @@ class SchedulerConfiguration {
 
     @Autowired private PekkoRuntime pekkoRuntime;
     @Bean
-    SchedulerService schedulerService(HypervisorReadMapper readMapper) {
-        return SchedulerFactory.create(pekkoRuntime.getSystem(), readMapper);
+    SchedulerService schedulerService(HypervisorReadRepo readRepo) {
+        return SchedulerFactory.create(pekkoRuntime.getSystem(), readRepo);
     }
 
     @Bean

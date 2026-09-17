@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.FlavorMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.FlavorEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="vcpus" property="vcpus"/>
+        <result column="ram" property="ram"/>
+        <result column="disk" property="disk"/>
+        <result column="gpus" property="gpus"/>
+        <result column="hypervisor_type" property="hypervisorType"/>
+        <result column="cpu_type" property="cpuType"/>
+        <result column="ram_type" property="ramType"/>
+        <result column="disk_type" property="diskType"/>
+        <result column="gpu_type" property="gpuType"/>
+        <result column="region_id" property="regionId"/>
+        <result column="enabled" property="enabled"/>
+        <result column="os_flavor_id" property="osFlavorId"/>
+    </resultMap>
+
+    <sql id="columns">id, name, description, vcpus, ram, disk, gpus, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, region_id, enabled, os_flavor_id</sql>
+
+    <insert id="insert">
+        INSERT INTO flavor (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{description}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{regionId}, #{enabled}, #{osFlavorId})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM flavor WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM flavor ORDER BY name, id
+    </select>
+
+    <select id="findByRegionId" resultMap="entity">
+        SELECT <include refid="columns"/> FROM flavor
+        WHERE region_id = #{regionId} ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE flavor SET
+            name = #{name},
+            description = #{description},
+            vcpus = #{vcpus},
+            ram = #{ram},
+            disk = #{disk},
+            gpus = #{gpus},
+            hypervisor_type = #{hypervisorType},
+            cpu_type = #{cpuType},
+            ram_type = #{ramType},
+            disk_type = #{diskType},
+            gpu_type = #{gpuType},
+            region_id = #{regionId},
+            enabled = #{enabled},
+            os_flavor_id = #{osFlavorId}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM flavor WHERE id = #{id}
+    </delete>
+</mapper>

@@ -1,8 +1,8 @@
 package cn.veryai.arcreactor.service;
 
 import cn.veryai.arcreactor.entity.RegionEntity;
-import cn.veryai.arcreactor.mapper.OpenstackClusterMapper;
-import cn.veryai.arcreactor.mapper.RegionMapper;
+import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
+import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.web.params.CreateRegionParam;
 import cn.veryai.arcreactor.web.params.SaveRegionParam;
 import lombok.RequiredArgsConstructor;
@@ -19,17 +19,17 @@ import java.util.List;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class RegionService {
-    private final RegionMapper mapper;
-    private final OpenstackClusterMapper clusterMapper;
+    private final RegionRepo repo;
+    private final OpenstackClusterRepo clusterRepo;
 
     public List<RegionEntity> list(String clusterId) {
-        if (clusterId == null) return mapper.findAll();
+        if (clusterId == null) return repo.findAll();
         requireCluster(clusterId);
-        return mapper.findByClusterId(clusterId);
+        return repo.findByClusterId(clusterId);
     }
 
     public RegionEntity get(String id) {
-        RegionEntity entity = mapper.findById(id);
+        RegionEntity entity = repo.findById(id);
         if (entity == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Region not found");
         }
@@ -41,7 +41,7 @@ public class RegionService {
         requireCluster(param.getClusterId());
         RegionEntity entity = toEntity(param.getId(), param);
         try {
-            mapper.insert(entity);
+            repo.insert(entity);
         } catch (DuplicateKeyException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Region ID already exists");
         } catch (DataIntegrityViolationException exception) {
@@ -57,7 +57,7 @@ public class RegionService {
         RegionEntity entity = toEntity(id, param);
         try {
             // MySQL may report zero when all values are unchanged.
-            if (mapper.update(entity) == 0) get(id);
+            if (repo.update(entity) == 0) get(id);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Region violates database constraints");
         }
@@ -67,7 +67,7 @@ public class RegionService {
     @Transactional
     public void delete(String id) {
         try {
-            if (mapper.deleteById(id) == 0) {
+            if (repo.deleteById(id) == 0) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Region not found");
             }
         } catch (DataIntegrityViolationException exception) {
@@ -76,7 +76,7 @@ public class RegionService {
     }
 
     private void requireCluster(String clusterId) {
-        if (clusterMapper.findById(clusterId) == null) {
+        if (clusterRepo.findById(clusterId) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "OpenStack cluster not found");
         }
     }

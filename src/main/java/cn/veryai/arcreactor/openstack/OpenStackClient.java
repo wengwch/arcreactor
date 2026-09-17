@@ -2,8 +2,8 @@ package cn.veryai.arcreactor.openstack;
 
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
-import cn.veryai.arcreactor.mapper.OpenstackClusterMapper;
-import cn.veryai.arcreactor.mapper.RegionMapper;
+import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
+import cn.veryai.arcreactor.repo.RegionRepo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.openstack4j.api.Builders;
@@ -37,11 +37,11 @@ import java.util.*;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class OpenStackService {
+public class OpenStackClient {
 
-  @Autowired private OpenstackClusterMapper clusterMapper;
+  @Autowired private OpenstackClusterRepo clusterRepo;
 
-  @Autowired private RegionMapper regionMapper;
+  @Autowired private RegionRepo regionRepo;
 
   public OSClient.OSClientV3 getOsAdminClient(String region, String projectId) {
     OpenstackClusterEntity openstackClusterEntity = getOpenstackCluster(region);
@@ -59,8 +59,8 @@ public class OpenStackService {
   }
 
   public OpenstackClusterEntity getOpenstackCluster(String region) {
-    RegionEntity regionEntity = regionMapper.findById(region);
-    return clusterMapper.findById(regionEntity.getClusterId());
+    RegionEntity regionEntity = regionRepo.findById(region);
+    return clusterRepo.findById(regionEntity.getClusterId());
   }
 
   public void grantProjectAdminRole(String region, String projectId) {

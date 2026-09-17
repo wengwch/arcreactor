@@ -16,5 +16,4 @@ public class SysRouterEntity {
   private String osSharedNetSubnetId;
   private String osSharedNetPortId;
   private String regionId;
-  private String zoneId;
 }

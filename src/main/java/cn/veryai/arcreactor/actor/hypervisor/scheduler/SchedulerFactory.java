@@ -4,7 +4,7 @@ import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.AvailabilityZoneFi
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.CapacityFilter;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.GpuFilter;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.TraitFilter;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorReadMapper;
+import cn.veryai.arcreactor.repo.HypervisorReadRepo;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.CpuBalanceScorer;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.GpuFragmentationScorer;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.MemoryBalanceScorer;
@@ -17,12 +17,12 @@ import java.util.List;
 public final class SchedulerFactory {
     private SchedulerFactory() {}
 
-    public static SchedulerService create(ActorSystem<?> system, HypervisorReadMapper readMapper) {
+    public static SchedulerService create(ActorSystem<?> system, HypervisorReadRepo readRepo) {
         var config = system.settings().config().getConfig("cloud.scheduler");
         var blockingExecutor = system.dispatchers().lookup(
                 DispatcherSelector.fromConfig("virtual-thread-dispatcher"));
         CandidateFinder finder = new ProjectionCandidateFinder(
-                readMapper, blockingExecutor, config.getInt("candidate-query-limit"));
+                readRepo, blockingExecutor, config.getInt("candidate-query-limit"));
         AllocationClaimer claimer = new PekkoAllocationClaimer(system,
                 Duration.ofMillis(config.getDuration("ask-timeout").toMillis()));
         return new SchedulerService(finder,

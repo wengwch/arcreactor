@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.SysRouterMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.SysRouterEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="ext_net_id" property="extNetId"/>
+        <result column="os_router_id" property="osRouterId"/>
+        <result column="os_project_id" property="osProjectId"/>
+        <result column="os_ext_net_id" property="osExtNetId"/>
+        <result column="os_shared_net_subnet_id" property="osSharedNetSubnetId"/>
+        <result column="os_shared_net_port_id" property="osSharedNetPortId"/>
+        <result column="region_id" property="regionId"/>
+    </resultMap>
+
+    <sql id="columns">id, name, ext_net_id, os_router_id, os_project_id, os_ext_net_id, os_shared_net_subnet_id, os_shared_net_port_id, region_id</sql>
+
+    <insert id="insert">
+        INSERT INTO sys_router (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{extNetId}, #{osRouterId}, #{osProjectId}, #{osExtNetId}, #{osSharedNetSubnetId}, #{osSharedNetPortId}, #{regionId})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM sys_router WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM sys_router ORDER BY name, id
+    </select>
+
+    <select id="findByRegionId" resultMap="entity">
+        SELECT <include refid="columns"/> FROM sys_router
+        WHERE region_id = #{regionId} ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE sys_router SET
+            name = #{name},
+            ext_net_id = #{extNetId},
+            os_router_id = #{osRouterId},
+            os_project_id = #{osProjectId},
+            os_ext_net_id = #{osExtNetId},
+            os_shared_net_subnet_id = #{osSharedNetSubnetId},
+            os_shared_net_port_id = #{osSharedNetPortId},
+            region_id = #{regionId}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM sys_router WHERE id = #{id}
+    </delete>
+</mapper>

@@ -1,7 +1,6 @@
 package cn.veryai.arcreactor.actor.hypervisor.projection;
 
 import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorEvent;
-import cn.veryai.arcreactor.mapper.HypervisorProjectionMapper;
 import cn.veryai.arcreactor.actor.hypervisor.projection.repository.HypervisorReadRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,7 +20,7 @@ public final class HypervisorProjectionHandler
     public void process(JdbcProjectionSession session, EventEnvelope<HypervisorEvent> envelope) throws Exception {
         String hypervisorId = entityId(envelope.persistenceId());
         Instant timestamp = Instant.ofEpochMilli(envelope.timestamp());
-        repository.apply(session.mapper(HypervisorProjectionMapper.class), hypervisorId,
+        repository.apply(session, hypervisorId,
                 envelope.event(), envelope.sequenceNr(), timestamp);
         log.info("projection processed hypervisorId={} event={} resourceVersion={}", hypervisorId,
                 envelope.event().getClass().getSimpleName(), envelope.sequenceNr());

@@ -38,18 +38,21 @@ CREATE TABLE IF NOT EXISTS image (
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS flavor (
-  id VARCHAR(255) PRIMARY KEY,
+  id VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
   description TEXT,
-  vcpus INT NOT NULL,
-  ram INT NOT NULL,
-  local_disk INT NOT NULL DEFAULT 0,
+  vcpus INT NOT NULL DEFAULT 0,
+  ram INT NOT NULL DEFAULT 0,
+  disk INT NOT NULL DEFAULT 0,
   gpus INT NOT NULL DEFAULT 0,
-  type VARCHAR(255),
-  vram INT NOT NULL DEFAULT 0,
+  hypervisor_type VARCHAR(255),
+  cpu_type VARCHAR(255),
+  ram_type VARCHAR(255),
+  disk_type VARCHAR(255),
   gpu_type VARCHAR(255),
-  cpu_spec VARCHAR(255),
-  os_flavor_id VARCHAR(255) NOT NULL,
   region_id VARCHAR(255) NOT NULL,
-  enabled BOOLEAN NOT NULL DEFAULT TRUE
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  os_flavor_id VARCHAR(255) NOT NULL,
+  PRIMARY KEY (id),
+  INDEX idx_flavor_region (region_id)
 ) ENGINE=InnoDB;

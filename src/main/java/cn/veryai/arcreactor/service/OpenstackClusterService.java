@@ -1,7 +1,7 @@
 package cn.veryai.arcreactor.service;
 
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
-import cn.veryai.arcreactor.mapper.OpenstackClusterMapper;
+import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.web.params.SaveOpenstackClusterParam;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
@@ -19,14 +19,14 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class OpenstackClusterService {
-    private final OpenstackClusterMapper mapper;
+    private final OpenstackClusterRepo repo;
 
     public List<OpenstackClusterEntity> list() {
-        return mapper.findAll();
+        return repo.findAll();
     }
 
     public OpenstackClusterEntity get(String id) {
-        OpenstackClusterEntity entity = mapper.findById(id);
+        OpenstackClusterEntity entity = repo.findById(id);
         if (entity == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "OpenStack cluster not found");
         }
@@ -37,7 +37,7 @@ public class OpenstackClusterService {
     public OpenstackClusterEntity create(SaveOpenstackClusterParam param) {
         OpenstackClusterEntity entity = toEntity(UUID.randomUUID().toString(), param);
         try {
-            mapper.insert(entity);
+            repo.insert(entity);
         } catch (DuplicateKeyException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "OpenStack cluster name already exists");
         }
@@ -49,7 +49,7 @@ public class OpenstackClusterService {
         get(id);
         OpenstackClusterEntity entity = toEntity(id, param);
         try {
-            int updated = mapper.update(entity);
+            int updated = repo.update(entity);
             // MySQL may report zero for an unchanged row; distinguish it from a missing row.
             if (updated == 0) get(id);
         } catch (DuplicateKeyException exception) {
@@ -61,7 +61,7 @@ public class OpenstackClusterService {
     @Transactional
     public void delete(String id) {
         try {
-            if (mapper.deleteById(id) == 0) {
+            if (repo.deleteById(id) == 0) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "OpenStack cluster not found");
             }
         } catch (DataIntegrityViolationException exception) {

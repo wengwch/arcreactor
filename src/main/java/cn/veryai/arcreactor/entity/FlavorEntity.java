@@ -12,14 +12,17 @@ public class FlavorEntity {
   private String description;
   private int vcpus;
   private int ram;
-  private int localDisk;
+  private int disk;
   private int gpus;
-  private String type;
-  private int vram;
+
+  private String hypervisorType;
+  private String cpuType;
+  private String ramType;
+  private String diskType;
   private String gpuType;
-  private String cpuSpec;
-  private String osFlavorId;
+
   private String regionId;
   private boolean enabled = true;
+  private String osFlavorId;
 
 }

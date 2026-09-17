@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.SysNetworkMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.SysNetworkEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="ipv4_cidr" property="ipv4CIDR"/>
+        <result column="gateway" property="gateway"/>
+        <result column="dns" property="dns"/>
+        <result column="segment_id" property="segmentId"/>
+        <result column="sys_network_type" property="sysNetworkType"/>
+        <result column="physical_network" property="physicalNetwork"/>
+        <result column="router_externally" property="routerExternally"/>
+        <result column="shared" property="shared"/>
+        <result column="os_net_id" property="osNetId"/>
+        <result column="os_sub_net_id" property="osSubNetId"/>
+        <result column="os_network_type" property="osNetworkType"/>
+        <result column="os_project_id" property="osProjectId"/>
+        <result column="region_id" property="regionId"/>
+        <result column="host_route" property="hostRoute" typeHandler="cn.veryai.arcreactor.mapper.typehandler.StringMapJsonTypeHandler"/>
+    </resultMap>
+
+    <sql id="columns">id, name, description, ipv4_cidr, gateway, dns, segment_id, sys_network_type, physical_network, router_externally, shared, os_net_id, os_sub_net_id, os_network_type, os_project_id, region_id, host_route</sql>
+
+    <insert id="insert">
+        INSERT INTO sys_network (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{description}, #{ipv4CIDR}, #{gateway}, #{dns}, #{segmentId}, #{sysNetworkType}, #{physicalNetwork}, #{routerExternally}, #{shared}, #{osNetId}, #{osSubNetId}, #{osNetworkType}, #{osProjectId}, #{regionId}, #{hostRoute,typeHandler=cn.veryai.arcreactor.mapper.typehandler.StringMapJsonTypeHandler})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM sys_network WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM sys_network ORDER BY name, id
+    </select>
+
+    <select id="findByRegionId" resultMap="entity">
+        SELECT <include refid="columns"/> FROM sys_network
+        WHERE region_id = #{regionId} ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE sys_network SET
+            name = #{name},
+            description = #{description},
+            ipv4_cidr = #{ipv4CIDR},
+            gateway = #{gateway},
+            dns = #{dns},
+            segment_id = #{segmentId},
+            sys_network_type = #{sysNetworkType},
+            physical_network = #{physicalNetwork},
+            router_externally = #{routerExternally},
+            shared = #{shared},
+            os_net_id = #{osNetId},
+            os_sub_net_id = #{osSubNetId},
+            os_network_type = #{osNetworkType},
+            os_project_id = #{osProjectId},
+            region_id = #{regionId},
+            host_route = #{hostRoute,typeHandler=cn.veryai.arcreactor.mapper.typehandler.StringMapJsonTypeHandler}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM sys_network WHERE id = #{id}
+    </delete>
+</mapper>

@@ -4,6 +4,7 @@ import cn.veryai.arcreactor.actor.hypervisor.event.*;
 import cn.veryai.arcreactor.actor.hypervisor.model.HypervisorStatus;
 import cn.veryai.arcreactor.actor.hypervisor.model.ResourceRequest;
 import cn.veryai.arcreactor.mapper.HypervisorProjectionMapper;
+import cn.veryai.arcreactor.actor.hypervisor.projection.JdbcProjectionSession;
 import org.springframework.stereotype.Component;
 
 import java.sql.Timestamp;
@@ -13,8 +14,9 @@ import java.time.Instant;
 public final class JdbcHypervisorReadRepository implements HypervisorReadRepository {
 
     @Override
-    public void apply(HypervisorProjectionMapper mapper, String hypervisorId, HypervisorEvent event,
+    public void apply(JdbcProjectionSession session, String hypervisorId, HypervisorEvent event,
             long sequenceNumber, Instant eventTimestamp) {
+        HypervisorProjectionMapper mapper = session.mapper(HypervisorProjectionMapper.class);
         if (event instanceof CapacityUpdated capacityUpdated) {
             applyCapacity(mapper, hypervisorId, capacityUpdated, sequenceNumber, eventTimestamp);
         } else if (event instanceof ResourcesReserved reserved) {

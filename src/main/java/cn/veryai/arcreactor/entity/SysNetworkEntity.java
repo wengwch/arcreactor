@@ -28,6 +28,5 @@ public class SysNetworkEntity {
   private NetworkType osNetworkType;
   private String osProjectId;
   private String regionId;
-  private String zoneId;
   private Map<String, String> hostRoute = new HashMap<>();
 }
