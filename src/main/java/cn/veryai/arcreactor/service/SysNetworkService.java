@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.service;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.entity.SysNetworkEntity;
+import cn.veryai.arcreactor.enums.SysNetworkType;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
@@ -60,12 +61,29 @@ public class SysNetworkService {
         if (openstackClusterEntity == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Openstack cluster not found");
         }
-        SysNetworkEntity entity = toEntity(UUID.randomUUID().toString(), param);
+        String adminDefaultProjectId = openstackClusterEntity.getAdminDefaultProjectId();
+
+        SysNetworkEntity entity = new SysNetworkEntity();
+        entity.setName(param.getName());
+        entity.setDescription(param.getDescription());
+        entity.setSysNetworkType(param.getSysNetworkType());
+        entity.setPhysicalNetwork(param.getPhysicalNetwork());
+        entity.setRegionId(param.getRegionId());
+        entity.setDns(param.getDns());
+        entity.setShared(true);
+        if (param.getSysNetworkType() == SysNetworkType.PUBLIC || param.getSysNetworkType() == SysNetworkType.LOCAL) {
+            entity.setRouterExternally(true);
+        }
+        entity.setIpv4CIDR(param.getIpv4CIDR());
+        entity.setGateway(param.getGateway());
+        entity.setSegmentId(param.getSegmentId());
+        entity.setOsProjectId(adminDefaultProjectId);
+        entity.setOsNetworkType(param.getSysNetworkType().getNetworkType());
         if (param.isInitOpenstack()) {
             Network network =
                     openStackClient.createNetwork(
                             entity.getRegionId(),
-                            openstackClusterEntity.getAdminDefaultProjectId(),
+                            adminDefaultProjectId,
                             entity.getName(),
                             entity.getOsNetworkType(),
                             entity.isRouterExternally(),
@@ -75,13 +93,15 @@ public class SysNetworkService {
             Subnet subnet =
                     openStackClient.createSubnet(
                             entity.getRegionId(),
-                            openstackClusterEntity.getAdminDefaultProjectId(),
+                            adminDefaultProjectId,
                             network.getId(),
                             entity.getName() + "_subnet",
                             entity.getIpv4CIDR(),
                             entity.getDns(),
                             entity.getGateway(),
                             entity.getHostRoute());
+            entity.setOsNetId(network.getId());
+            entity.setOsSubNetId(subnet.getId());
 
 
         }

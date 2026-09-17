@@ -24,20 +24,15 @@ public class SaveSysNetworkParam {
     private String dns;
     @Size(max = 255)
     private String segmentId;
-    private SysNetworkType sysNetworkType;
+    private SysNetworkType sysNetworkType = SysNetworkType.PUBLIC;
     @Size(max = 255)
     private String physicalNetwork;
-    @NotNull
-    private Boolean routerExternally = false;
-    @NotNull
-    private Boolean shared = false;
+
     @Size(max = 255)
     private String osNetId;
     @Size(max = 255)
     private String osSubNetId;
-    private NetworkType osNetworkType;
-    @Size(max = 255)
-    private String osProjectId;
+
     @NotBlank
     @Size(max = 255)
     private String regionId;

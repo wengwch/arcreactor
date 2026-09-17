@@ -4,8 +4,8 @@ import lombok.Getter;
 import org.openstack4j.model.network.NetworkType;
 
 public enum SysNetworkType {
-  PUBLIC(NetworkType.FLAT),
-  LOCAL(NetworkType.FLAT),
+  PUBLIC(NetworkType.VLAN),
+  LOCAL(NetworkType.VLAN),
   SHARED(NetworkType.GENEVE),
   ;
   @Getter
