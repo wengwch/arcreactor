@@ -138,8 +138,8 @@ public record HypervisorState(
     }
 
     private HypervisorState copy(HypervisorStatus nextStatus, ResourceCapacity nextCapacity,
-                                Map<String, Reservation> nextReservations, Map<String, Allocation> nextAllocations,
-                                Map<String, ReservationOutcome> nextOutcomes, Map<String, Instant> nextOutcomeTimes) {
+                                 Map<String, Reservation> nextReservations, Map<String, Allocation> nextAllocations,
+                                 Map<String, ReservationOutcome> nextOutcomes, Map<String, Instant> nextOutcomeTimes) {
         return new HypervisorState(hypervisorId, nextStatus, nextCapacity, nextReservations, nextAllocations,
                 nextOutcomes, version + 1, nextOutcomeTimes);
     }

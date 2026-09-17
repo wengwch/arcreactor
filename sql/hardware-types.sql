@@ -1,0 +1,29 @@
+CREATE TABLE IF NOT EXISTS cpu_type (
+  id VARCHAR(255) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS disk_type (
+  id VARCHAR(255) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS gpu_type (
+  id VARCHAR(255) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  vendor_name VARCHAR(255),
+  vendor_code VARCHAR(255),
+  product_name VARCHAR(255),
+  product_code VARCHAR(255),
+  description TEXT,
+  vram BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS ram_type (
+  id VARCHAR(255) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;

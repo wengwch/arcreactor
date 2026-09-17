@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.OpenstackClusterMapper">
+    <resultMap id="cluster" type="cn.veryai.arcreactor.entity.OpenstackClusterEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="admin_username" property="adminUsername"/>
+        <result column="admin_password" property="adminPassword"/>
+        <result column="admin_default_project_id" property="adminDefaultProjectId"/>
+        <result column="admin_default_domain_id" property="adminDefaultDomainId"/>
+        <result column="admin_default_region" property="adminDefaultRegion"/>
+        <result column="auth_endpoint" property="authEndpoint"/>
+        <result column="member_role_id" property="memberRoleId"/>
+        <result column="admin_role_id" property="adminRoleId"/>
+    </resultMap>
+
+    <sql id="columns">id, name, description, admin_username, admin_password, admin_default_project_id, admin_default_domain_id, admin_default_region, auth_endpoint, member_role_id, admin_role_id</sql>
+
+    <insert id="insert">
+        INSERT INTO openstack_cluster (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{description}, #{adminUsername}, #{adminPassword}, #{adminDefaultProjectId}, #{adminDefaultDomainId}, #{adminDefaultRegion}, #{authEndpoint}, #{memberRoleId}, #{adminRoleId})
+    </insert>
+
+    <select id="findById" resultMap="cluster">
+        SELECT <include refid="columns"/> FROM openstack_cluster WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="cluster">
+        SELECT <include refid="columns"/> FROM openstack_cluster ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE openstack_cluster SET
+            name = #{name},
+            description = #{description},
+            admin_username = #{adminUsername},
+            admin_password = #{adminPassword},
+            admin_default_project_id = #{adminDefaultProjectId},
+            admin_default_domain_id = #{adminDefaultDomainId},
+            admin_default_region = #{adminDefaultRegion},
+            auth_endpoint = #{authEndpoint},
+            member_role_id = #{memberRoleId},
+            admin_role_id = #{adminRoleId}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM openstack_cluster WHERE id = #{id}
+    </delete>
+</mapper>

@@ -3,6 +3,8 @@ package cn.veryai.arcreactor.entity;
 import lombok.Data;
 import lombok.experimental.FieldNameConstants;
 
+import java.math.BigDecimal;
+
 /** Reusable hardware specification for a hypervisor host. */
 @FieldNameConstants(innerTypeName = "F")
 @Data
@@ -11,20 +13,28 @@ public class HypervisorTypeEntity {
     private String name;
     private String description;
 
-    private String cpuModel;
-    private String cpuArchitecture;
-    private int cpuSockets;
-    /** Total number of logical CPUs across all sockets. */
-    private int vcpus;
+    private String vcpuSpec;
+    private String gpuSpec;
 
-    /** Total memory capacity in MiB. */
-    private long ram;
-    /** Total local disk capacity in GiB. */
-    private long localDisk;
-    /** Local disk medium, for example HDD, SSD, or NVMe. */
+    private String cpuType;
+    private String ramType;
     private String diskType;
-
     private String gpuType;
-    /** Number of GPUs of the configured type. */
-    private int gpus;
+    private int gpuTotal;
+
+    private int vcpuUnit;
+    private int ramUnit;
+    private int diskUnit;
+    private boolean enabled;
+    private boolean privately;
+
+    private BigDecimal originalHourlyPayPrice;
+    private BigDecimal originalDailyPayPrice;
+    private BigDecimal originalWeeklyPayPrice;
+    private BigDecimal originalMonthlyPayPrice;
+
+    private BigDecimal discountHourlyPayPrice;
+    private BigDecimal discountDailyPayPrice;
+    private BigDecimal discountWeeklyPayPrice;
+    private BigDecimal discountMonthlyPayPrice;
 }

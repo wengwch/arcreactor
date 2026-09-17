@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.CpuTypeMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.CpuTypeEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+    </resultMap>
+
+    <sql id="columns">id, name</sql>
+
+    <insert id="insert">
+        INSERT INTO cpu_type (<include refid="columns"/>)
+        VALUES (#{id}, #{name})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM cpu_type WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM cpu_type ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE cpu_type SET
+            name = #{name}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM cpu_type WHERE id = #{id}
+    </delete>
+</mapper>

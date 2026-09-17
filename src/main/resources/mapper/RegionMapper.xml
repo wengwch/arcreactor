@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.RegionMapper">
+    <resultMap id="region" type="cn.veryai.arcreactor.entity.RegionEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="desc"/>
+        <result column="cluster_id" property="clusterId"/>
+        <result column="enabled" property="enabled"/>
+    </resultMap>
+
+    <sql id="columns">id, name, description, cluster_id, enabled</sql>
+
+    <insert id="insert">
+        INSERT INTO region (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{desc}, #{clusterId}, #{enabled})
+    </insert>
+
+    <select id="findById" resultMap="region">
+        SELECT <include refid="columns"/> FROM region WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="region">
+        SELECT <include refid="columns"/> FROM region ORDER BY name, id
+    </select>
+
+    <select id="findByClusterId" resultMap="region">
+        SELECT <include refid="columns"/> FROM region
+        WHERE cluster_id = #{clusterId} ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE region
+        SET name = #{name}, description = #{desc}, cluster_id = #{clusterId}, enabled = #{enabled}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM region WHERE id = #{id}
+    </delete>
+</mapper>

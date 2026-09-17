@@ -3,24 +3,21 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource (
   status VARCHAR(32) NOT NULL,
   availability_zone VARCHAR(255) NOT NULL DEFAULT 'default',
   traits JSON NOT NULL,
-  total_vcpu INT NOT NULL DEFAULT 0 CHECK (total_vcpu >= 0),
-  reserved_vcpu INT NOT NULL DEFAULT 0 CHECK (reserved_vcpu >= 0),
-  allocated_vcpu INT NOT NULL DEFAULT 0 CHECK (allocated_vcpu >= 0),
+  total_vcpu INT NOT NULL DEFAULT 0,
+  reserved_vcpu INT NOT NULL DEFAULT 0,
+  allocated_vcpu INT NOT NULL DEFAULT 0,
   available_vcpu INT GENERATED ALWAYS AS (total_vcpu - reserved_vcpu - allocated_vcpu) STORED,
-  total_memory_mb BIGINT NOT NULL DEFAULT 0 CHECK (total_memory_mb >= 0),
-  reserved_memory_mb BIGINT NOT NULL DEFAULT 0 CHECK (reserved_memory_mb >= 0),
-  allocated_memory_mb BIGINT NOT NULL DEFAULT 0 CHECK (allocated_memory_mb >= 0),
+  total_memory_mb BIGINT NOT NULL DEFAULT 0,
+  reserved_memory_mb BIGINT NOT NULL DEFAULT 0,
+  allocated_memory_mb BIGINT NOT NULL DEFAULT 0,
   available_memory_mb BIGINT GENERATED ALWAYS AS
     (total_memory_mb - reserved_memory_mb - allocated_memory_mb) STORED,
-  total_gpu INT NOT NULL DEFAULT 0 CHECK (total_gpu >= 0),
-  reserved_gpu INT NOT NULL DEFAULT 0 CHECK (reserved_gpu >= 0),
-  allocated_gpu INT NOT NULL DEFAULT 0 CHECK (allocated_gpu >= 0),
+  total_gpu INT NOT NULL DEFAULT 0,
+  reserved_gpu INT NOT NULL DEFAULT 0,
+  allocated_gpu INT NOT NULL DEFAULT 0,
   available_gpu INT GENERATED ALWAYS AS (total_gpu - reserved_gpu - allocated_gpu) STORED,
   resource_version BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  CHECK (reserved_vcpu + allocated_vcpu <= total_vcpu),
-  CHECK (reserved_memory_mb + allocated_memory_mb <= total_memory_mb),
-  CHECK (reserved_gpu + allocated_gpu <= total_gpu),
   INDEX idx_hypervisor_candidate (
     status, availability_zone, available_vcpu, available_memory_mb, available_gpu)
 ) ENGINE=InnoDB;
@@ -34,9 +31,7 @@ CREATE TABLE IF NOT EXISTS instance_allocation (
   gpu_count INT NOT NULL,
   allocation_status VARCHAR(32) NOT NULL,
   resource_version BIGINT NOT NULL,
-  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  CONSTRAINT instance_allocation_hypervisor_fk
-    FOREIGN KEY (hypervisor_id) REFERENCES hypervisor_resource(hypervisor_id)
+  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS instance_view (
@@ -70,9 +65,7 @@ CREATE TABLE IF NOT EXISTS hypervisor_gpu (
   instance_id VARCHAR(255),
   resource_version BIGINT NOT NULL,
   updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (hypervisor_id, gpu_id),
-  CONSTRAINT hypervisor_gpu_hypervisor_fk
-    FOREIGN KEY (hypervisor_id) REFERENCES hypervisor_resource(hypervisor_id) ON DELETE CASCADE
+  PRIMARY KEY (hypervisor_id, gpu_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS pekko_projection_offset_store (

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.GpuTypeMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.GpuTypeEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="vendor_name" property="vendorName"/>
+        <result column="vendor_code" property="vendorCode"/>
+        <result column="product_name" property="productName"/>
+        <result column="product_code" property="productCode"/>
+        <result column="description" property="description"/>
+        <result column="vram" property="vram"/>
+    </resultMap>
+
+    <sql id="columns">id, name, vendor_name, vendor_code, product_name, product_code, description, vram</sql>
+
+    <insert id="insert">
+        INSERT INTO gpu_type (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{vendorName}, #{vendorCode}, #{productName}, #{productCode}, #{description}, #{vram})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM gpu_type WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM gpu_type ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE gpu_type SET
+            name = #{name},
+            vendor_name = #{vendorName},
+            vendor_code = #{vendorCode},
+            product_name = #{productName},
+            product_code = #{productCode},
+            description = #{description},
+            vram = #{vram}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM gpu_type WHERE id = #{id}
+    </delete>
+</mapper>

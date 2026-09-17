@@ -10,6 +10,7 @@ public class GpuTypeEntity {
     private String name;
     private String vendorName;
     private String vendorCode;
+    private String productName;
     private String productCode;
     private String description;
     private long vram;

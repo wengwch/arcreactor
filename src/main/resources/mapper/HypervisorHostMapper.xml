@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.HypervisorHostMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.HypervisorHostEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="hostname" property="hostname"/>
+        <result column="ip" property="ip"/>
+        <result column="os_hypervisor_id" property="osHypervisorId"/>
+        <result column="hypervisor_type" property="hypervisorType"/>
+        <result column="cpu_type" property="cpuType"/>
+        <result column="ram_type" property="ramType"/>
+        <result column="disk_type" property="diskType"/>
+        <result column="gpu_type" property="gpuType"/>
+        <result column="vcpus" property="vcpus"/>
+        <result column="ram" property="ram"/>
+        <result column="disk" property="disk"/>
+        <result column="gpus" property="gpus"/>
+        <result column="used_vcpus" property="usedVcpus"/>
+        <result column="used_ram" property="usedRam"/>
+        <result column="used_disk" property="usedDisk"/>
+        <result column="used_gpus" property="usedGpus"/>
+        <result column="status" property="status"/>
+        <result column="state" property="state"/>
+        <result column="enabled" property="enabled"/>
+        <result column="region_id" property="regionId"/>
+    </resultMap>
+
+    <sql id="columns">id, name, description, hostname, ip, os_hypervisor_id, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus, status, state, enabled, region_id</sql>
+
+    <insert id="insert">
+        INSERT INTO hypervisor_host (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{description}, #{hostname}, #{ip}, #{osHypervisorId}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{usedVcpus}, #{usedRam}, #{usedDisk}, #{usedGpus}, #{status}, #{state}, #{enabled}, #{regionId})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_host WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_host ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE hypervisor_host SET
+            name = #{name},
+            description = #{description},
+            hostname = #{hostname},
+            ip = #{ip},
+            os_hypervisor_id = #{osHypervisorId},
+            hypervisor_type = #{hypervisorType},
+            cpu_type = #{cpuType},
+            ram_type = #{ramType},
+            disk_type = #{diskType},
+            gpu_type = #{gpuType},
+            vcpus = #{vcpus},
+            ram = #{ram},
+            disk = #{disk},
+            gpus = #{gpus},
+            used_vcpus = #{usedVcpus},
+            used_ram = #{usedRam},
+            used_disk = #{usedDisk},
+            used_gpus = #{usedGpus},
+            status = #{status},
+            state = #{state},
+            enabled = #{enabled},
+            region_id = #{regionId}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM hypervisor_host WHERE id = #{id}
+    </delete>
+</mapper>

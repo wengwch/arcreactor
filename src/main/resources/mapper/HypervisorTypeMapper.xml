@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.HypervisorTypeMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.HypervisorTypeEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="vcpu_spec" property="vcpuSpec"/>
+        <result column="gpu_spec" property="gpuSpec"/>
+        <result column="cpu_type" property="cpuType"/>
+        <result column="ram_type" property="ramType"/>
+        <result column="disk_type" property="diskType"/>
+        <result column="gpu_type" property="gpuType"/>
+        <result column="gpu_total" property="gpuTotal"/>
+        <result column="vcpu_unit" property="vcpuUnit"/>
+        <result column="ram_unit" property="ramUnit"/>
+        <result column="disk_unit" property="diskUnit"/>
+        <result column="enabled" property="enabled"/>
+        <result column="privately" property="privately"/>
+        <result column="original_hourly_pay_price" property="originalHourlyPayPrice"/>
+        <result column="original_daily_pay_price" property="originalDailyPayPrice"/>
+        <result column="original_weekly_pay_price" property="originalWeeklyPayPrice"/>
+        <result column="original_monthly_pay_price" property="originalMonthlyPayPrice"/>
+        <result column="discount_hourly_pay_price" property="discountHourlyPayPrice"/>
+        <result column="discount_daily_pay_price" property="discountDailyPayPrice"/>
+        <result column="discount_weekly_pay_price" property="discountWeeklyPayPrice"/>
+        <result column="discount_monthly_pay_price" property="discountMonthlyPayPrice"/>
+    </resultMap>
+
+    <sql id="columns">id, name, description, vcpu_spec, gpu_spec, cpu_type, ram_type, disk_type, gpu_type, gpu_total, vcpu_unit, ram_unit, disk_unit, enabled, privately, original_hourly_pay_price, original_daily_pay_price, original_weekly_pay_price, original_monthly_pay_price, discount_hourly_pay_price, discount_daily_pay_price, discount_weekly_pay_price, discount_monthly_pay_price</sql>
+
+    <insert id="insert">
+        INSERT INTO hypervisor_type (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{description}, #{vcpuSpec}, #{gpuSpec}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{gpuTotal}, #{vcpuUnit}, #{ramUnit}, #{diskUnit}, #{enabled}, #{privately}, #{originalHourlyPayPrice}, #{originalDailyPayPrice}, #{originalWeeklyPayPrice}, #{originalMonthlyPayPrice}, #{discountHourlyPayPrice}, #{discountDailyPayPrice}, #{discountWeeklyPayPrice}, #{discountMonthlyPayPrice})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_type WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_type ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE hypervisor_type SET
+            name = #{name},
+            description = #{description},
+            vcpu_spec = #{vcpuSpec},
+            gpu_spec = #{gpuSpec},
+            cpu_type = #{cpuType},
+            ram_type = #{ramType},
+            disk_type = #{diskType},
+            gpu_type = #{gpuType},
+            gpu_total = #{gpuTotal},
+            vcpu_unit = #{vcpuUnit},
+            ram_unit = #{ramUnit},
+            disk_unit = #{diskUnit},
+            enabled = #{enabled},
+            privately = #{privately},
+            original_hourly_pay_price = #{originalHourlyPayPrice},
+            original_daily_pay_price = #{originalDailyPayPrice},
+            original_weekly_pay_price = #{originalWeeklyPayPrice},
+            original_monthly_pay_price = #{originalMonthlyPayPrice},
+            discount_hourly_pay_price = #{discountHourlyPayPrice},
+            discount_daily_pay_price = #{discountDailyPayPrice},
+            discount_weekly_pay_price = #{discountWeeklyPayPrice},
+            discount_monthly_pay_price = #{discountMonthlyPayPrice}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM hypervisor_type WHERE id = #{id}
+    </delete>
+</mapper>

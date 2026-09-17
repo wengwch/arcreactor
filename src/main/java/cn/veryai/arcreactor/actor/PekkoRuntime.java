@@ -30,24 +30,17 @@ public final class PekkoRuntime {
     private final ActorSystem<Void> system;
     private final ClusterSharding sharding;
 
-    @PostConstruct
-    public void init() {
-        AskPattern.<HypervisorCommand, ActionReply>ask(
-                        hypervisorActor("hv-01"),
-                        replyTo -> new DrainHypervisor(replyTo),
-                        Duration.ofSeconds(5),
-                        system.scheduler())
-                .handle((reply, error) -> {
-                    return reply;
-                });
-    }
-    private static boolean isTimeout(Throwable error) {
-        for (Throwable current = error; current != null; current = current.getCause()) {
-            if (current instanceof java.util.concurrent.TimeoutException
-                    || current.getClass().getSimpleName().contains("Timeout")) return true;
-        }
-        return false;
-    }
+//    @PostConstruct
+//    public void init() {
+//        AskPattern.<HypervisorCommand, ActionReply>ask(
+//                        hypervisorActor("hv-01"),
+//                        replyTo -> new DrainHypervisor(replyTo),
+//                        Duration.ofSeconds(5),
+//                        system.scheduler())
+//                .handle((reply, error) -> {
+//                    return reply;
+//                });
+//    }
 
     public PekkoRuntime(DataSource dataSource, SqlSessionFactory sqlSessionFactory, Environment environment) throws Exception {
         system = ActorSystem.create(Behaviors.empty(), "cloud-resource-manager");
