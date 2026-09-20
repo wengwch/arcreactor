@@ -79,6 +79,8 @@ public class SysNetworkService {
         entity.setSegmentId(param.getSegmentId());
         entity.setOsProjectId(adminDefaultProjectId);
         entity.setOsNetworkType(param.getSysNetworkType().getNetworkType());
+        entity.setOsNetId(param.getOsNetId());
+        entity.setOsSubNetId(param.getOsSubNetId());
         if (param.isInitOpenstack()) {
             Network network =
                     openStackClient.createNetwork(
@@ -102,8 +104,6 @@ public class SysNetworkService {
                             entity.getHostRoute());
             entity.setOsNetId(network.getId());
             entity.setOsSubNetId(subnet.getId());
-
-
         }
         try {
             repo.insert(entity);
