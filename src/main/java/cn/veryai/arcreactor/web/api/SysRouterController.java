@@ -33,12 +33,6 @@ public class SysRouterController {
         return service.get(id);
     }
 
-    @PutMapping("/{id}")
-    public SysRouterEntity update(@PathVariable("id") String id,
-                                         @Valid @RequestBody SaveSysRouterParam param) {
-        return service.update(id, param);
-    }
-
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable("id") String id) {

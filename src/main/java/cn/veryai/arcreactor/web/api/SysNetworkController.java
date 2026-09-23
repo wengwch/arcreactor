@@ -33,12 +33,6 @@ public class SysNetworkController {
         return service.get(id);
     }
 
-    @PutMapping("/{id}")
-    public SysNetworkEntity update(@PathVariable("id") String id,
-                                   @Valid @RequestBody SaveSysNetworkParam param) {
-        return service.update(id, param);
-    }
-
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable("id") String id) {

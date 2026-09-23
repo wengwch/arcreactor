@@ -9,11 +9,11 @@ public class SysRouterEntity {
   private String id;
   private String name;
   private String extNetId;
+  private String sharedNetId;
 
   private String osRouterId;
   private String osProjectId;
   private String osExtNetId;
-  private String osSharedNetSubnetId;
-  private String osSharedNetPortId;
+  private String osSharedNetId;
   private String regionId;
 }

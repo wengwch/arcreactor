@@ -4,6 +4,8 @@ import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.openstack4j.api.Builders;
@@ -13,6 +15,7 @@ import org.openstack4j.model.common.Identifier;
 import org.openstack4j.model.compute.*;
 import org.openstack4j.model.compute.actions.RebuildOptions;
 import org.openstack4j.model.identity.v3.Project;
+import org.openstack4j.model.identity.v3.Token;
 import org.openstack4j.model.manila.Access;
 import org.openstack4j.model.manila.Share;
 import org.openstack4j.model.manila.ShareCreate;
@@ -32,6 +35,7 @@ import org.openstack4j.openstack.networking.domain.ext.NeutronNetQosPolicyBandwi
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.*;
 
 @Slf4j
@@ -39,23 +43,50 @@ import java.util.*;
 @RequiredArgsConstructor
 public class OpenStackClient {
 
+  private static final long TOKEN_REFRESH_MARGIN_MILLIS = Duration.ofMinutes(1).toMillis();
+
+  private final Cache<AdminClientKey, Token> adminTokenCache =
+      Caffeine.newBuilder()
+          .maximumSize(1000)
+          .expireAfterWrite(Duration.ofMinutes(30))
+          .build();
+
+  private record AdminClientKey(String region, String projectId) {}
+
   @Autowired private OpenstackClusterRepo clusterRepo;
 
   @Autowired private RegionRepo regionRepo;
 
   public OSClient.OSClientV3 getOsAdminClient(String region, String projectId) {
+    Token token =
+        adminTokenCache
+            .asMap()
+            .compute(
+                new AdminClientKey(region, projectId),
+                (key, cachedToken) -> {
+                  if (cachedToken != null
+                      && cachedToken.getExpires() != null
+                      && cachedToken.getExpires().getTime()
+                          > System.currentTimeMillis() + TOKEN_REFRESH_MARGIN_MILLIS) {
+                    return cachedToken;
+                  }
+                  return authenticateAdmin(key.region(), key.projectId());
+                });
+    // Sessions have mutable headers/perspective and thread-local state; only share the token.
+    return OSFactory.clientFromToken(token).useRegion(region);
+  }
+
+  private Token authenticateAdmin(String region, String projectId) {
     OpenstackClusterEntity openstackClusterEntity = getOpenstackCluster(region);
-    OSClient.OSClientV3 client =
-        OSFactory.builderV3()
-            .endpoint(openstackClusterEntity.getAuthEndpoint())
-            .credentials(
-                openstackClusterEntity.getAdminUsername(),
-                openstackClusterEntity.getAdminPassword(),
-                Identifier.byId(openstackClusterEntity.getAdminDefaultDomainId()))
-            .scopeToProject(Identifier.byId(projectId))
-            .authenticate();
-    client.useRegion(region);
-    return client;
+    return OSFactory.builderV3()
+        .endpoint(openstackClusterEntity.getAuthEndpoint())
+        .credentials(
+            openstackClusterEntity.getAdminUsername(),
+            openstackClusterEntity.getAdminPassword(),
+            Identifier.byId(openstackClusterEntity.getAdminDefaultDomainId()))
+        .scopeToProject(Identifier.byId(projectId))
+        .authenticate()
+        .getToken();
   }
 
   public OpenstackClusterEntity getOpenstackCluster(String region) {
