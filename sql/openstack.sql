@@ -24,6 +24,15 @@ CREATE TABLE IF NOT EXISTS region (
   INDEX idx_region_enabled (cluster_id, enabled)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS image_category (
+  id VARCHAR(255) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  distro VARCHAR(255),
+  version VARCHAR(255),
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS image (
   id VARCHAR(255) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,

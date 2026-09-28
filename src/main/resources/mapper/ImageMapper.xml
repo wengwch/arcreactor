@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.ImageMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.ImageEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="distro" property="distro"/>
+        <result column="version" property="version"/>
+        <result column="enabled" property="enabled"/>
+        <result column="category_id" property="categoryId"/>
+        <result column="gpu_driver_installed" property="gpuDriverInstalled"/>
+        <result column="gpu_driver" property="gpuDriver"/>
+        <result column="os_image_id" property="osImageId"/>
+        <result column="region_id" property="regionId"/>
+    </resultMap>
+
+    <sql id="columns">id, name, distro, version, enabled, category_id, gpu_driver_installed, gpu_driver, os_image_id, region_id</sql>
+
+    <insert id="insert">
+        INSERT INTO image (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{distro}, #{version}, #{enabled}, #{categoryId}, #{gpuDriverInstalled}, #{gpuDriver}, #{osImageId}, #{regionId})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM image WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM image ORDER BY name, id
+    </select>
+
+    <select id="findByFilters" resultMap="entity">
+        SELECT <include refid="columns"/> FROM image
+        <where>
+            <if test="regionId != null">AND region_id = #{regionId}</if>
+            <if test="categoryId != null">AND category_id = #{categoryId}</if>
+        </where>
+        ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE image SET
+            name = #{name},
+            distro = #{distro},
+            version = #{version},
+            enabled = #{enabled},
+            category_id = #{categoryId},
+            gpu_driver_installed = #{gpuDriverInstalled},
+            gpu_driver = #{gpuDriver},
+            os_image_id = #{osImageId},
+            region_id = #{regionId}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM image WHERE id = #{id}
+    </delete>
+</mapper>

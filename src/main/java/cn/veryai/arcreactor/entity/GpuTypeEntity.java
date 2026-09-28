@@ -13,5 +13,6 @@ public class GpuTypeEntity {
     private String productName;
     private String productCode;
     private String description;
-    private long vram;
+    private int vram;
+    private String pciPassthroughAlias;
 }

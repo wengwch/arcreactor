@@ -14,6 +14,7 @@ public class FlavorEntity {
   private int ram;
   private int disk;
   private int gpus;
+  private int vram;
 
   private String hypervisorType;
   private String cpuType;

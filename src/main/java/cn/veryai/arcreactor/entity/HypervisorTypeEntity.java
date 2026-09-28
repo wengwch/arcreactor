@@ -22,6 +22,9 @@ public class HypervisorTypeEntity {
     private String gpuType;
     private int gpuTotal;
 
+    private int numaNodeCnt = 2;
+    private int socketCnt = 2;
+
     private int vcpuUnit;
     private int ramUnit;
     private int diskUnit;

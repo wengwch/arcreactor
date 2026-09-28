@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.ImageCategoryMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.ImageCategoryEntity">
+        <id column="id" property="id"/>
+        <result column="name" property="name"/>
+        <result column="distro" property="distro"/>
+        <result column="version" property="version"/>
+        <result column="enabled" property="enabled"/>
+    </resultMap>
+
+    <sql id="columns">id, name, distro, version, enabled</sql>
+
+    <insert id="insert">
+        INSERT INTO image_category (<include refid="columns"/>)
+        VALUES (#{id}, #{name}, #{distro}, #{version}, #{enabled})
+    </insert>
+
+    <select id="findById" resultMap="entity">
+        SELECT <include refid="columns"/> FROM image_category WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultMap="entity">
+        SELECT <include refid="columns"/> FROM image_category ORDER BY name, id
+    </select>
+
+    <update id="update">
+        UPDATE image_category SET
+            name = #{name},
+            distro = #{distro},
+            version = #{version},
+            enabled = #{enabled}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM image_category WHERE id = #{id}
+    </delete>
+</mapper>

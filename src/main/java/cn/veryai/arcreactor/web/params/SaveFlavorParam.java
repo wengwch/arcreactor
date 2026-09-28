@@ -20,6 +20,7 @@ public class SaveFlavorParam {
     private int disk;
     @PositiveOrZero
     private int gpus;
+    @NotBlank
     @Size(max = 255)
     private String hypervisorType;
     @Size(max = 255)
@@ -34,7 +35,7 @@ public class SaveFlavorParam {
     @Size(max = 255)
     private String regionId;
     @NotNull
-    private Boolean enabled = true;
+    private boolean enabled = true;
     @NotBlank
     @Size(max = 255)
     private String osFlavorId;
