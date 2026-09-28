@@ -27,7 +27,7 @@ import java.util.UUID;
 @Service
 public class SysNetworkService {
     @Autowired
-    private SysNetworkRepo repo;
+    private SysNetworkRepo sysNetworkRepo;
     @Autowired
     private RegionRepo regionRepo;
 
@@ -38,13 +38,13 @@ public class SysNetworkService {
     private OpenStackClient openStackClient;
 
     public List<SysNetworkEntity> list(String regionId) {
-        if (regionId == null) return repo.findAll();
+        if (regionId == null) return sysNetworkRepo.findAll();
         requireRegion(regionId);
-        return repo.findByRegionId(regionId);
+        return sysNetworkRepo.findByRegionId(regionId);
     }
 
     public SysNetworkEntity get(String id) {
-        SysNetworkEntity entity = repo.findById(id);
+        SysNetworkEntity entity = sysNetworkRepo.findById(id);
         if (entity == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System network not found");
         }
@@ -107,7 +107,7 @@ public class SysNetworkService {
                 entity.setOsNetId(network.getId());
                 entity.setOsSubNetId(subnet.getId());
             }
-            repo.insert(entity);
+            sysNetworkRepo.insert(entity);
             return entity;
         } catch (Exception exception) {
             log.error("create sys network error", exception);
@@ -118,7 +118,7 @@ public class SysNetworkService {
     @Transactional
     public void delete(String id) {
         try {
-            if (repo.deleteById(id) == 0) {
+            if (sysNetworkRepo.deleteById(id) == 0) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System network not found");
             }
         } catch (DataIntegrityViolationException exception) {

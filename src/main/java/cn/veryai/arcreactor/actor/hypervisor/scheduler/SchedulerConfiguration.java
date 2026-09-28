@@ -4,7 +4,6 @@ import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.internal.DefaultHypervisorPlacement;
 import cn.veryai.arcreactor.repo.HypervisorReadRepo;
-import org.apache.pekko.actor.typed.ActorSystem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,13 +16,13 @@ class SchedulerConfiguration {
     @Autowired private PekkoRuntime pekkoRuntime;
     @Bean
     SchedulerService schedulerService(HypervisorReadRepo readRepo) {
-        return SchedulerFactory.create(pekkoRuntime.getSystem(), readRepo);
+        return SchedulerFactory.create(pekkoRuntime.getActorSystem(), readRepo);
     }
 
     @Bean
     HypervisorPlacement hypervisorPlacement(SchedulerService schedulerService) {
-        Duration askTimeout = Duration.ofMillis(pekkoRuntime.getSystem().settings().config()
+        Duration askTimeout = Duration.ofMillis(pekkoRuntime.getActorSystem().settings().config()
                 .getDuration("cloud.scheduler.ask-timeout").toMillis());
-        return new DefaultHypervisorPlacement(pekkoRuntime.getSystem(), schedulerService, askTimeout);
+        return new DefaultHypervisorPlacement(pekkoRuntime.getActorSystem(), schedulerService, askTimeout);
     }
 }

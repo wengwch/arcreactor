@@ -17,7 +17,6 @@ import org.openstack4j.model.network.Router;
 import org.openstack4j.model.network.RouterInterface;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,20 +31,20 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class SysRouterService {
-  private final SysRouterRepo repo;
+  private final SysRouterRepo sysRouterRepo;
   private final RegionRepo regionRepo;
   private final OpenstackClusterRepo openstackClusterRepo;
   private final SysNetworkRepo sysNetworkRepo;
   private final OpenStackClient openStackClient;
 
   public List<SysRouterEntity> list(String regionId) {
-    if (regionId == null) return repo.findAll();
+    if (regionId == null) return sysRouterRepo.findAll();
     requireRegion(regionId);
-    return repo.findByRegionId(regionId);
+    return sysRouterRepo.findByRegionId(regionId);
   }
 
   public SysRouterEntity get(String id) {
-    SysRouterEntity entity = repo.findById(id);
+    SysRouterEntity entity = sysRouterRepo.findById(id);
     if (entity == null) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System router not found");
     }
@@ -101,7 +100,7 @@ public class SysRouterService {
                 entity.getOsRouterId(),
                 sharedNetwork.getOsSubNetId());
       }
-      repo.insert(entity);
+      sysRouterRepo.insert(entity);
       return entity;
     } catch (Exception exception) {
       log.error("create sys router error", exception);
@@ -112,7 +111,7 @@ public class SysRouterService {
   @Transactional
   public void delete(String id) {
     try {
-      if (repo.deleteById(id) == 0) {
+      if (sysRouterRepo.deleteById(id) == 0) {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System router not found");
       }
     } catch (DataIntegrityViolationException exception) {
