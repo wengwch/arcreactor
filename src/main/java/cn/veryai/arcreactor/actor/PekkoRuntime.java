@@ -3,31 +3,24 @@ package cn.veryai.arcreactor.actor;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorActor;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
-import cn.veryai.arcreactor.actor.hypervisor.internal.DefaultHypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.projection.HypervisorProjection;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerFactory;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerService;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
+import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
-import cn.veryai.arcreactor.repo.HypervisorReadRepo;
 import com.typesafe.config.Config;
 import jakarta.annotation.PreDestroy;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import lombok.Getter;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.pekko.actor.typed.ActorSystem;
-import org.apache.pekko.actor.typed.javadsl.Behaviors;
 import org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding;
 import org.apache.pekko.cluster.sharding.typed.javadsl.Entity;
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Bean;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
-
-import javax.sql.DataSource;
-import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 
 @Component
 public final class PekkoRuntime {
@@ -80,6 +73,11 @@ public final class PekkoRuntime {
             dataSource,
             sqlSessionFactory,
             actorSystem.settings().config().getInt("cloud.projection.slice-ranges"));
+        InstanceProjection.init(
+                actorSystem,
+                dataSource,
+                sqlSessionFactory,
+                actorSystem.settings().config().getInt("cloud.projection.slice-ranges"));
       }
     } catch (Exception ex) {
       actorSystem.terminate();

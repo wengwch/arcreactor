@@ -124,7 +124,7 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       InstanceWorkflowSettings settings,
       Clock clock) {
-    super(PersistenceId.of(InstanceWorkflowEntity.ENTITY_TYPE, instanceId));
+    super(PersistenceId.of(ENTITY_TYPE, instanceId));
     this.instanceId = requireText(instanceId, "instanceId");
     this.context = context;
     this.timers = timers;

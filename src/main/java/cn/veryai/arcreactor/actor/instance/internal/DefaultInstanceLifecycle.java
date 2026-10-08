@@ -1,7 +1,7 @@
 package cn.veryai.arcreactor.actor.instance.internal;
 
 import cn.veryai.arcreactor.actor.instance.InstanceLifecycle;
-import cn.veryai.arcreactor.actor.instance.InstanceWorkflowEntity;
+import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
@@ -47,7 +47,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
     }
 
     private EntityRef<WorkflowCommand> entityRef(String instanceId) {
-        return ClusterSharding.get(system).entityRefFor(InstanceWorkflowEntity.TYPE_KEY, instanceId);
+        return ClusterSharding.get(system).entityRefFor(InstanceWorkflowActor.TYPE_KEY, instanceId);
     }
 
     private View toView(InstanceWorkflowState state) {
