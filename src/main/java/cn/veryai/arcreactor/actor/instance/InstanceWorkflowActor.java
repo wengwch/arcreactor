@@ -45,7 +45,6 @@ import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
-import cn.veryai.arcreactor.openstack.NovaClient;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import java.time.Clock;
@@ -55,6 +54,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -105,7 +105,7 @@ public final class InstanceWorkflowActor
   static Behavior<WorkflowCommand> create(
       String instanceId,
       HypervisorPlacement placement,
-      OpenStackClient novaClient,
+      OpenStackClient openStackClient,
       InstanceWorkflowSettings settings,
       Clock clock) {
     return Behaviors.setup(
@@ -113,7 +113,7 @@ public final class InstanceWorkflowActor
             Behaviors.withTimers(
                 timers ->
                     new InstanceWorkflowActor(
-                        instanceId, context, timers, placement, novaClient, settings, clock)));
+                        instanceId, context, timers, placement, openStackClient, settings, clock)));
   }
 
   private InstanceWorkflowActor(
@@ -251,7 +251,7 @@ public final class InstanceWorkflowActor
                 instanceId,
                 state.novaOperationId(),
                 command.serverId(),
-                NovaClient.NovaServer.Status.BUILD,
+                OpenStackClient.NovaServer.Status.BUILD,
                 clock.instant()))
         .thenRun(next -> schedulePoll(next, 1));
   }
@@ -367,7 +367,7 @@ public final class InstanceWorkflowActor
         (result, error) -> {
           if (error != null)
             return new NovaReconcileUnknown(command.generation(), rootCause(error).toString());
-          if (result.status() == NovaClient.ServerLookupResult.Status.NOT_FOUND) {
+          if (result.status() == OpenStackClient.ServerLookupResult.Status.NOT_FOUND) {
             return new NovaReconcileNotFound(command.generation());
           }
           return new NovaReconcileFound(command.generation(), result.server());
@@ -381,9 +381,9 @@ public final class InstanceWorkflowActor
         || state.pollingGeneration() != command.generation()) {
       return Effect().none();
     }
-    NovaClient.NovaServer server = command.server();
-    if ((server.status() == NovaClient.NovaServer.Status.BUILD
-            || server.status() == NovaClient.NovaServer.Status.OTHER)
+    OpenStackClient.NovaServer server = command.server();
+    if ((server.status() == OpenStackClient.NovaServer.Status.BUILD
+            || server.status() == OpenStackClient.NovaServer.Status.OTHER)
         && !clock.instant().isBefore(state.provisioningDeadline())) {
       scheduleReconcile(state);
       return Effect().none();
@@ -396,11 +396,11 @@ public final class InstanceWorkflowActor
             server.serverId(),
             server.status(),
             clock.instant()));
-    if (server.status() == NovaClient.NovaServer.Status.ACTIVE) {
+    if (server.status() == OpenStackClient.NovaServer.Status.ACTIVE) {
       events.add(new NovaReachedActive(instanceId, server.serverId(), clock.instant()));
       return Effect().persist(events).thenRun(this::startConfirm);
     }
-    if (server.status() == NovaClient.NovaServer.Status.ERROR) {
+    if (server.status() == OpenStackClient.NovaServer.Status.ERROR) {
       events.add(
           new NovaEnteredError(instanceId, server.serverId(), server.fault(), clock.instant()));
       events.add(
@@ -517,8 +517,8 @@ public final class InstanceWorkflowActor
     InstanceSpec spec = state.spec();
     HypervisorPlacement.Resources resources =
         new HypervisorPlacement.Resources(
-            spec.vcpus(), spec.memoryMb(), spec.gpuCount(), spec.requiredGpuTraits());
-    var requiredTraits = new HashSet<>(spec.requiredTraits());
+            spec.vcpus(), spec.memoryMb(), spec.gpuCount(), Set.of());
+    var requiredTraits = new HashSet<String>();
     requiredTraits.add(PlacementTraits.cluster(spec.clusterId()));
     if (spec.region() != null && !spec.region().isBlank()) {
       requiredTraits.add(PlacementTraits.region(spec.region()));
@@ -530,7 +530,7 @@ public final class InstanceWorkflowActor
             instanceId,
             resources,
             settings.reservationTtl(),
-            spec.availabilityZone(),
+            null,
             requiredTraits);
     context.pipeToSelf(
         placement.schedule(request),
@@ -542,8 +542,8 @@ public final class InstanceWorkflowActor
 
   private void startNovaCreate(InstanceWorkflowState state) {
     InstanceSpec spec = state.spec();
-    NovaClient.CreateServerRequest request =
-        new NovaClient.CreateServerRequest(
+    OpenStackClient.CreateServerRequest request =
+        new OpenStackClient.CreateServerRequest(
             target(state),
             instanceId,
             state.requestId(),
@@ -552,7 +552,6 @@ public final class InstanceWorkflowActor
             spec.imageId(),
             spec.flavorId(),
             state.hypervisorId(),
-            spec.availabilityZone(),
             spec.metadata());
     context.pipeToSelf(
         openStackClient.createServer(request),
@@ -640,8 +639,8 @@ public final class InstanceWorkflowActor
         settings.pollMaxDelay());
   }
 
-  private NovaClient.ServerTarget target(InstanceWorkflowState state) {
-    return new NovaClient.ServerTarget(
+  private OpenStackClient.ServerTarget target(InstanceWorkflowState state) {
+    return new OpenStackClient.ServerTarget(
         state.spec().clusterId(), state.spec().projectId(), state.spec().region());
   }
 
@@ -684,7 +683,7 @@ public final class InstanceWorkflowActor
         .onEvent(NovaReachedActive.class, (state, event) -> state.confirming())
         .onEvent(
             NovaEnteredError.class,
-            (state, event) -> state.novaStatus(NovaClient.NovaServer.Status.ERROR))
+            (state, event) -> state.novaStatus(OpenStackClient.NovaServer.Status.ERROR))
         .onEvent(ProvisioningDeadlineReached.class, (state, event) -> state.reconciling())
         .onEvent(ReservationConfirmedForInstance.class, (state, event) -> state.touch())
         .onEvent(

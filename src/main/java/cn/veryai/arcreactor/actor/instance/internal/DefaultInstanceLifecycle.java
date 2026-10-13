@@ -26,8 +26,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
     public CompletionStage<Submission> create(CreateRequest request) {
         InstanceSpec spec = new InstanceSpec(request.clusterId(), request.projectId(), request.region(),
                 request.name(), request.imageId(), request.flavorId(), request.vcpus(), request.memoryMb(),
-                request.gpuCount(), request.requiredGpuTraits(), request.availabilityZone(),
-                request.requiredTraits(), request.metadata());
+                request.gpuCount(), request.metadata());
         return AskPattern.<WorkflowCommand, InstanceReply>ask(
                         entityRef(request.instanceId()),
                         replyTo -> new CreateInstance(request.requestId(), request.instanceId(), spec, replyTo),

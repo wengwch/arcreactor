@@ -3,7 +3,6 @@ package cn.veryai.arcreactor.actor.instance;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CompletionStage;
 
 /** Public facade for submitting instance creation workflows and querying their authoritative phase. */
@@ -24,13 +23,8 @@ public interface InstanceLifecycle {
             int vcpus,
             long memoryMb,
             int gpuCount,
-            Set<String> requiredGpuTraits,
-            String availabilityZone,
-            Set<String> requiredTraits,
             Map<String, String> metadata) implements Serializable {
         public CreateRequest {
-            requiredGpuTraits = Set.copyOf(Objects.requireNonNullElse(requiredGpuTraits, Set.of()));
-            requiredTraits = Set.copyOf(Objects.requireNonNullElse(requiredTraits, Set.of()));
             metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
         }
     }

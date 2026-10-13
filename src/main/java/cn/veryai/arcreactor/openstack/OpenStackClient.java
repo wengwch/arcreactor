@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.openstack;
 
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
+import cn.veryai.arcreactor.repo.HypervisorHostRepo;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -10,7 +11,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.openstack4j.api.Builders;
 import org.openstack4j.api.OSClient;
+import org.openstack4j.api.exceptions.ResponseException;
 import org.openstack4j.api.types.Facing;
+import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.common.Identifier;
 import org.openstack4j.model.compute.*;
 import org.openstack4j.model.compute.actions.RebuildOptions;
@@ -35,8 +38,12 @@ import org.openstack4j.openstack.networking.domain.ext.NeutronNetQosPolicyBandwi
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.io.Serializable;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 
 @Slf4j
 @Service
@@ -44,6 +51,39 @@ import java.util.*;
 public class OpenStackClient {
 
   private static final long TOKEN_REFRESH_MARGIN_MILLIS = Duration.ofMinutes(1).toMillis();
+  private static final String NOVA_OPERATION_ID = "arcreactor_operation_id";
+  private static final Executor NOVA_EXECUTOR =
+      task -> Thread.ofVirtual().name("openstack-nova").start(task);
+
+  public record ServerTarget(String clusterId, String projectId, String region)
+      implements Serializable {}
+
+  public record CreateServerRequest(
+      ServerTarget target,
+      String instanceId,
+      String requestId,
+      String operationId,
+      String name,
+      String imageId,
+      String flavorId,
+      String hypervisorId,
+      Map<String, String> metadata) implements Serializable {
+    public CreateServerRequest {
+      metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+    }
+  }
+
+  public record NovaServer(String serverId, Status status, String fault) implements Serializable {
+    public enum Status {
+      BUILD, ACTIVE, ERROR, OTHER
+    }
+  }
+
+  public record ServerLookupResult(Status status, NovaServer server) implements Serializable {
+    public enum Status {
+      FOUND, NOT_FOUND
+    }
+  }
 
   private final Cache<AdminClientKey, Token> adminTokenCache =
       Caffeine.newBuilder()
@@ -56,6 +96,8 @@ public class OpenStackClient {
   @Autowired private OpenstackClusterRepo clusterRepo;
 
   @Autowired private RegionRepo regionRepo;
+
+  @Autowired private HypervisorHostRepo hypervisorHostRepo;
 
   public OSClient.OSClientV3 getOsAdminClient(String region, String projectId) {
     Token token =
@@ -541,6 +583,155 @@ public class OpenStackClient {
   public Server getServer(String regionId, String projectId, String vmId) {
     OSClient.OSClientV3 client = getOsAdminClient(regionId, projectId);
     return client.compute().servers().get(vmId);
+  }
+
+  /** Runs blocking SDK calls on virtual threads so instance actors can await their results. */
+  public CompletionStage<NovaServer> createServer(CreateServerRequest request) {
+    return CompletableFuture.supplyAsync(
+        () -> {
+          String region = resolveServerRegion(request.target());
+          var hypervisor = hypervisorHostRepo.findById(request.hypervisorId());
+          if (hypervisor == null
+              || !region.equals(hypervisor.getRegionId())
+              || hypervisor.getHostname() == null
+              || hypervisor.getHostname().isBlank()) {
+            throw new OpenStackOperationException(
+                "Selected hypervisor has no hostname in the target region", null);
+          }
+          requireServerText(request.operationId(), "operationId");
+          Map<String, String> metadata = new HashMap<>(request.metadata());
+          metadata.put(NOVA_OPERATION_ID, request.operationId());
+          metadata.put("arcreactor_instance_id", request.instanceId());
+          metadata.put("arcreactor_request_id", request.requestId());
+          var builder =
+              Builders.server()
+                  .name(request.name())
+                  .image(request.imageId())
+                  .flavor(request.flavorId())
+                  .hypervisorHostName(hypervisor.getHostname())
+                  .addMetadata(metadata);
+          try {
+            OSClient.OSClientV3 client = getOsAdminClient(region, request.target().projectId());
+            if (client instanceof OSClientSession.OSClientSessionV3 session) {
+              session.headers(Map.of("OpenStack-API-Version", "compute 2.100"));
+            }
+            return toNovaServer(client.compute().servers().boot(builder.build()));
+          } catch (ResponseException error) {
+            int status = error.getStatus();
+            // Timeouts, rate limits and server errors leave the outcome uncertain for reconciliation.
+            if (status >= 400 && status < 500 && status != 408 && status != 429) {
+              throw new OpenStackOperationException("Nova rejected server creation", error);
+            }
+            throw error;
+          }
+        },
+        NOVA_EXECUTOR);
+  }
+
+  public CompletionStage<NovaServer> getServer(ServerTarget target, String serverId) {
+    return CompletableFuture.supplyAsync(
+        () -> toNovaServer(getServer(resolveServerRegion(target), target.projectId(), serverId)),
+        NOVA_EXECUTOR);
+  }
+
+  public CompletionStage<ServerLookupResult> findServerByOperationId(
+      ServerTarget target, String operationId) {
+    return CompletableFuture.supplyAsync(
+        () -> {
+          requireServerText(operationId, "operationId");
+          OSClient.OSClientV3 client =
+              getOsAdminClient(resolveServerRegion(target), target.projectId());
+          Map<String, String> filters = new HashMap<>();
+          filters.put("limit", "1000");
+          NovaServer found = null;
+          Set<String> markers = new HashSet<>();
+          while (true) {
+            List<? extends Server> page = client.compute().servers().list(filters);
+            if (page == null) throw new IllegalStateException("Nova returned no server list");
+            if (page.isEmpty()) break;
+            for (Server server : page) {
+              if (target.projectId().equals(server.getTenantId())
+                  && server.getMetadata() != null
+                  && operationId.equals(server.getMetadata().get(NOVA_OPERATION_ID))) {
+                if (found != null) {
+                  throw new IllegalStateException(
+                      "Multiple Nova servers share operation " + operationId);
+                }
+                found = toNovaServer(server);
+              }
+            }
+            String marker = page.get(page.size() - 1).getId();
+            if (marker == null || !markers.add(marker)) {
+              throw new IllegalStateException("Nova server pagination did not advance");
+            }
+            filters.put("marker", marker);
+          }
+          return new ServerLookupResult(
+              found == null ? ServerLookupResult.Status.NOT_FOUND : ServerLookupResult.Status.FOUND,
+              found);
+        },
+        NOVA_EXECUTOR);
+  }
+
+  public CompletionStage<Void> deleteServer(ServerTarget target, String serverId) {
+    return CompletableFuture.runAsync(
+        () -> {
+          OSClient.OSClientV3 client =
+              getOsAdminClient(resolveServerRegion(target), target.projectId());
+          try {
+            ActionResponse response = client.compute().servers().delete(serverId);
+            if (response == null) throw new IllegalStateException("Nova returned no delete response");
+            if (!response.isSuccess() && response.getCode() != 404) {
+              throw new OpenStackOperationException(
+                  "Nova server deletion failed: " + response.getFault(), null);
+            }
+          } catch (ResponseException error) {
+            if (error.getStatus() != 404) throw error;
+          }
+        },
+        NOVA_EXECUTOR);
+  }
+
+  private String resolveServerRegion(ServerTarget target) {
+    requireServerText(target.clusterId(), "clusterId");
+    requireServerText(target.projectId(), "projectId");
+    if (target.region() != null && !target.region().isBlank()) {
+      RegionEntity region = regionRepo.findById(target.region());
+      if (region == null || !target.clusterId().equals(region.getClusterId())) {
+        throw new OpenStackOperationException("Region does not belong to the target cluster", null);
+      }
+      return region.getId();
+    }
+    List<RegionEntity> regions = regionRepo.findByClusterId(target.clusterId());
+    if (regions.size() != 1) {
+      throw new OpenStackOperationException("Specify a region for the target cluster", null);
+    }
+    return regions.getFirst().getId();
+  }
+
+  private static void requireServerText(String value, String field) {
+    if (value == null || value.isBlank()) {
+      throw new OpenStackOperationException(field + " is required", null);
+    }
+  }
+
+  private static NovaServer toNovaServer(Server server) {
+    if (server == null || server.getId() == null || server.getId().isBlank()) {
+      throw new IllegalStateException("Nova returned no server ID");
+    }
+    NovaServer.Status status = NovaServer.Status.OTHER;
+    if (server.getStatus() != null) {
+      status = switch (server.getStatus()) {
+        case BUILD -> NovaServer.Status.BUILD;
+        case ACTIVE -> NovaServer.Status.ACTIVE;
+        case ERROR -> NovaServer.Status.ERROR;
+        default -> NovaServer.Status.OTHER;
+      };
+    }
+    return new NovaServer(
+        server.getId(),
+        status,
+        server.getFault() == null ? null : server.getFault().getMessage());
   }
 
   public String getVNCLink(String region, String projectId, String serverId) {

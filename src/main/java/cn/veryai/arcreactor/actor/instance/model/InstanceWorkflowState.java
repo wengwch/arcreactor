@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.instance.model;
 
-import cn.veryai.arcreactor.openstack.NovaClient;
+import cn.veryai.arcreactor.openstack.OpenStackClient;
 import java.io.Serializable;
 import java.time.Instant;
 
@@ -13,7 +13,7 @@ public record InstanceWorkflowState(
         String reservationId,
         String novaOperationId,
         String novaServerId,
-        NovaClient.NovaServer.Status novaStatus,
+        OpenStackClient.NovaServer.Status novaStatus,
         Instant provisioningStartedAt,
         Instant provisioningDeadline,
         long pollingGeneration,
@@ -65,7 +65,7 @@ public record InstanceWorkflowState(
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage);
     }
 
-    public InstanceWorkflowState building(String serverId, NovaClient.NovaServer.Status status) {
+    public InstanceWorkflowState building(String serverId, OpenStackClient.NovaServer.Status status) {
         return copy(requestId, InstancePhase.BUILDING, spec, hypervisorId, reservationId,
                 novaOperationId, serverId, status, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage);
@@ -77,7 +77,7 @@ public record InstanceWorkflowState(
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage);
     }
 
-    public InstanceWorkflowState novaStatus(NovaClient.NovaServer.Status status) {
+    public InstanceWorkflowState novaStatus(OpenStackClient.NovaServer.Status status) {
         return copy(requestId, phase, spec, hypervisorId, reservationId, novaOperationId,
                 novaServerId, status, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, failureCode, failureMessage);
@@ -85,7 +85,7 @@ public record InstanceWorkflowState(
 
     public InstanceWorkflowState confirming() {
         return copy(requestId, InstancePhase.CONFIRMING, spec, hypervisorId, reservationId,
-                novaOperationId, novaServerId, NovaClient.NovaServer.Status.ACTIVE,
+                novaOperationId, novaServerId, OpenStackClient.NovaServer.Status.ACTIVE,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration + 1,
                 schedulingAttempts, failureCode, failureMessage);
     }
@@ -98,7 +98,7 @@ public record InstanceWorkflowState(
 
     public InstanceWorkflowState active() {
         return copy(requestId, InstancePhase.ACTIVE, spec, hypervisorId, reservationId,
-                novaOperationId, novaServerId, NovaClient.NovaServer.Status.ACTIVE,
+                novaOperationId, novaServerId, OpenStackClient.NovaServer.Status.ACTIVE,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration,
                 schedulingAttempts, null, null);
     }
@@ -117,7 +117,7 @@ public record InstanceWorkflowState(
 
     private InstanceWorkflowState copy(String nextRequestId, InstancePhase nextPhase, InstanceSpec nextSpec,
             String nextHypervisorId, String nextReservationId, String nextOperationId,
-            String nextServerId, NovaClient.NovaServer.Status nextNovaStatus, Instant nextStartedAt,
+            String nextServerId, OpenStackClient.NovaServer.Status nextNovaStatus, Instant nextStartedAt,
             Instant nextDeadline, long nextGeneration, int nextAttempts, String nextFailureCode,
             String nextFailureMessage) {
         return new InstanceWorkflowState(instanceId, nextRequestId, nextPhase, nextSpec,
