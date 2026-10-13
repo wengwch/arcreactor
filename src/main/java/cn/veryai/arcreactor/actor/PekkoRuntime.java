@@ -29,8 +29,6 @@ public final class PekkoRuntime {
 
   @Autowired private OpenStackClient openStackClient;
 
-  @Autowired private HypervisorPlacement hypervisorPlacement;
-
   //    @PostConstruct
   //    public void init() {
   //        AskPattern.<HypervisorCommand, ActionReply>ask(
