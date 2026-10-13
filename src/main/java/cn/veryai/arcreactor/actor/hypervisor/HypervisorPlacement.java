@@ -3,7 +3,6 @@ package cn.veryai.arcreactor.actor.hypervisor;
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CompletionStage;
 
 /** Public hypervisor module facade used by instance lifecycle coordinators. */
@@ -14,13 +13,12 @@ public interface HypervisorPlacement {
 
     CompletionStage<ReservationResult> cancel(String hypervisorId, String reservationId);
 
-    record Resources(int vcpus, long memoryMb, int gpuCount, Set<String> requiredGpuTraits)
+    record Resources(int vcpus, long memoryMb, int gpuCount)
             implements Serializable {
         public Resources {
             if (vcpus < 0 || memoryMb < 0 || gpuCount < 0) {
                 throw new IllegalArgumentException("resource values must not be negative");
             }
-            requiredGpuTraits = Set.copyOf(Objects.requireNonNullElse(requiredGpuTraits, Set.of()));
         }
     }
 
@@ -30,8 +28,7 @@ public interface HypervisorPlacement {
             String instanceId,
             Resources resources,
             Duration reservationTtl,
-            String availabilityZone,
-            Set<String> requiredTraits) implements Serializable {
+            String availabilityZone) implements Serializable {
         public ScheduleRequest {
             requireText(requestId, "requestId");
             requireText(reservationId, "reservationId");
@@ -40,7 +37,6 @@ public interface HypervisorPlacement {
             if (reservationTtl == null || reservationTtl.isNegative() || reservationTtl.isZero()) {
                 throw new IllegalArgumentException("reservationTtl must be positive");
             }
-            requiredTraits = Set.copyOf(Objects.requireNonNullElse(requiredTraits, Set.of()));
         }
     }
 

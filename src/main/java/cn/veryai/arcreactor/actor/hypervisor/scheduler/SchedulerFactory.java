@@ -3,7 +3,6 @@ package cn.veryai.arcreactor.actor.hypervisor.scheduler;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.AvailabilityZoneFilter;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.CapacityFilter;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.GpuFilter;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.TraitFilter;
 import cn.veryai.arcreactor.repo.HypervisorReadRepo;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.CpuBalanceScorer;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.GpuFragmentationScorer;
@@ -26,7 +25,7 @@ public final class SchedulerFactory {
         AllocationClaimer claimer = new PekkoAllocationClaimer(system,
                 Duration.ofMillis(config.getDuration("ask-timeout").toMillis()));
         return new SchedulerService(finder,
-                List.of(new CapacityFilter(), new AvailabilityZoneFilter(), new TraitFilter(), new GpuFilter()),
+                List.of(new CapacityFilter(), new AvailabilityZoneFilter(), new GpuFilter()),
                 List.of(new SchedulerService.WeightedScorer(new CpuBalanceScorer(), 0.4),
                         new SchedulerService.WeightedScorer(new MemoryBalanceScorer(), 0.4),
                         new SchedulerService.WeightedScorer(new GpuFragmentationScorer(), 0.2)),

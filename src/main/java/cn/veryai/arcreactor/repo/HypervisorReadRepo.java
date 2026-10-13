@@ -13,8 +13,8 @@ import java.util.List;
 public class HypervisorReadRepo {
     private final HypervisorReadMapper mapper;
 
-    public List<HypervisorResourceRow> findCandidates(int vcpus, long memoryMb, String availabilityZone,
-                                                     String requiredTraitsJson, int gpuCount, int limit) {
-        return mapper.findCandidates(vcpus, memoryMb, availabilityZone, requiredTraitsJson, gpuCount, limit);
+    public List<HypervisorResourceRow> findCandidates(
+            int vcpus, long memoryMb, String availabilityZone, int gpuCount, int limit) {
+        return mapper.findCandidates(vcpus, memoryMb, availabilityZone, gpuCount, limit);
     }
 }

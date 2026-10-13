@@ -29,7 +29,7 @@ public final class PekkoAllocationClaimer implements AllocationClaimer {
                                 HypervisorActor.TYPE_KEY, candidate.hypervisorId()),
                         replyTo -> new ReserveResources(request.requestId(), request.reservationId(),
                                 request.instanceId(), request.resources(), request.reservationTtl(), replyTo,
-                                request.constraints().availabilityZone(), request.constraints().requiredTraits()),
+                                request.constraints().availabilityZone()),
                         askTimeout,
                         system.scheduler())
                 .handle((reply, error) -> {

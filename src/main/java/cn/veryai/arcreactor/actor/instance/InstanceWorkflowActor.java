@@ -1,7 +1,6 @@
 package cn.veryai.arcreactor.actor.instance;
 
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
-import cn.veryai.arcreactor.actor.hypervisor.PlacementTraits;
 import cn.veryai.arcreactor.actor.instance.command.CheckNovaStatus;
 import cn.veryai.arcreactor.actor.instance.command.CompensationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmRejected;
@@ -51,10 +50,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -516,13 +513,7 @@ public final class InstanceWorkflowActor
   private void startScheduling(InstanceWorkflowState state) {
     InstanceSpec spec = state.spec();
     HypervisorPlacement.Resources resources =
-        new HypervisorPlacement.Resources(
-            spec.vcpus(), spec.memoryMb(), spec.gpuCount(), Set.of());
-    var requiredTraits = new HashSet<String>();
-    requiredTraits.add(PlacementTraits.cluster(spec.clusterId()));
-    if (spec.region() != null && !spec.region().isBlank()) {
-      requiredTraits.add(PlacementTraits.region(spec.region()));
-    }
+        new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryMb(), spec.gpuCount());
     var request =
         new HypervisorPlacement.ScheduleRequest(
             state.requestId(),
@@ -530,8 +521,7 @@ public final class InstanceWorkflowActor
             instanceId,
             resources,
             settings.reservationTtl(),
-            null,
-            requiredTraits);
+            null);
     context.pipeToSelf(
         placement.schedule(request),
         (result, error) ->

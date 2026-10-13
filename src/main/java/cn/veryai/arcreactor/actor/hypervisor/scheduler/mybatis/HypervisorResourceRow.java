@@ -4,7 +4,6 @@ public record HypervisorResourceRow(
         String hypervisorId,
         String status,
         String availabilityZone,
-        String traitsJson,
         int totalVcpu,
         int reservedVcpu,
         int allocatedVcpu,

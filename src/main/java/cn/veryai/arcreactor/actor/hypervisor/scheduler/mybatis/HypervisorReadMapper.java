@@ -11,7 +11,6 @@ public interface HypervisorReadMapper {
             @Param("vcpus") int vcpus,
             @Param("memoryMb") long memoryMb,
             @Param("availabilityZone") String availabilityZone,
-            @Param("requiredTraitsJson") String requiredTraitsJson,
             @Param("gpuCount") int gpuCount,
             @Param("limit") int limit);
 }
