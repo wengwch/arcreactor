@@ -17,6 +17,9 @@ import cn.veryai.arcreactor.actor.instance.event.ProvisioningDeadlineReached;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.ResourcesReservedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
+import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
+import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -37,6 +40,9 @@ public final class InstanceProjectionHandler
         if (event instanceof InstanceCreationRequested created) {
             mapper.upsertCreated(instanceId, created.requestId(), "NEW", version,
                     Timestamp.from(created.requestedAt()), timestamp);
+        } else if (event instanceof SharePreparationStarted || event instanceof ShareStatusCheckStarted
+                || event instanceof SharePrepared) {
+            mapper.updatePhase(instanceId, "PREPARING_SHARE", version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {

@@ -14,7 +14,8 @@ public record InstanceSpec(
         int vcpus,
         long memoryMb,
         int gpuCount,
-        Map<String, String> metadata) implements Serializable {
+        Map<String, String> metadata,
+        ShareRequirement share) implements Serializable {
     public InstanceSpec {
         requireText(clusterId, "clusterId");
         requireText(projectId, "projectId");
@@ -25,6 +26,23 @@ public record InstanceSpec(
             throw new IllegalArgumentException("resource values must not be negative");
         }
         metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
+        // A null dependency is retained only for replaying pre-share workflow events/snapshots.
+        if (share != null) {
+            if (!projectId.equals(share.spec().osProjectId())) {
+                throw new IllegalArgumentException("share must belong to the instance project");
+            }
+            if (region == null || region.isBlank()) region = share.spec().regionId();
+            if (!region.equals(share.spec().regionId())) {
+                throw new IllegalArgumentException("share must belong to the instance region");
+            }
+        }
+    }
+
+    public InstanceSpec(String clusterId, String projectId, String region, String name,
+            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            Map<String, String> metadata) {
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+                metadata, null);
     }
 
     private static void requireText(String value, String name) {

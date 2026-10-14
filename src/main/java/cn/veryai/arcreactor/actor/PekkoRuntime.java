@@ -7,6 +7,7 @@ import cn.veryai.arcreactor.actor.hypervisor.projection.HypervisorProjection;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
 import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
+import cn.veryai.arcreactor.actor.user.UserShares;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import com.typesafe.config.Config;
 import jakarta.annotation.PreDestroy;
@@ -19,15 +20,12 @@ import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding;
 import org.apache.pekko.cluster.sharding.typed.javadsl.Entity;
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
 public final class PekkoRuntime {
-  @Getter @Autowired private ActorSystem<Void> actorSystem;
+  @Getter private final ActorSystem<Void> actorSystem;
   private final ClusterSharding sharding;
-
-  @Autowired private OpenStackClient openStackClient;
 
   //    @PostConstruct
   //    public void init() {
@@ -42,17 +40,22 @@ public final class PekkoRuntime {
   //    }
 
   public PekkoRuntime(
+      ActorSystem<Void> actorSystem,
+      OpenStackClient openStackClient,
+      UserShares userShares,
       DataSource dataSource,
       SqlSessionFactory sqlSessionFactory,
       HypervisorPlacement hypervisorPlacement)
       throws Exception {
-    Config config = actorSystem.settings().config().getConfig("cloud.instance");
+    this.actorSystem = actorSystem;
+    Config config = actorSystem.settings().config();
     InstanceWorkflowSettings settings =
         new InstanceWorkflowSettings(
             duration(config, "cloud.reservation.ttl"),
-            duration(config, "provisioning-timeout"),
-            duration(config, "poll.initial-delay"),
-            duration(config, "poll.max-delay"));
+            duration(config, "cloud.instance.provisioning-timeout"),
+            duration(config, "cloud.instance.poll.initial-delay"),
+            duration(config, "cloud.instance.poll.max-delay"),
+            duration(config, "cloud.instance.share-preparation-timeout"));
 
     try {
       sharding = ClusterSharding.get(actorSystem);
@@ -64,7 +67,7 @@ public final class PekkoRuntime {
               InstanceWorkflowActor.TYPE_KEY,
               context ->
                   InstanceWorkflowActor.create(
-                      context.getEntityId(), hypervisorPlacement, openStackClient, settings)));
+                      context.getEntityId(), hypervisorPlacement, openStackClient, userShares, settings)));
       if (actorSystem.settings().config().getBoolean("cloud.projection.enabled")) {
         HypervisorProjection.init(
             actorSystem,

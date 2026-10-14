@@ -20,12 +20,34 @@ public record InstanceWorkflowState(
         int schedulingAttempts,
         String failureCode,
         String failureMessage,
-        long version) implements Serializable {
+        long version,
+        Instant sharePreparationDeadline,
+        PreparedShare preparedShare) implements Serializable {
 
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, null, 0, 0, null, null, 0);
+                null, null, null, null, null, 0, 0, null, null, 0, null, null);
+    }
+
+    public InstanceWorkflowState preparingShare(Instant deadline) {
+        return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_SHARE, spec,
+                hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
+                provisioningStartedAt, provisioningDeadline, pollingGeneration + 1,
+                schedulingAttempts, failureCode, failureMessage, version + 1, deadline, null);
+    }
+
+    public InstanceWorkflowState shareCheckStarted() {
+        return copy(requestId, phase, spec, hypervisorId, reservationId, novaOperationId,
+                novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
+                pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage);
+    }
+
+    public InstanceWorkflowState sharePrepared(PreparedShare share) {
+        return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId,
+                reservationId, novaOperationId, novaServerId, novaStatus, provisioningStartedAt,
+                provisioningDeadline, pollingGeneration, schedulingAttempts, failureCode,
+                failureMessage, version + 1, sharePreparationDeadline, share);
     }
 
     public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec) {
@@ -123,6 +145,6 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, nextRequestId, nextPhase, nextSpec,
                 nextHypervisorId, nextReservationId, nextOperationId, nextServerId, nextNovaStatus,
                 nextStartedAt, nextDeadline, nextGeneration, nextAttempts,
-                nextFailureCode, nextFailureMessage, version + 1);
+                nextFailureCode, nextFailureMessage, version + 1, sharePreparationDeadline, preparedShare);
     }
 }

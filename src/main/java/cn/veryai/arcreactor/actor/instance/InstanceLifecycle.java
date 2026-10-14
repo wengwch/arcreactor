@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.actor.instance;
 
+import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
@@ -23,9 +24,11 @@ public interface InstanceLifecycle {
             int vcpus,
             long memoryMb,
             int gpuCount,
-            Map<String, String> metadata) implements Serializable {
+            Map<String, String> metadata,
+            ShareRequirement share) implements Serializable {
         public CreateRequest {
             metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
+            Objects.requireNonNull(share, "share");
         }
     }
 
@@ -43,6 +46,9 @@ public interface InstanceLifecycle {
             String novaStatus,
             String failureCode,
             String failureMessage,
-            long version) implements Serializable {
+            long version,
+            String userId,
+            String shareId,
+            String osShareId) implements Serializable {
     }
 }

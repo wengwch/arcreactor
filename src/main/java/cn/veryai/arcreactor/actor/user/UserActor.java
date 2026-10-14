@@ -21,7 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.Executor;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
@@ -50,7 +50,6 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       EntityTypeKey.create(UserCommand.class, ENTITY_TYPE);
 
   private static final String OPERATION_METADATA = "arcreactor_share_operation_id";
-  private static final Executor EXECUTOR = task -> Thread.ofVirtual().name("openstack-share").start(task);
 
   private final String userId;
   private final ActorContext<UserCommand> context;
@@ -196,7 +195,13 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private void execute(UserShareState share) {
     inFlight.add(share.shareId());
-    context.pipeToSelf(CompletableFuture.supplyAsync(() -> performStep(share), EXECUTOR)
+    CompletionStage<UserShareState> operation;
+    try {
+      operation = performStep(share);
+    } catch (RuntimeException error) {
+      operation = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(operation.toCompletableFuture()
         .orTimeout(settings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS),
         (result, error) -> {
           if (error == null) return new StepCompleted(share.shareId(), share.generation(), result, false, null);
@@ -215,61 +220,60 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         });
   }
 
-  private UserShareState performStep(UserShareState state) {
+  private CompletionStage<UserShareState> performStep(UserShareState state) {
     ShareSpec spec = state.spec();
     return switch (state.phase()) {
-      case CREATING -> {
-        Share share = client.createShare(spec.regionId(), spec.osProjectId(),
+      case CREATING -> client.createShare(spec.regionId(), spec.osProjectId(),
             ManilaShareCreate.builder().name(spec.name()).description(spec.description())
                 .size(spec.size()).shareProto(spec.shareProto()).shareType(spec.shareType())
                 .metadata(Map.of(OPERATION_METADATA, operationId(state.shareId())))
-                .build());
-        yield created(state, share);
-      }
-      case RECONCILING_CREATE -> {
-        List<? extends Share> matches = client.listShares(spec.regionId(), spec.osProjectId()).stream()
+                .build()).thenApply(share -> created(state, share));
+      case RECONCILING_CREATE -> client.listShares(spec.regionId(), spec.osProjectId()).thenApply(shares -> {
+        List<? extends Share> matches = shares.stream()
             .filter(share -> spec.osProjectId().equals(share.getProjectId()))
             .filter(share -> share.getMetadata() != null
                 && operationId(state.shareId()).equals(share.getMetadata().get(OPERATION_METADATA)))
             .toList();
         if (matches.size() > 1) throw new InvalidShareState("Multiple shares match the creation operation");
         // Never blindly recreate an uncertain write, even if one lookup returns no match.
-        yield matches.isEmpty() ? state : created(state, matches.getFirst());
-      }
-      case WAITING_SHARE -> {
-        Share share = client.getShare(spec.regionId(), spec.osProjectId(), state.osShareId());
-        if (share == null) yield state;
-        if (share.getStatus() == Share.Status.ERROR || share.getStatus() == Share.Status.ERROR_DELETING
-            || share.getStatus() == Share.Status.DELETING || share.getStatus() == Share.Status.UNMANAGED) {
-          throw new InvalidShareState("Share entered " + share.getStatus());
-        }
-        if (share.getStatus() != Share.Status.AVAILABLE) yield state;
-        ShareExportLocation location = client.getShareExportLocation(
-                spec.regionId(), spec.osProjectId(), state.osShareId()).stream()
-            .filter(export -> !Boolean.TRUE.equals(export.isAdminOnly()))
-            .filter(export -> hasText(export.getId()) && hasText(export.getPath()))
-            .min(Comparator.comparing(export -> !Boolean.TRUE.equals(export.isPreferred())))
-            .orElse(null);
-        yield location == null ? state : state.transition(Phase.GRANTING_ACCESS, state.osShareId(),
-            location.getId(), location.getPath(), null, null, null);
-      }
-      case GRANTING_ACCESS -> accessGranted(state, client.grantShareAccess(
+        return matches.isEmpty() ? state : created(state, matches.getFirst());
+      });
+      case WAITING_SHARE -> client.getShare(spec.regionId(), spec.osProjectId(), state.osShareId())
+          .thenCompose(share -> {
+            if (share == null) return CompletableFuture.completedFuture(state);
+            if (share.getStatus() == Share.Status.ERROR || share.getStatus() == Share.Status.ERROR_DELETING
+                || share.getStatus() == Share.Status.DELETING || share.getStatus() == Share.Status.UNMANAGED) {
+              throw new InvalidShareState("Share entered " + share.getStatus());
+            }
+            if (share.getStatus() != Share.Status.AVAILABLE) return CompletableFuture.completedFuture(state);
+            return client.getShareExportLocation(spec.regionId(), spec.osProjectId(), state.osShareId())
+                .thenApply(exports -> {
+                  ShareExportLocation location = exports.stream()
+                      .filter(export -> !Boolean.TRUE.equals(export.isAdminOnly()))
+                      .filter(export -> hasText(export.getId()) && hasText(export.getPath()))
+                      .min(Comparator.comparing(export -> !Boolean.TRUE.equals(export.isPreferred())))
+                      .orElse(null);
+                  return location == null ? state : state.transition(Phase.GRANTING_ACCESS, state.osShareId(),
+                      location.getId(), location.getPath(), null, null, null);
+                });
+          });
+      case GRANTING_ACCESS -> client.grantShareAccess(
           spec.regionId(), spec.osProjectId(), state.osShareId(),
-          AccessOptions.create(Access.Level.RW, Access.Type.CEPHX, spec.accessTo())));
-      case RECONCILING_ACCESS -> {
-        List<? extends Access> matches = client.listShareAccess(
-                spec.regionId(), spec.osProjectId(), state.osShareId()).stream()
+          AccessOptions.create(Access.Level.RW, Access.Type.CEPHX, spec.accessTo()))
+          .thenApply(access -> accessGranted(state, access));
+      case RECONCILING_ACCESS -> client.listShareAccess(
+          spec.regionId(), spec.osProjectId(), state.osShareId()).thenApply(accesses -> {
+        List<? extends Access> matches = accesses.stream()
             .filter(access -> access.getAccessType() == Access.Type.CEPHX
                 && access.getAccessLevel() == Access.Level.RW && spec.accessTo().equals(access.getAccessTo()))
             .toList();
         if (matches.size() > 1) throw new InvalidShareState("Multiple access rules match the requested access");
-        yield matches.isEmpty() ? state : accessGranted(state, matches.getFirst());
-      }
-      case WAITING_ACCESS -> {
-        Access access = client.getShareAccess(spec.regionId(), spec.osProjectId(), state.osGrantAccessId());
-        yield access == null ? state : accessGranted(state, access);
-      }
-      case READY, FAILED -> state;
+        return matches.isEmpty() ? state : accessGranted(state, matches.getFirst());
+      });
+      case WAITING_ACCESS -> client.getShareAccess(
+          spec.regionId(), spec.osProjectId(), state.osGrantAccessId())
+          .thenApply(access -> access == null ? state : accessGranted(state, access));
+      case READY, FAILED -> CompletableFuture.completedFuture(state);
     };
   }
 

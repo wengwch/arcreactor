@@ -33,8 +33,3 @@ openstack:
       default-project-id: "${OS_PROJECT_ID:}"
       default-region: "${OS_REGION_NAME:}"
       endpoint-interface: "${OS_INTERFACE:public}"
-
-
-pekko:
-  instance:
-    ask-timeout: 3s

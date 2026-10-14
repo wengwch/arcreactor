@@ -7,15 +7,22 @@ public record InstanceWorkflowSettings(
         Duration reservationTtl,
         Duration provisioningTimeout,
         Duration pollInitialDelay,
-        Duration pollMaxDelay) {
+        Duration pollMaxDelay,
+        Duration sharePreparationTimeout) {
     public InstanceWorkflowSettings {
         requirePositive(reservationTtl, "reservationTtl");
         requirePositive(provisioningTimeout, "provisioningTimeout");
         requirePositive(pollInitialDelay, "pollInitialDelay");
         requirePositive(pollMaxDelay, "pollMaxDelay");
+        requirePositive(sharePreparationTimeout, "sharePreparationTimeout");
         if (pollMaxDelay.compareTo(pollInitialDelay) < 0) {
             throw new IllegalArgumentException("pollMaxDelay must not be less than pollInitialDelay");
         }
+    }
+
+    public InstanceWorkflowSettings(Duration reservationTtl, Duration provisioningTimeout,
+            Duration pollInitialDelay, Duration pollMaxDelay) {
+        this(reservationTtl, provisioningTimeout, pollInitialDelay, pollMaxDelay, provisioningTimeout);
     }
 
     public Duration pollDelay(long attempt) {

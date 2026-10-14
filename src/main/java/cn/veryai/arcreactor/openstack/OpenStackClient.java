@@ -54,6 +54,8 @@ public class OpenStackClient {
   private static final String NOVA_OPERATION_ID = "arcreactor_operation_id";
   private static final Executor NOVA_EXECUTOR =
       task -> Thread.ofVirtual().name("openstack-nova").start(task);
+  private static final Executor SHARE_EXECUTOR =
+      task -> Thread.ofVirtual().name("openstack-share").start(task);
 
   public record ServerTarget(String clusterId, String projectId, String region)
       implements Serializable {}
@@ -768,57 +770,70 @@ public class OpenStackClient {
     osClient.compute().flavors().createAndUpdateExtraSpecs(flavorId, flavorMetaData);
   }
 
-  public Share createShare(String region, String projectId, ShareCreate shareCreate) {
-    try {
-      return getOsShareClient(region, projectId).share().shares().create(shareCreate);
-    } catch (Exception e) {
-      log.error("create share failed", e);
-      throw new OpenStackOperationException("create share failed", e);
-    }
+  /** Runs blocking Manila SDK calls, including authentication, on virtual threads. */
+  public CompletionStage<Share> createShare(String region, String projectId, ShareCreate shareCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        return getOsShareClient(region, projectId).share().shares().create(shareCreate);
+      } catch (Exception e) {
+        log.error("create share failed", e);
+        throw new OpenStackOperationException("create share failed", e);
+      }
+    }, SHARE_EXECUTOR);
   }
 
-  public Share getShare(String region, String projectId, String shareId) {
-    return getOsShareClient(region, projectId).share().shares().get(shareId);
+  public CompletionStage<Share> getShare(String region, String projectId, String shareId) {
+    return CompletableFuture.supplyAsync(
+        () -> getOsShareClient(region, projectId).share().shares().get(shareId), SHARE_EXECUTOR);
   }
 
-  public List<? extends Share> listShares(String region, String projectId) {
-    return getOsShareClient(region, projectId).share().shares().listDetails();
+  public CompletionStage<List<? extends Share>> listShares(String region, String projectId) {
+    return CompletableFuture.supplyAsync(
+        () -> getOsShareClient(region, projectId).share().shares().listDetails(), SHARE_EXECUTOR);
   }
 
-  public List<? extends Access> listShareAccess(String region, String projectId, String shareId) {
-    return getOsShareClient(region, projectId).share().shares().listAccess(shareId);
-  }
-
-  public List<? extends ShareExportLocation> getShareExportLocation(
+  public CompletionStage<List<? extends Access>> listShareAccess(
       String region, String projectId, String shareId) {
-    try {
-      return getOsShareClient(region, projectId).share().shares().listExportLocations(shareId);
-    } catch (Exception e) {
-      log.error("get share export location failed", e);
-      throw new OpenStackOperationException("get share export location failed", e);
-    }
+    return CompletableFuture.supplyAsync(
+        () -> getOsShareClient(region, projectId).share().shares().listAccess(shareId), SHARE_EXECUTOR);
   }
 
-  public Access grantShareAccess(
+  public CompletionStage<List<? extends ShareExportLocation>> getShareExportLocation(
+      String region, String projectId, String shareId) {
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        return getOsShareClient(region, projectId).share().shares().listExportLocations(shareId);
+      } catch (Exception e) {
+        log.error("get share export location failed", e);
+        throw new OpenStackOperationException("get share export location failed", e);
+      }
+    }, SHARE_EXECUTOR);
+  }
+
+  public CompletionStage<Access> grantShareAccess(
       String region, String projectId, String shareId, AccessOptions accessOptions) {
-    try {
-      return getOsShareClient(region, projectId)
-          .share()
-          .shares()
-          .grantAccess(shareId, accessOptions);
-    } catch (Exception e) {
-      log.error("grant share access failed", e);
-      throw new OpenStackOperationException("grant share access failed", e);
-    }
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        return getOsShareClient(region, projectId)
+            .share()
+            .shares()
+            .grantAccess(shareId, accessOptions);
+      } catch (Exception e) {
+        log.error("grant share access failed", e);
+        throw new OpenStackOperationException("grant share access failed", e);
+      }
+    }, SHARE_EXECUTOR);
   }
 
-  public Access getShareAccess(String region, String projectId, String accessId) {
-    try {
-      return getOsShareClient(region, projectId).share().shares().getAccess(accessId);
-    } catch (Exception e) {
-      log.error("get share access failed", e);
-      throw new OpenStackOperationException("get share access failed", e);
-    }
+  public CompletionStage<Access> getShareAccess(String region, String projectId, String accessId) {
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        return getOsShareClient(region, projectId).share().shares().getAccess(accessId);
+      } catch (Exception e) {
+        log.error("get share access failed", e);
+        throw new OpenStackOperationException("get share access failed", e);
+      }
+    }, SHARE_EXECUTOR);
   }
 
   private OSClient.OSClientV3 getOsShareClient(String region, String projectId) {

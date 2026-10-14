@@ -8,9 +8,5 @@ import java.time.Duration;
 @Service
 public class InstanceService {
 
-    @Value("${pekko.instance.ask-timeout}")
-    private Duration askTimeout;
-
-
 
 }

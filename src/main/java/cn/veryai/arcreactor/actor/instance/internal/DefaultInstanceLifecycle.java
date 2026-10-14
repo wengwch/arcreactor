@@ -26,7 +26,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
     public CompletionStage<Submission> create(CreateRequest request) {
         InstanceSpec spec = new InstanceSpec(request.clusterId(), request.projectId(), request.region(),
                 request.name(), request.imageId(), request.flavorId(), request.vcpus(), request.memoryMb(),
-                request.gpuCount(), request.metadata());
+                request.gpuCount(), request.metadata(), request.share());
         return AskPattern.<WorkflowCommand, InstanceReply>ask(
                         entityRef(request.instanceId()),
                         replyTo -> new CreateInstance(request.requestId(), request.instanceId(), spec, replyTo),
@@ -53,6 +53,9 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
         return new View(state.instanceId(), state.requestId(), state.phase().name(), state.hypervisorId(),
                 state.reservationId(), state.novaOperationId(), state.novaServerId(),
                 state.novaStatus() == null ? null : state.novaStatus().name(), state.failureCode(),
-                state.failureMessage(), state.version());
+                state.failureMessage(), state.version(),
+                state.spec() == null || state.spec().share() == null ? null : state.spec().share().userId(),
+                state.spec() == null || state.spec().share() == null ? null : state.spec().share().shareId(),
+                state.preparedShare() == null ? null : state.preparedShare().osShareId());
     }
 }
