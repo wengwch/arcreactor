@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.actor.instance;
 
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
+import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
@@ -25,10 +26,17 @@ public interface InstanceLifecycle {
             long memoryMb,
             int gpuCount,
             Map<String, String> metadata,
-            ShareRequirement share) implements Serializable {
+            ShareRequirement share,
+            ForwardingRequirement forwarding) implements Serializable {
         public CreateRequest {
             metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
             Objects.requireNonNull(share, "share");
+        }
+        public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                int gpuCount, Map<String, String> metadata, ShareRequirement share) {
+            this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
+                    vcpus, memoryMb, gpuCount, metadata, share, null);
         }
     }
 
@@ -49,6 +57,8 @@ public interface InstanceLifecycle {
             long version,
             String userId,
             String shareId,
-            String osShareId) implements Serializable {
+            String osShareId,
+            String floatingIp,
+            int externalPort) implements Serializable {
     }
 }

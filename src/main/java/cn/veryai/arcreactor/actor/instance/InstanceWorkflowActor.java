@@ -6,6 +6,9 @@ import cn.veryai.arcreactor.actor.instance.command.CheckShareStatus;
 import cn.veryai.arcreactor.actor.instance.command.SharePreparationTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.ShareStatusQueryFailed;
 import cn.veryai.arcreactor.actor.instance.command.ShareStatusSucceeded;
+import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
+import cn.veryai.arcreactor.actor.instance.command.ForwardingStatusCompleted;
+import cn.veryai.arcreactor.actor.instance.command.ForwardingPreparationTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.CompensationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmRejected;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmSucceeded;
@@ -47,11 +50,19 @@ import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
 import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
+import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
+import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
+import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
+import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
+import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.actor.user.UserShares;
 import cn.veryai.arcreactor.actor.user.model.UserShareState;
@@ -95,6 +106,8 @@ public final class InstanceWorkflowActor
   private static final String COMPENSATION_TIMER = "compensation";
   private static final String SHARE_POLL_TIMER = "share-status-poll";
   private static final String SHARE_DEADLINE_TIMER = "share-preparation-deadline";
+  private static final String FORWARDING_POLL_TIMER = "forwarding-status-poll";
+  private static final String FORWARDING_DEADLINE_TIMER = "forwarding-preparation-deadline";
 
   private final String instanceId;
   private final ActorContext<WorkflowCommand> context;
@@ -102,18 +115,21 @@ public final class InstanceWorkflowActor
   private final HypervisorPlacement placement;
   private final OpenStackClient openStackClient;
   private final UserShares userShares;
+  private final FloatingIpForwardings floatingIpForwardings;
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private boolean shareRequestInFlight;
+  private boolean forwardingRequestInFlight;
 
   public static Behavior<WorkflowCommand> create(
       String instanceId,
       HypervisorPlacement placement,
       OpenStackClient openStackClient,
       UserShares userShares,
+      FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings) {
-    return create(instanceId, placement, openStackClient, userShares, settings, Clock.systemUTC());
+    return create(instanceId, placement, openStackClient, userShares, floatingIpForwardings, settings, Clock.systemUTC());
   }
 
   static Behavior<WorkflowCommand> create(
@@ -121,6 +137,7 @@ public final class InstanceWorkflowActor
       HypervisorPlacement placement,
       OpenStackClient openStackClient,
       UserShares userShares,
+      FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings,
       Clock clock) {
     return Behaviors.setup(
@@ -128,7 +145,8 @@ public final class InstanceWorkflowActor
             Behaviors.withTimers(
                 timers ->
                     new InstanceWorkflowActor(
-                        instanceId, context, timers, placement, openStackClient, userShares, settings, clock)));
+                        instanceId, context, timers, placement, openStackClient, userShares,
+                        floatingIpForwardings, settings, clock)));
   }
 
   private InstanceWorkflowActor(
@@ -138,6 +156,7 @@ public final class InstanceWorkflowActor
       HypervisorPlacement placement,
       OpenStackClient openStackClient,
       UserShares userShares,
+      FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings,
       Clock clock) {
     super(PersistenceId.of(ENTITY_TYPE, instanceId));
@@ -147,6 +166,7 @@ public final class InstanceWorkflowActor
     this.placement = Objects.requireNonNull(placement);
     this.openStackClient = Objects.requireNonNull(openStackClient);
     this.userShares = Objects.requireNonNull(userShares);
+    this.floatingIpForwardings = Objects.requireNonNull(floatingIpForwardings);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
   }
@@ -167,6 +187,9 @@ public final class InstanceWorkflowActor
         .onCommand(ShareStatusSucceeded.class, this::onShareStatusSucceeded)
         .onCommand(ShareStatusQueryFailed.class, this::onShareStatusQueryFailed)
         .onCommand(SharePreparationTimedOut.class, this::onSharePreparationTimedOut)
+        .onCommand(CheckForwardingStatus.class, this::onCheckForwardingStatus)
+        .onCommand(ForwardingStatusCompleted.class, this::onForwardingStatusCompleted)
+        .onCommand(ForwardingPreparationTimedOut.class, this::onForwardingPreparationTimedOut)
         .onCommand(SchedulingSucceeded.class, this::onSchedulingSucceeded)
         .onCommand(SchedulingFailed.class, this::onSchedulingFailed)
         .onCommand(NovaCreateSucceeded.class, this::onNovaCreateSucceeded)
@@ -265,12 +288,16 @@ public final class InstanceWorkflowActor
           yield failSharePreparation("SHARE_RESULT_INVALID", "Share readiness result is incomplete or mismatched");
         }
         Instant now = clock.instant();
+        InstanceWorkflowEvent nextStage = state.spec().forwarding() == null
+            ? new SchedulingStarted(instanceId, state.requestId(), 1, now)
+            : new ForwardingPreparationStarted(instanceId, now.plus(settings.forwardingPreparationTimeout()));
         yield Effect().persist(List.of(
                 new SharePrepared(instanceId, PreparedShare.from(share), now),
-                new SchedulingStarted(instanceId, state.requestId(), 1, now)))
+                nextStage))
             .thenRun(next -> {
               cancelShareTimers();
-              startScheduling(next);
+              if (next.phase() == InstancePhase.PREPARING_FORWARDING) startForwardingPreparation(next);
+              else startScheduling(next);
             });
       }
       case FAILED -> failSharePreparation("SHARE_PREPARATION_FAILED", reply.detail());
@@ -371,6 +398,104 @@ public final class InstanceWorkflowActor
 
   private static boolean hasText(String value) {
     return value != null && !value.isBlank();
+  }
+
+  private void startForwardingPreparation(InstanceWorkflowState state) {
+    scheduleForwardingDeadline(state);
+    if (!forwardingWaitExpired(state)) requestForwarding(state, 1, true);
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckForwardingStatus(
+      InstanceWorkflowState state, CheckForwardingStatus command) {
+    if (!matchesForwarding(state, command.generation()) || forwardingRequestInFlight) return Effect().none();
+    if (forwardingWaitExpired(state)) return beginCompensation("FORWARDING_PREPARATION_TIMEOUT", "Timed out preparing port forwarding");
+    return Effect().persist(new ForwardingStatusCheckStarted(instanceId))
+        .thenRun(next -> requestForwarding(next, command.attempt(), false));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onForwardingStatusCompleted(
+      InstanceWorkflowState state, ForwardingStatusCompleted command) {
+    if (!matchesForwarding(state, command.generation())) return Effect().none();
+    forwardingRequestInFlight = false;
+    if (forwardingWaitExpired(state)) return beginCompensation("FORWARDING_PREPARATION_TIMEOUT", "Timed out preparing port forwarding");
+    ForwardingReply reply = command.reply();
+    if (reply == null) {
+      scheduleForwardingPoll(state, command.attempt() + 1); return Effect().none();
+    }
+    return switch (reply.status()) {
+      case READY -> {
+        ForwardingClaim claim = reply.claim();
+        if (claim == null || claim.phase() != ForwardingClaim.Phase.READY || claim.deleteRequested()
+            || !forwardingClaimId(state).equals(claim.claimId()) || !forwardingSpec(state).equals(claim.spec())
+            || !hasText(claim.resources().tcpForwardingId()) || !hasText(claim.resources().udpForwardingId())
+            || !hasText(claim.resources().tcpRuleId()) || !hasText(claim.resources().udpRuleId())
+            || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 1) {
+          yield beginCompensation("FORWARDING_RESULT_INVALID", "Incomplete or mismatched port forwarding result");
+        }
+        Instant now = clock.instant();
+        yield Effect().persist(List.of(new ForwardingPrepared(instanceId, PreparedForwarding.from(claim), now),
+                new SchedulingStarted(instanceId, state.requestId(), 1, now)))
+            .thenRun(next -> { cancelForwardingTimers(); startScheduling(next); });
+      }
+      case FAILED, REJECTED, DELETED -> beginCompensation("FORWARDING_PREPARATION_FAILED", reply.detail());
+      case NOT_FOUND -> {
+        if (command.submission()) {
+          scheduleForwardingPoll(state, command.attempt() + 1); yield Effect().none();
+        }
+        yield Effect().persist(new ForwardingStatusCheckStarted(instanceId))
+            .thenRun(next -> requestForwarding(next, command.attempt(), true));
+      }
+      case IN_PROGRESS, NEEDS_RECONCILIATION -> {
+        scheduleForwardingPoll(state, command.attempt() + 1); yield Effect().none();
+      }
+    };
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onForwardingPreparationTimedOut(
+      InstanceWorkflowState state, ForwardingPreparationTimedOut command) {
+    if (state.phase() != InstancePhase.PREPARING_FORWARDING
+        || !Objects.equals(state.forwardingPreparationDeadline(), command.deadline())) return Effect().none();
+    if (!forwardingWaitExpired(state)) { scheduleForwardingDeadline(state); return Effect().none(); }
+    return beginCompensation("FORWARDING_PREPARATION_TIMEOUT", "Timed out preparing port forwarding");
+  }
+
+  private void requestForwarding(InstanceWorkflowState state, int attempt, boolean submission) {
+    forwardingRequestInFlight = true;
+    CompletionStage<ForwardingReply> request;
+    try {
+      request = submission ? floatingIpForwardings.create(forwardingClaimId(state), forwardingSpec(state))
+          : floatingIpForwardings.get(state.spec().region(), forwardingClaimId(state));
+    } catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(request, (reply, error) -> new ForwardingStatusCompleted(
+        state.pollingGeneration(), attempt, submission, error == null ? reply : null));
+  }
+
+  private ForwardingSpec forwardingSpec(InstanceWorkflowState state) {
+    return state.spec().forwarding().toSpec(instanceId, state.spec().share().userId(),
+        state.spec().region(), state.spec().projectId());
+  }
+  private static String forwardingClaimId(InstanceWorkflowState state) {
+    return "fip:" + state.instanceId() + ":" + state.requestId();
+  }
+  private static boolean matchesForwarding(InstanceWorkflowState state, long generation) {
+    return state.phase() == InstancePhase.PREPARING_FORWARDING && state.pollingGeneration() == generation;
+  }
+  private boolean forwardingWaitExpired(InstanceWorkflowState state) {
+    return !clock.instant().isBefore(state.forwardingPreparationDeadline());
+  }
+  private void scheduleForwardingPoll(InstanceWorkflowState state, int attempt) {
+    timers.startSingleTimer(FORWARDING_POLL_TIMER,
+        new CheckForwardingStatus(state.pollingGeneration(), attempt), settings.pollDelay(attempt));
+  }
+  private void scheduleForwardingDeadline(InstanceWorkflowState state) {
+    Duration remaining = Duration.between(clock.instant(), state.forwardingPreparationDeadline());
+    timers.startSingleTimer(FORWARDING_DEADLINE_TIMER,
+        new ForwardingPreparationTimedOut(state.forwardingPreparationDeadline()),
+        remaining.isNegative() || remaining.isZero() ? Duration.ofMillis(1) : remaining);
+  }
+  private void cancelForwardingTimers() {
+    timers.cancel(FORWARDING_POLL_TIMER); timers.cancel(FORWARDING_DEADLINE_TIMER);
+    forwardingRequestInFlight = false;
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSchedulingSucceeded(
@@ -676,6 +801,7 @@ public final class InstanceWorkflowActor
         .thenRun(
             next -> {
               metrics.compensation();
+              cancelForwardingTimers();
               startCompensation(next);
             });
   }
@@ -712,7 +838,8 @@ public final class InstanceWorkflowActor
             spec.imageId(),
             spec.flavorId(),
             state.hypervisorId(),
-            spec.metadata());
+            spec.metadata(),
+            spec.forwarding() == null ? null : spec.forwarding().parentPortId());
     context.pipeToSelf(
         openStackClient.createServer(request),
         (result, error) -> {
@@ -744,8 +871,14 @@ public final class InstanceWorkflowActor
             : openStackClient
                 .deleteServer(target(state), state.novaServerId())
                 .handle((ignored, error) -> error == null);
+    CompletionStage<Boolean> forwardingCleanup = delete.thenCompose(deleted -> {
+      if (!deleted) return CompletableFuture.completedFuture(false);
+      return state.spec().forwarding() == null ? CompletableFuture.completedFuture(true)
+          : floatingIpForwardings.deleteInstance(state.spec().region(), instanceId)
+              .handle((done, error) -> error == null && Boolean.TRUE.equals(done));
+    });
     CompletionStage<Boolean> compensated =
-        delete.thenCompose(
+        forwardingCleanup.thenCompose(
             deleted -> {
               if (!deleted) return CompletableFuture.completedFuture(false);
               return state.hypervisorId() == null || state.reservationId() == null
@@ -826,6 +959,9 @@ public final class InstanceWorkflowActor
         .onEvent(SharePreparationStarted.class, (state, event) -> state.preparingShare(event.deadline()))
         .onEvent(ShareStatusCheckStarted.class, (state, event) -> state.shareCheckStarted())
         .onEvent(SharePrepared.class, (state, event) -> state.sharePrepared(event.share()))
+        .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding(event.deadline()))
+        .onEvent(ForwardingStatusCheckStarted.class, (state, event) -> state.shareCheckStarted())
+        .onEvent(ForwardingPrepared.class, (state, event) -> state.forwardingPrepared(event.forwarding()))
         .onEvent(SchedulingStarted.class, (state, event) -> state.scheduling(event.attempt()))
         .onEvent(
             HypervisorSelected.class,
@@ -879,6 +1015,10 @@ public final class InstanceWorkflowActor
                       state.novaOperationId(),
                       state.novaServerId());
               switch (state.phase()) {
+                case PREPARING_FORWARDING -> {
+                  scheduleForwardingDeadline(state);
+                  context.getSelf().tell(new CheckForwardingStatus(state.pollingGeneration(), 1));
+                }
                 case PREPARING_SHARE -> {
                   scheduleShareDeadline(state);
                   context.getSelf().tell(new CheckShareStatus(state.pollingGeneration(), 1));

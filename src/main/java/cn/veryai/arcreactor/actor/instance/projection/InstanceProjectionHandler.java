@@ -20,6 +20,9 @@ import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
 import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingStatusCheckStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -45,6 +48,9 @@ public final class InstanceProjectionHandler
             mapper.updatePhase(instanceId, "PREPARING_SHARE", version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
+        } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingStatusCheckStarted
+                || event instanceof ForwardingPrepared) {
+            mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
             mapper.updateHypervisor(instanceId, "RESERVING", selected.hypervisorId(),
                     selected.reservationId(), version, timestamp);

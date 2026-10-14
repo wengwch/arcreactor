@@ -22,19 +22,22 @@ public record InstanceWorkflowState(
         String failureMessage,
         long version,
         Instant sharePreparationDeadline,
-        PreparedShare preparedShare) implements Serializable {
+        PreparedShare preparedShare,
+        Instant forwardingPreparationDeadline,
+        PreparedForwarding preparedForwarding) implements Serializable {
 
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, null, 0, 0, null, null, 0, null, null);
+                null, null, null, null, null, 0, 0, null, null, 0, null, null, null, null);
     }
 
     public InstanceWorkflowState preparingShare(Instant deadline) {
         return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_SHARE, spec,
                 hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration + 1,
-                schedulingAttempts, failureCode, failureMessage, version + 1, deadline, null);
+                schedulingAttempts, failureCode, failureMessage, version + 1, deadline, null,
+                forwardingPreparationDeadline, preparedForwarding);
     }
 
     public InstanceWorkflowState shareCheckStarted() {
@@ -47,7 +50,22 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId,
                 reservationId, novaOperationId, novaServerId, novaStatus, provisioningStartedAt,
                 provisioningDeadline, pollingGeneration, schedulingAttempts, failureCode,
-                failureMessage, version + 1, sharePreparationDeadline, share);
+                failureMessage, version + 1, sharePreparationDeadline, share,
+                forwardingPreparationDeadline, preparedForwarding);
+    }
+
+    public InstanceWorkflowState preparingForwarding(Instant deadline) {
+        return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_FORWARDING, spec,
+                hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
+                provisioningStartedAt, provisioningDeadline, pollingGeneration + 1, schedulingAttempts,
+                failureCode, failureMessage, version + 1, sharePreparationDeadline, preparedShare, deadline, null);
+    }
+
+    public InstanceWorkflowState forwardingPrepared(PreparedForwarding forwarding) {
+        return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
+                novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
+                pollingGeneration, schedulingAttempts, failureCode, failureMessage, version + 1,
+                sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, forwarding);
     }
 
     public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec) {
@@ -145,6 +163,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, nextRequestId, nextPhase, nextSpec,
                 nextHypervisorId, nextReservationId, nextOperationId, nextServerId, nextNovaStatus,
                 nextStartedAt, nextDeadline, nextGeneration, nextAttempts,
-                nextFailureCode, nextFailureMessage, version + 1, sharePreparationDeadline, preparedShare);
+                nextFailureCode, nextFailureMessage, version + 1, sharePreparationDeadline, preparedShare,
+                forwardingPreparationDeadline, preparedForwarding);
     }
 }

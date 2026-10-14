@@ -15,7 +15,8 @@ public record InstanceSpec(
         long memoryMb,
         int gpuCount,
         Map<String, String> metadata,
-        ShareRequirement share) implements Serializable {
+        ShareRequirement share,
+        ForwardingRequirement forwarding) implements Serializable {
     public InstanceSpec {
         requireText(clusterId, "clusterId");
         requireText(projectId, "projectId");
@@ -40,9 +41,16 @@ public record InstanceSpec(
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,
             String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            Map<String, String> metadata, ShareRequirement share) {
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+                metadata, share, null);
+    }
+
+    public InstanceSpec(String clusterId, String projectId, String region, String name,
+            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
             Map<String, String> metadata) {
         this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
-                metadata, null);
+                metadata, null, null);
     }
 
     private static void requireText(String value, String name) {

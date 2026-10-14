@@ -56,6 +56,18 @@ public class OpenStackClient {
       task -> Thread.ofVirtual().name("openstack-nova").start(task);
   private static final Executor SHARE_EXECUTOR =
       task -> Thread.ofVirtual().name("openstack-share").start(task);
+  private static final Executor NETWORK_EXECUTOR =
+      task -> Thread.ofVirtual().name("openstack-network").start(task);
+
+  public record ManagedNetworkResource(String id, boolean owned) implements Serializable {
+    public ManagedNetworkResource {
+      if (id == null || id.isBlank()) throw new IllegalStateException("Missing network resource ID");
+    }
+  }
+  public record ForwardingTarget(String floatingIpAddress, String securityGroupId,
+      Set<Integer> occupiedPorts) implements Serializable {
+    public ForwardingTarget { occupiedPorts = Set.copyOf(occupiedPorts); }
+  }
 
   public record ServerTarget(String clusterId, String projectId, String region)
       implements Serializable {}
@@ -69,9 +81,15 @@ public class OpenStackClient {
       String imageId,
       String flavorId,
       String hypervisorId,
-      Map<String, String> metadata) implements Serializable {
+      Map<String, String> metadata,
+      String networkPortId) implements Serializable {
     public CreateServerRequest {
       metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+    }
+    public CreateServerRequest(ServerTarget target, String instanceId, String requestId,
+        String operationId, String name, String imageId, String flavorId, String hypervisorId,
+        Map<String, String> metadata) {
+      this(target, instanceId, requestId, operationId, name, imageId, flavorId, hypervisorId, metadata, null);
     }
   }
 
@@ -221,14 +239,19 @@ public class OpenStackClient {
                 .build());
   }
 
-  public void deletePortForwarding(String region, String floatingIpId, String portForwardingId) {
-    OpenstackClusterEntity openstackCluster = getOpenstackCluster(region);
-    OSClient.OSClientV3 client =
-        getOsAdminClient(region, openstackCluster.getAdminDefaultProjectId());
-    client.networking().floatingip().portForwarding().delete(floatingIpId, portForwardingId);
+  public CompletionStage<Void> deletePortForwarding(String region, String floatingIpId, String portForwardingId) {
+    return CompletableFuture.runAsync(() -> {
+      try {
+        ActionResponse response = getOsForwardingClient(region).networking().floatingip()
+            .portForwarding().delete(floatingIpId, portForwardingId);
+        requireDeleteResponse(response);
+      } catch (ResponseException error) {
+        if (error.getStatus() != 404) throw error;
+      }
+    }, NETWORK_EXECUTOR);
   }
 
-  public PortForwarding createPortForwarding(
+  public CompletionStage<PortForwarding> createPortForwarding(
       String region,
       String floatingIpId,
       int externalPort,
@@ -237,22 +260,177 @@ public class OpenStackClient {
       String internalPortId,
       NetProtocol protocol) {
 
-    OpenstackClusterEntity openstackCluster = getOpenstackCluster(region);
-    OSClient.OSClientV3 client =
-        getOsAdminClient(region, openstackCluster.getAdminDefaultProjectId());
-    return client
-        .networking()
-        .floatingip()
-        .portForwarding()
-        .create(
-            floatingIpId,
-            Builders.portForwarding()
-                .externalPort(externalPort)
-                .internalIpAddress(fixedIp)
-                .internalPort(internalPort)
-                .internalPortId(internalPortId)
-                .protocol(protocol.name().toLowerCase())
-                .build());
+    return CompletableFuture.supplyAsync(() -> getOsForwardingClient(region).networking()
+        .floatingip().portForwarding().create(floatingIpId, Builders.portForwarding()
+            .externalPort(externalPort).internalIpAddress(fixedIp).internalPort(internalPort)
+            .internalPortId(internalPortId).protocol(protocol.name().toLowerCase(Locale.ROOT)).build()),
+        NETWORK_EXECUTOR);
+  }
+
+  /** Validates the tenant port and preserves all of its existing security group bindings. */
+  public CompletionStage<ForwardingTarget> prepareForwardingTarget(String region, String projectId,
+      String floatingIpId, String portId, String fixedIp, String securityGroupId) {
+    return CompletableFuture.supplyAsync(() -> {
+      OSClient.OSClientV3 admin = getOsForwardingClient(region);
+      NetFloatingIP fip = admin.networking().floatingip().get(floatingIpId);
+      if (fip == null || fip.getFloatingIpAddress() == null || fip.getFloatingIpAddress().isBlank()
+          || (fip.getPortId() != null && !fip.getPortId().isBlank())) {
+        throw new OpenStackOperationException("Floating IP is missing or directly bound to a port", null);
+      }
+      OSClient.OSClientV3 tenant = getOsAdminClient(region, projectId);
+      Port port = tenant.networking().port().get(portId);
+      if (port == null || !projectId.equals(port.getTenantId()) || fixedIp.contains(":")) {
+        throw new OpenStackOperationException("Forwarding requires an IPv4 port in the target project", null);
+      }
+      if (port.getFixedIps() == null
+          || port.getFixedIps().stream().noneMatch(ip -> fixedIp.equals(ip.getIpAddress()))) {
+        throw new OpenStackOperationException("Forwarding IP is not assigned to the target port", null);
+      }
+      SecurityGroup group = securityGroupId == null
+          ? getSecurityGroup(region, projectId) : tenant.networking().securitygroup().get(securityGroupId);
+      if (group == null || !projectId.equals(group.getTenantId())) {
+        throw new OpenStackOperationException("Security group is missing from the target project", null);
+      }
+      if (Boolean.FALSE.equals(port.isPortSecurityEnabled())) {
+        throw new OpenStackOperationException("Target port must have port security enabled", null);
+      }
+      List<String> groups = new ArrayList<>(Objects.requireNonNullElse(port.getSecurityGroups(), List.of()));
+      if (!groups.contains(group.getId())) {
+        groups.add(group.getId());
+        var builder = Builders.port();
+        groups.forEach(builder::securityGroup);
+        Port update = builder.build();
+        update.setId(portId);
+        if (tenant.networking().port().update(update) == null) {
+          throw new IllegalStateException("Neutron returned no updated port");
+        }
+      }
+      Set<Integer> occupied = new HashSet<>();
+      // SDK sessions also carry thread-local context; restore the shared-IP project after tenant calls.
+      for (PortForwarding rule : getOsForwardingClient(region).networking().floatingip()
+          .portForwarding().list(floatingIpId)) {
+        occupied.add(rule.getExternalPort());
+      }
+      return new ForwardingTarget(fip.getFloatingIpAddress(), group.getId(), occupied);
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** After an uncertain create, allowCreate=false performs lookup only. */
+  public CompletionStage<ManagedNetworkResource> ensurePortForwarding(String region, String floatingIpId,
+      int externalPort, String fixedIp, int internalPort, String portId, NetProtocol protocol,
+      String marker, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      var service = getOsForwardingClient(region).networking().floatingip().portForwarding();
+      List<? extends PortForwarding> matches = service.list(floatingIpId).stream()
+          .filter(rule -> marker.equals(rule.getDescription())).toList();
+      if (matches.size() > 1) throw new IllegalStateException("Duplicate forwarding operation marker");
+      if (!matches.isEmpty()) {
+        PortForwarding found = matches.getFirst();
+        if (found.getExternalPort() != externalPort || found.getInternalPort() != internalPort
+            || !fixedIp.equals(found.getInternalIpAddress()) || !portId.equals(found.getInternalPortId())
+            || !protocol.name().equalsIgnoreCase(found.getProtocol())) {
+          throw new OpenStackOperationException("Forwarding operation marker has mismatched parameters", null);
+        }
+        return new ManagedNetworkResource(found.getId(), true);
+      }
+      if (!allowCreate) return null;
+      PortForwarding created = service.create(floatingIpId, Builders.portForwarding()
+          .externalPort(externalPort).internalIpAddress(fixedIp).internalPort(internalPort)
+          .internalPortId(portId).protocol(protocol.name().toLowerCase(Locale.ROOT))
+          .description(marker).build());
+      if (created == null || created.getId() == null) throw new IllegalStateException("Missing forwarding ID");
+      return new ManagedNetworkResource(created.getId(), true);
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<ManagedNetworkResource> ensureForwardingSecurityRule(String region,
+      String projectId, String groupId, int internalPort, NetProtocol protocol,
+      String marker, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      var service = getOsAdminClient(region, projectId).networking().securityrule();
+      List<? extends SecurityGroupRule> rules = service.list(Map.of("security_group_id", groupId));
+      List<? extends SecurityGroupRule> owned = rules.stream()
+          .filter(rule -> marker.equals(rule.getDescription())).toList();
+      if (owned.size() > 1) throw new IllegalStateException("Duplicate security rule marker");
+      if (!owned.isEmpty()) {
+        SecurityGroupRule rule = owned.getFirst();
+        if (!coversForwarding(rule, groupId, internalPort, protocol)) {
+          throw new OpenStackOperationException("Security rule marker has mismatched parameters", null);
+        }
+        return new ManagedNetworkResource(rule.getId(), true);
+      }
+      if (!allowCreate) return null;
+      for (SecurityGroupRule rule : rules) {
+        if (coversForwarding(rule, groupId, internalPort, protocol)) {
+          return new ManagedNetworkResource(rule.getId(), false);
+        }
+      }
+      SecurityGroupRule created = service.create(Builders.securityGroupRule().securityGroupId(groupId)
+          .protocol(protocol.name().toLowerCase(Locale.ROOT)).direction("ingress").ethertype("IPv4")
+          .portRangeMin(internalPort).portRangeMax(internalPort).remoteIpPrefix("0.0.0.0/0")
+          .description(marker).build());
+      if (created == null || created.getId() == null) throw new IllegalStateException("Missing security rule ID");
+      return new ManagedNetworkResource(created.getId(), true);
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<Boolean> deleteManagedPortForwarding(String region, String floatingIpId,
+      String ruleId, String marker) {
+    return CompletableFuture.supplyAsync(() -> {
+      if (ruleId == null) return true;
+      var service = getOsForwardingClient(region).networking().floatingip().portForwarding();
+      try {
+        PortForwarding rule = service.get(floatingIpId, ruleId);
+        if (rule == null) return true;
+        if (!marker.equals(rule.getDescription())) {
+          throw new OpenStackOperationException("Refusing to delete an unowned forwarding rule", null);
+        }
+        requireDeleteResponse(service.delete(floatingIpId, ruleId));
+        return service.get(floatingIpId, ruleId) == null;
+      } catch (ResponseException error) {
+        if (error.getStatus() == 404) return true;
+        throw error;
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<Boolean> deleteManagedSecurityRule(String region, String projectId,
+      String ruleId, String marker) {
+    return CompletableFuture.supplyAsync(() -> {
+      if (ruleId == null) return true;
+      var service = getOsAdminClient(region, projectId).networking().securityrule();
+      try {
+        SecurityGroupRule rule = service.get(ruleId);
+        if (rule == null) return true;
+        if (!marker.equals(rule.getDescription())) {
+          throw new OpenStackOperationException("Refusing to delete an unowned security rule", null);
+        }
+        service.delete(ruleId);
+        return service.get(ruleId) == null;
+      } catch (ResponseException error) {
+        if (error.getStatus() == 404) return true;
+        throw error;
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  private OSClient.OSClientV3 getOsForwardingClient(String region) {
+    return getOsAdminClient(region, getOpenstackCluster(region).getAdminDefaultProjectId());
+  }
+
+  private static void requireDeleteResponse(ActionResponse response) {
+    if (response == null || (!response.isSuccess() && response.getCode() != 404)) {
+      throw new IllegalStateException("Neutron did not confirm deletion");
+    }
+  }
+
+  private static boolean coversForwarding(SecurityGroupRule rule, String groupId, int port, NetProtocol protocol) {
+    return groupId.equals(rule.getSecurityGroupId()) && "ingress".equalsIgnoreCase(rule.getDirection())
+        && "IPv4".equalsIgnoreCase(rule.getEtherType()) && protocol.name().equalsIgnoreCase(rule.getProtocol())
+        && rule.getRemoteGroupId() == null
+        && (rule.getRemoteIpPrefix() == null || "0.0.0.0/0".equals(rule.getRemoteIpPrefix()))
+        && (rule.getPortRangeMin() == null || rule.getPortRangeMin() <= port)
+        && (rule.getPortRangeMax() == null || rule.getPortRangeMax() >= port);
   }
 
   public void deleteServer(String region, String projectId, String serverId) {
@@ -612,6 +790,9 @@ public class OpenStackClient {
                   .flavor(request.flavorId())
                   .hypervisorHostName(hypervisor.getHostname())
                   .addMetadata(metadata);
+          if (request.networkPortId() != null && !request.networkPortId().isBlank()) {
+            builder.addNetworkPort(request.networkPortId());
+          }
           try {
             OSClient.OSClientV3 client = getOsAdminClient(region, request.target().projectId());
             if (client instanceof OSClientSession.OSClientSessionV3 session) {

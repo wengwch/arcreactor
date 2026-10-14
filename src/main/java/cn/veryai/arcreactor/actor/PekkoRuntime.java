@@ -8,6 +8,7 @@ import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
 import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
 import cn.veryai.arcreactor.actor.user.UserShares;
+import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import com.typesafe.config.Config;
 import jakarta.annotation.PreDestroy;
@@ -43,6 +44,7 @@ public final class PekkoRuntime {
       ActorSystem<Void> actorSystem,
       OpenStackClient openStackClient,
       UserShares userShares,
+      FloatingIpForwardings floatingIpForwardings,
       DataSource dataSource,
       SqlSessionFactory sqlSessionFactory,
       HypervisorPlacement hypervisorPlacement)
@@ -55,7 +57,8 @@ public final class PekkoRuntime {
             duration(config, "cloud.instance.provisioning-timeout"),
             duration(config, "cloud.instance.poll.initial-delay"),
             duration(config, "cloud.instance.poll.max-delay"),
-            duration(config, "cloud.instance.share-preparation-timeout"));
+            duration(config, "cloud.instance.share-preparation-timeout"),
+            duration(config, "cloud.instance.forwarding-preparation-timeout"));
 
     try {
       sharding = ClusterSharding.get(actorSystem);
@@ -67,7 +70,8 @@ public final class PekkoRuntime {
               InstanceWorkflowActor.TYPE_KEY,
               context ->
                   InstanceWorkflowActor.create(
-                      context.getEntityId(), hypervisorPlacement, openStackClient, userShares, settings)));
+                      context.getEntityId(), hypervisorPlacement, openStackClient, userShares,
+                      floatingIpForwardings, settings)));
       if (actorSystem.settings().config().getBoolean("cloud.projection.enabled")) {
         HypervisorProjection.init(
             actorSystem,
