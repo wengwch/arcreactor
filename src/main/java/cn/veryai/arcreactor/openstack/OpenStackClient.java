@@ -777,13 +777,25 @@ public class OpenStackClient {
     }
   }
 
+  public Share getShare(String region, String projectId, String shareId) {
+    return getOsShareClient(region, projectId).share().shares().get(shareId);
+  }
+
+  public List<? extends Share> listShares(String region, String projectId) {
+    return getOsShareClient(region, projectId).share().shares().listDetails();
+  }
+
+  public List<? extends Access> listShareAccess(String region, String projectId, String shareId) {
+    return getOsShareClient(region, projectId).share().shares().listAccess(shareId);
+  }
+
   public List<? extends ShareExportLocation> getShareExportLocation(
       String region, String projectId, String shareId) {
     try {
       return getOsShareClient(region, projectId).share().shares().listExportLocations(shareId);
     } catch (Exception e) {
       log.error("get share export location failed", e);
-      return List.of();
+      throw new OpenStackOperationException("get share export location failed", e);
     }
   }
 
