@@ -5,7 +5,7 @@ import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import java.util.Objects;
 import org.apache.pekko.actor.typed.ActorRef;
 
-/** shareId is a stable logical resource ID, reused by all instances sharing this share. */
+/** Ensures one share per user/region; shareId identifies the initial creation operation. */
 public record CreateShare(String shareId, ShareSpec spec, ActorRef<ShareReply> replyTo)
     implements UserCommand {
   public CreateShare {

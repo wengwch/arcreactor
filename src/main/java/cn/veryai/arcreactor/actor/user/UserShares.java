@@ -30,8 +30,10 @@ public final class UserShares {
     this.askTimeout = config.getDuration("ask-timeout");
     UserShareSettings settings = new UserShareSettings(config.getDuration("share.poll-interval"),
         config.getInt("share.max-poll-attempts"), config.getDuration("share.operation-timeout"));
+    UserProjectSettings projectSettings = new UserProjectSettings(config.getDuration("project.retry-delay"),
+        config.getDuration("project.operation-timeout"), config.getInt("project.max-attempts"));
     sharding.init(Entity.of(UserActor.TYPE_KEY,
-        context -> UserActor.create(context.getEntityId(), client, settings)));
+        context -> UserActor.create(context.getEntityId(), client, settings, projectSettings)));
   }
 
   public CompletionStage<ShareReply> createShare(String userId, String shareId, ShareSpec spec) {
@@ -39,12 +41,12 @@ public final class UserShares {
         replyTo -> new CreateShare(shareId, spec, replyTo), askTimeout, system.scheduler());
   }
 
-  public CompletionStage<ShareReply> getShare(String userId, String shareId) {
+  public CompletionStage<ShareReply> getShare(String userId, String regionId) {
     return AskPattern.<UserCommand, ShareReply>ask(entityRef(userId),
-        replyTo -> new GetShare(shareId, replyTo), askTimeout, system.scheduler());
+        replyTo -> new GetShare(regionId, replyTo), askTimeout, system.scheduler());
   }
 
-  private EntityRef<UserCommand> entityRef(String userId) {
+  EntityRef<UserCommand> entityRef(String userId) {
     if (userId == null || userId.isBlank()) throw new IllegalArgumentException("userId is required");
     return sharding.entityRefFor(UserActor.TYPE_KEY, userId);
   }

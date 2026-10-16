@@ -56,6 +56,8 @@ public class OpenStackClient {
       task -> Thread.ofVirtual().name("openstack-nova").start(task);
   private static final Executor SHARE_EXECUTOR =
       task -> Thread.ofVirtual().name("openstack-share").start(task);
+  private static final Executor PROJECT_EXECUTOR =
+      task -> Thread.ofVirtual().name("openstack-project").start(task);
   private static final Executor NETWORK_EXECUTOR =
       task -> Thread.ofVirtual().name("openstack-network").start(task);
 
@@ -156,29 +158,51 @@ public class OpenStackClient {
     return clusterRepo.findById(regionEntity.getClusterId());
   }
 
-  public void grantProjectAdminRole(String region, String projectId) {
-    OpenstackClusterEntity openstackCluster = getOpenstackCluster(region);
-
-    OSClient.OSClientV3 osClient = getOsAdminClient(region, projectId);
-    osClient
-        .identity()
-        .roles()
-        .grantProjectUserRole(
-            projectId, osClient.getToken().getUser().getId(), openstackCluster.getAdminRoleId());
+  public CompletionStage<Void> grantProjectAdminRole(String region, String projectId) {
+    return CompletableFuture.runAsync(() -> {
+      OpenstackClusterEntity cluster = getOpenstackCluster(region);
+      requireServerText(cluster.getAdminRoleId(), "adminRoleId");
+      // Authenticate in the existing admin project before granting access to the new project.
+      OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+      ActionResponse response = osClient.identity().roles().grantProjectUserRole(
+          projectId, osClient.getToken().getUser().getId(), cluster.getAdminRoleId());
+      if (response == null || !response.isSuccess()) {
+        throw new IllegalStateException("Project administrator role assignment was not confirmed");
+      }
+    }, PROJECT_EXECUTOR);
   }
 
-  public Project createProject(String region, String name) {
-    OpenstackClusterEntity openstackCluster = getOpenstackCluster(region);
-    OSClient.OSClientV3 osClient =
-        getOsAdminClient(region, openstackCluster.getAdminDefaultProjectId());
-    return osClient
-        .identity()
-        .projects()
-        .create(
-            Builders.project()
-                .domainId(openstackCluster.getAdminDefaultDomainId())
-                .name(name)
-                .build());
+  public CompletionStage<Project> createProject(String region, String name) {
+    return createProject(region, name, null);
+  }
+
+  public CompletionStage<Project> createProject(String region, String name, String operationId) {
+    return CompletableFuture.supplyAsync(() -> {
+      OpenstackClusterEntity cluster = getOpenstackCluster(region);
+      OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+      return osClient.identity().projects().create(Builders.project()
+          .domainId(cluster.getAdminDefaultDomainId()).name(name).enabled(true)
+          .description(operationId == null ? null : projectOperationMarker(operationId)).build());
+    }, PROJECT_EXECUTOR);
+  }
+
+  public CompletionStage<Project> findProjectByOperationId(String region, String name, String operationId) {
+    return CompletableFuture.supplyAsync(() -> {
+      requireServerText(operationId, "operationId");
+      OpenstackClusterEntity cluster = getOpenstackCluster(region);
+      OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+      Project project = osClient.identity().projects().getByName(name, cluster.getAdminDefaultDomainId());
+      if (project == null) return null;
+      if (!name.equals(project.getName()) || !cluster.getAdminDefaultDomainId().equals(project.getDomainId())
+          || !projectOperationMarker(operationId).equals(project.getDescription())) {
+        throw new OpenStackOperationException("Project name belongs to another creation operation", null);
+      }
+      return project;
+    }, PROJECT_EXECUTOR);
+  }
+
+  private static String projectOperationMarker(String operationId) {
+    return "arcreactor:user-project:" + operationId;
   }
 
   public void updateProject(String region, String projectId, String name) {

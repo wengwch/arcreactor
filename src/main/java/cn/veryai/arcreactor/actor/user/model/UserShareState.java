@@ -23,6 +23,10 @@ public record UserShareState(
     return new UserShareState(shareId, spec, Phase.CREATING, null, null, null, null, null, 0, 0, null);
   }
 
+  public String regionId() {
+    return spec.regionId();
+  }
+
   public boolean terminal() {
     return phase == Phase.READY || phase == Phase.FAILED;
   }

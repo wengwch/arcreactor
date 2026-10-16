@@ -4,7 +4,7 @@ import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import java.io.Serializable;
 import java.util.Objects;
 
-/** The same userId/shareId must be used by every instance sharing this resource. */
+/** Instances with the same userId and spec.regionId share one resource with matching specs. */
 public record ShareRequirement(String userId, String shareId, ShareSpec spec) implements Serializable {
   public ShareRequirement {
     if (userId == null || userId.isBlank()) throw new IllegalArgumentException("userId is required");

@@ -281,7 +281,7 @@ public final class InstanceWorkflowActor
         ShareRequirement required = state.spec().share();
         UserShareState share = reply.share();
         if (share == null || share.phase() != UserShareState.Phase.READY
-            || !required.shareId().equals(share.shareId()) || !required.spec().equals(share.spec())
+            || !required.spec().equals(share.spec())
             || !hasText(share.osShareId()) || !hasText(share.osExportLocationId())
             || !hasText(share.exportLocationPath()) || !hasText(share.osGrantAccessId())
             || !hasText(share.accessKey())) {
@@ -361,7 +361,7 @@ public final class InstanceWorkflowActor
     try {
       request = submission
           ? userShares.createShare(required.userId(), required.shareId(), required.spec())
-          : userShares.getShare(required.userId(), required.shareId());
+          : userShares.getShare(required.userId(), required.spec().regionId());
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
