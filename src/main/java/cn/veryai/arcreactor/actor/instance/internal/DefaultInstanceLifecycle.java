@@ -26,7 +26,8 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
     public CompletionStage<Submission> create(CreateRequest request) {
         InstanceSpec spec = new InstanceSpec(request.clusterId(), request.projectId(), request.region(),
                 request.name(), request.imageId(), request.flavorId(), request.vcpus(), request.memoryMb(),
-                request.gpuCount(), request.metadata(), request.share(), request.forwarding());
+                request.gpuCount(), request.metadata(), request.share(), request.forwarding(), request.network(),
+                request.projectName());
         return AskPattern.<WorkflowCommand, InstanceReply>ask(
                         entityRef(request.instanceId()),
                         replyTo -> new CreateInstance(request.requestId(), request.instanceId(), spec, replyTo),
@@ -58,6 +59,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
                 state.spec() == null || state.spec().share() == null ? null : state.spec().share().shareId(),
                 state.preparedShare() == null ? null : state.preparedShare().osShareId(),
                 state.preparedForwarding() == null ? null : state.preparedForwarding().floatingIp(),
-                state.preparedForwarding() == null ? 0 : state.preparedForwarding().externalPort());
+                state.preparedForwarding() == null ? 0 : state.preparedForwarding().externalPort(),
+                state.networkPreparation() == null ? null : state.networkPreparation().resources(), state.projectId());
     }
 }

@@ -1,7 +1,9 @@
 package cn.veryai.arcreactor.actor.instance;
 
-import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
+import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
+import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
+import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
@@ -13,6 +15,7 @@ public interface InstanceLifecycle {
 
     CompletionStage<View> get(String instanceId);
 
+    /** Project IDs can be omitted. New projects use projectName or the share's user ID; existing projects are reused. */
     record CreateRequest(
             String requestId,
             String instanceId,
@@ -27,10 +30,25 @@ public interface InstanceLifecycle {
             int gpuCount,
             Map<String, String> metadata,
             ShareRequirement share,
-            ForwardingRequirement forwarding) implements Serializable {
+            ForwardingRequirement forwarding,
+            NetworkRequirement network,
+            String projectName) implements Serializable {
         public CreateRequest {
             metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
             Objects.requireNonNull(share, "share");
+        }
+        public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                int gpuCount, Map<String, String> metadata, ShareRequirement share,
+                ForwardingRequirement forwarding, NetworkRequirement network) {
+            this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
+                    vcpus, memoryMb, gpuCount, metadata, share, forwarding, network, null);
+        }
+        public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                int gpuCount, Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding) {
+            this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
+                    vcpus, memoryMb, gpuCount, metadata, share, forwarding, null);
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
                 String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
@@ -59,6 +77,8 @@ public interface InstanceLifecycle {
             String shareId,
             String osShareId,
             String floatingIp,
-            int externalPort) implements Serializable {
+            int externalPort,
+            PreparedNetwork network,
+            String projectId) implements Serializable {
     }
 }

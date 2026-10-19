@@ -1,5 +1,8 @@
 package cn.veryai.arcreactor.openstack;
 
+import cn.veryai.arcreactor.actor.instance.model.NetworkPreparation;
+import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
+import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
@@ -28,6 +31,7 @@ import org.openstack4j.model.network.*;
 import org.openstack4j.model.network.SecurityGroup;
 import org.openstack4j.model.network.builder.NetworkBuilder;
 import org.openstack4j.model.network.builder.SubnetBuilder;
+import org.openstack4j.model.network.options.PortListOptions;
 import org.openstack4j.model.network.ext.NetQosPolicyBandwidthLimitRule;
 import org.openstack4j.model.network.ext.PortForwarding;
 import org.openstack4j.openstack.OSFactory;
@@ -587,6 +591,119 @@ public class OpenStackClient {
         .networking()
         .port()
         .create(Builders.port().fixedIp(null, subnetId).networkId(netId).build());
+  }
+
+  /** Lookup is always performed before creation; uncertain writes are subsequently lookup-only. */
+  public CompletionStage<PreparedNetwork> ensureInstanceNetworkStep(ServerTarget target,
+      String operationId, NetworkRequirement requirement, NetworkPreparation.Step step,
+      PreparedNetwork prepared, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        return ensureInstanceNetworkStep(target, operationId, requirement, step, prepared, allowCreate,
+            getOsAdminClient(resolveServerRegion(target), target.projectId()));
+      } catch (ResponseException error) {
+        int status = error.getStatus();
+        if (status >= 400 && status < 500 && status != 408 && status != 429) {
+          throw new OpenStackOperationException("Neutron rejected instance network preparation", error);
+        }
+        throw error;
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  private PreparedNetwork ensureInstanceNetworkStep(ServerTarget target, String operationId,
+      NetworkRequirement requirement, NetworkPreparation.Step step, PreparedNetwork prepared,
+      boolean allowCreate, OSClient.OSClientV3 client) {
+    String marker = instanceNetworkMarker(operationId, step);
+    if (step == NetworkPreparation.Step.TRUNK) {
+      List<? extends Trunk> matches = client.networking().trunk().list().stream()
+          .filter(trunk -> marker.equals(trunk.getDescription())
+              && target.projectId().equals(trunk.getTenantId())).toList();
+      if (matches.size() > 1) throw new IllegalStateException("Duplicate instance trunk marker");
+      Trunk trunk = matches.isEmpty() ? null : matches.getFirst();
+      if (trunk == null && allowCreate) {
+        NeutronTrunkSubport subport = NeutronTrunkSubport.fromTrunkSubport(NeutronTrunkSubport.builder()
+            .portId(prepared.subPortId()).segmentationType("vlan")
+            .segmentationId(requirement.segmentationId()).build());
+        trunk = client.networking().trunk().create(Builders.neutron().trunk()
+            .name(marker).description(marker).tenantId(target.projectId()).adminState(true)
+            .parentPort(prepared.parentPortId()).trunkSubports(List.of(subport)).build());
+        if (trunk == null) throw new IllegalStateException("Neutron returned no trunk");
+      }
+      if (trunk == null) return null;
+      if (!prepared.parentPortId().equals(trunk.getParentPort())
+          || trunk.getTrunkSubports() == null || trunk.getTrunkSubports().size() != 1
+          || trunk.getTrunkSubports().stream().noneMatch(sub -> prepared.subPortId().equals(sub.getPortId())
+              && "vlan".equals(sub.getSegmentationType())
+              && requirement.segmentationId() == sub.getSegmentationId())) {
+        throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
+      }
+      requireServerText(trunk.getId(), "trunkId");
+      return new PreparedNetwork(prepared.parentPortId(), prepared.parentMacAddress(),
+          prepared.parentFixedIp(), prepared.subPortId(), prepared.subFixedIp(), trunk.getId());
+    }
+    if (step == NetworkPreparation.Step.COMPLETE) return prepared;
+    boolean parent = step == NetworkPreparation.Step.PARENT_PORT;
+    String networkId = parent ? requirement.parentNetworkId() : requirement.subNetworkId();
+    String subnetId = parent ? requirement.parentSubnetId() : requirement.subSubnetId();
+    List<? extends Port> matches = client.networking().port().list(
+        PortListOptions.create().tenantId(target.projectId()).name(marker)).stream()
+        .filter(port -> marker.equals(port.getName()) && target.projectId().equals(port.getTenantId()))
+        .toList();
+    if (matches.size() > 1) throw new IllegalStateException("Duplicate instance port marker");
+    Port port = matches.isEmpty() ? null : matches.getFirst();
+    if (port == null && allowCreate) {
+      var builder = Builders.port().name(marker).tenantId(target.projectId())
+          .networkId(networkId).fixedIp(null, subnetId).adminState(true);
+      if (!parent) builder.macAddress(prepared.parentMacAddress());
+      port = client.networking().port().create(builder.build());
+      if (port == null) throw new IllegalStateException("Neutron returned no port");
+    }
+    if (port == null) return null;
+    if (!networkId.equals(port.getNetworkId()) || port.getFixedIps() == null
+        || (!parent && !prepared.parentMacAddress().equalsIgnoreCase(port.getMacAddress()))) {
+      throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
+    }
+    requireServerText(port.getId(), "portId");
+    requireServerText(port.getMacAddress(), "portMacAddress");
+    String fixedIp = port.getFixedIps().stream().filter(ip -> subnetId.equals(ip.getSubnetId()))
+        .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
+        .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
+    return parent
+        ? new PreparedNetwork(port.getId(), port.getMacAddress(), fixedIp, null, null, null)
+        : new PreparedNetwork(prepared.parentPortId(), prepared.parentMacAddress(),
+            prepared.parentFixedIp(), port.getId(), fixedIp, null);
+  }
+
+  /** Discover by operation marker as IDs may have been lost with a create response. */
+  public CompletionStage<Void> deleteInstanceNetwork(ServerTarget target, String operationId) {
+    return CompletableFuture.runAsync(() -> {
+      OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
+      String trunkMarker = instanceNetworkMarker(operationId, NetworkPreparation.Step.TRUNK);
+      for (Trunk trunk : client.networking().trunk().list()) {
+        if (!trunkMarker.equals(trunk.getDescription()) || !target.projectId().equals(trunk.getTenantId())) continue;
+        if (trunk.getTrunkSubports() != null) {
+          for (TrunkSubport sub : trunk.getTrunkSubports()) {
+            client.networking().trunk().removeTrunkSubport(trunk.getId(), sub.getPortId());
+          }
+        }
+        requireDeleteResponse(client.networking().trunk().delete(trunk.getId()));
+      }
+      for (NetworkPreparation.Step step : List.of(NetworkPreparation.Step.SUB_PORT, NetworkPreparation.Step.PARENT_PORT)) {
+        String marker = instanceNetworkMarker(operationId, step);
+        for (Port port : client.networking().port().list(
+            PortListOptions.create().tenantId(target.projectId()).name(marker))) {
+          if (marker.equals(port.getName()) && target.projectId().equals(port.getTenantId())) {
+            requireDeleteResponse(client.networking().port().delete(port.getId()));
+          }
+        }
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  private static String instanceNetworkMarker(String operationId, NetworkPreparation.Step step) {
+    return "arcreactor-" + UUID.nameUUIDFromBytes(operationId.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+        + "-" + step.name().toLowerCase(Locale.ROOT);
   }
 
   public Port createSubPort(

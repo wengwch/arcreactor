@@ -1,9 +1,12 @@
 package cn.veryai.arcreactor.actor.user;
 
+import cn.veryai.arcreactor.actor.user.command.CreateProject;
 import cn.veryai.arcreactor.actor.user.command.CreateShare;
+import cn.veryai.arcreactor.actor.user.command.GetProject;
 import cn.veryai.arcreactor.actor.user.command.GetShare;
 import cn.veryai.arcreactor.actor.user.command.UserCommand;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
+import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import com.typesafe.config.Config;
@@ -16,14 +19,14 @@ import org.apache.pekko.cluster.sharding.typed.javadsl.Entity;
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
 import org.springframework.stereotype.Service;
 
-/** Submission is acknowledged immediately; query until READY before generating cloud-init. */
+/** Submits project and share requests to UserActor; query until READY before using the resources. */
 @Service
-public final class UserShares {
+public final class UserResources {
   private final ActorSystem<?> system;
   private final ClusterSharding sharding;
   private final Duration askTimeout;
 
-  public UserShares(ActorSystem<?> system, OpenStackClient client) {
+  public UserResources(ActorSystem<?> system, OpenStackClient client) {
     this.system = system;
     this.sharding = ClusterSharding.get(system);
     Config config = system.settings().config().getConfig("cloud.user");
@@ -46,7 +49,17 @@ public final class UserShares {
         replyTo -> new GetShare(regionId, replyTo), askTimeout, system.scheduler());
   }
 
-  EntityRef<UserCommand> entityRef(String userId) {
+  public CompletionStage<ProjectReply> createProject(String userId, String regionId, String name) {
+    return AskPattern.<UserCommand, ProjectReply>ask(entityRef(userId),
+        replyTo -> new CreateProject(regionId, name, replyTo), askTimeout, system.scheduler());
+  }
+
+  public CompletionStage<ProjectReply> getProject(String userId, String regionId) {
+    return AskPattern.<UserCommand, ProjectReply>ask(entityRef(userId),
+        replyTo -> new GetProject(regionId, replyTo), askTimeout, system.scheduler());
+  }
+
+  private EntityRef<UserCommand> entityRef(String userId) {
     if (userId == null || userId.isBlank()) throw new IllegalArgumentException("userId is required");
     return sharding.entityRefFor(UserActor.TYPE_KEY, userId);
   }

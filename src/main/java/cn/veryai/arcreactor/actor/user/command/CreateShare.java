@@ -13,6 +13,9 @@ public record CreateShare(String shareId, ShareSpec spec, ActorRef<ShareReply> r
       throw new IllegalArgumentException("shareId is required");
     }
     Objects.requireNonNull(spec, "spec");
+    if (spec.osProjectId() == null || spec.osProjectId().isBlank()) {
+      throw new IllegalArgumentException("osProjectId must be resolved before creating a share");
+    }
     Objects.requireNonNull(replyTo, "replyTo");
   }
 }
