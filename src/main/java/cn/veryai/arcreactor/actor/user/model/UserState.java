@@ -5,9 +5,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/** Both resource maps are indexed by regionId within this user. */
+/** Resource maps are indexed by regionId within this user. */
 public record UserState(Map<String, UserShareState> shares,
-    Map<String, UserProjectState> projects) implements Serializable {
+    Map<String, UserProjectState> projects,
+    Map<String, UserNetworkState> networks) implements Serializable {
   public UserState {
     // Reindex snapshots written when shares were keyed by logical shareId.
     Map<String, UserShareState> sharesByRegion = new HashMap<>();
@@ -20,9 +21,14 @@ public record UserState(Map<String, UserShareState> shares,
     shares = Map.copyOf(sharesByRegion);
     // Snapshots written before project support have no projects field.
     projects = Map.copyOf(Objects.requireNonNullElse(projects, Map.of()));
+    // Snapshots written before network support have no networks field.
+    networks = Map.copyOf(Objects.requireNonNullElse(networks, Map.of()));
   }
 
-  public UserState(Map<String, UserShareState> shares) { this(shares, Map.of()); }
+  public UserState(Map<String, UserShareState> shares) { this(shares, Map.of(), Map.of()); }
+  public UserState(Map<String, UserShareState> shares, Map<String, UserProjectState> projects) {
+    this(shares, projects, Map.of());
+  }
 
   public UserState updated(UserShareState share) {
     UserShareState existing = shares.get(share.regionId());
@@ -31,12 +37,18 @@ public record UserState(Map<String, UserShareState> shares,
     }
     Map<String, UserShareState> next = new HashMap<>(shares);
     next.put(share.regionId(), share);
-    return new UserState(next, projects);
+    return new UserState(next, projects, networks);
   }
 
   public UserState updated(UserProjectState project) {
     Map<String, UserProjectState> next = new HashMap<>(projects);
     next.put(project.regionId(), project);
-    return new UserState(shares, next);
+    return new UserState(shares, next, networks);
+  }
+
+  public UserState updated(UserNetworkState network) {
+    Map<String, UserNetworkState> next = new HashMap<>(networks);
+    next.put(network.regionId(), network);
+    return new UserState(shares, projects, next);
   }
 }

@@ -511,7 +511,8 @@ public class OpenStackClient {
     return client
         .networking()
         .router()
-        .create(Builders.router().name(name).adminStateUp(true).externalGateway(extNetId).build());
+        .create(Builders.router().name(name).tenantId(projectId)
+            .adminStateUp(true).externalGateway(extNetId).build());
   }
 
   public Network createNetwork(String regionId, String projectId, String name) {
@@ -519,7 +520,8 @@ public class OpenStackClient {
     return client
         .networking()
         .network()
-        .create(Builders.network().name(name).adminStateUp(true).build());
+        .create(Builders.network().name(name).tenantId(projectId).adminStateUp(true)
+            .isShared(false).isRouterExternal(false).build());
   }
 
   public Network createNetwork(
@@ -561,6 +563,7 @@ public class OpenStackClient {
     SubnetBuilder subnetBuilder =
         Builders.subnet()
             .name(name)
+            .tenantId(projectId)
             .ipVersion(IPVersionType.V4)
             .cidr(ipv4CIDR)
             .networkId(networkId)
@@ -583,6 +586,26 @@ public class OpenStackClient {
         .networking()
         .router()
         .attachInterface(routerId, AttachInterfaceType.SUBNET, subnetId);
+  }
+
+  public Network getNetwork(String regionId, String projectId, String networkId) {
+    return getOsAdminClient(regionId, projectId).networking().network().get(networkId);
+  }
+
+  public List<? extends Network> listNetworks(String regionId, String projectId) {
+    return getOsAdminClient(regionId, projectId).networking().network().list();
+  }
+
+  public List<? extends Subnet> listSubnets(String regionId, String projectId) {
+    return getOsAdminClient(regionId, projectId).networking().subnet().list();
+  }
+
+  public List<? extends Router> listRouters(String regionId, String projectId) {
+    return getOsAdminClient(regionId, projectId).networking().router().list();
+  }
+
+  public List<? extends Port> listPorts(String regionId, String projectId) {
+    return getOsAdminClient(regionId, projectId).networking().port().list();
   }
 
   public Port createPort(String region, String projectId, String netId, String subnetId) {
