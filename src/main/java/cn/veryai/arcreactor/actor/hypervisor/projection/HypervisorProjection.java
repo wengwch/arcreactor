@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.actor.hypervisor.projection;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorActor;
 import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorEvent;
 import cn.veryai.arcreactor.actor.hypervisor.projection.repository.JdbcHypervisorReadRepository;
+import cn.veryai.arcreactor.actor.projection.EventLoadingSourceProvider;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.cluster.sharding.typed.javadsl.ShardedDaemonProcess;

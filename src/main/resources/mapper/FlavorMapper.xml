@@ -9,6 +9,7 @@
         <result column="ram" property="ram"/>
         <result column="disk" property="disk"/>
         <result column="gpus" property="gpus"/>
+        <result column="vram" property="vram"/>
         <result column="hypervisor_type" property="hypervisorType"/>
         <result column="cpu_type" property="cpuType"/>
         <result column="ram_type" property="ramType"/>
@@ -19,11 +20,11 @@
         <result column="os_flavor_id" property="osFlavorId"/>
     </resultMap>
 
-    <sql id="columns">id, name, description, vcpus, ram, disk, gpus, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, region_id, enabled, os_flavor_id</sql>
+    <sql id="columns">id, name, description, vcpus, ram, disk, gpus, vram, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, region_id, enabled, os_flavor_id</sql>
 
     <insert id="insert">
         INSERT INTO flavor (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{description}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{regionId}, #{enabled}, #{osFlavorId})
+        VALUES (#{id}, #{name}, #{description}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{vram}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{regionId}, #{enabled}, #{osFlavorId})
     </insert>
 
     <select id="findById" resultMap="entity">
@@ -47,6 +48,7 @@
             ram = #{ram},
             disk = #{disk},
             gpus = #{gpus},
+            vram = #{vram},
             hypervisor_type = #{hypervisorType},
             cpu_type = #{cpuType},
             ram_type = #{ramType},

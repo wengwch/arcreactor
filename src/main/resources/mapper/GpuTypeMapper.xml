@@ -10,13 +10,14 @@
         <result column="product_code" property="productCode"/>
         <result column="description" property="description"/>
         <result column="vram" property="vram"/>
+        <result column="pci_passthrough_alias" property="pciPassthroughAlias"/>
     </resultMap>
 
-    <sql id="columns">id, name, vendor_name, vendor_code, product_name, product_code, description, vram</sql>
+    <sql id="columns">id, name, vendor_name, vendor_code, product_name, product_code, description, vram, pci_passthrough_alias</sql>
 
     <insert id="insert">
         INSERT INTO gpu_type (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{vendorName}, #{vendorCode}, #{productName}, #{productCode}, #{description}, #{vram})
+        VALUES (#{id}, #{name}, #{vendorName}, #{vendorCode}, #{productName}, #{productCode}, #{description}, #{vram}, #{pciPassthroughAlias})
     </insert>
 
     <select id="findById" resultMap="entity">
@@ -35,7 +36,8 @@
             product_name = #{productName},
             product_code = #{productCode},
             description = #{description},
-            vram = #{vram}
+            vram = #{vram},
+            pci_passthrough_alias = #{pciPassthroughAlias}
         WHERE id = #{id}
     </update>
 

@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS hypervisor_type (
   disk_type VARCHAR(255),
   gpu_type VARCHAR(255),
   gpu_total INT NOT NULL DEFAULT 0,
+  numa_node_cnt INT NOT NULL DEFAULT 2,
+  socket_cnt INT NOT NULL DEFAULT 2,
   vcpu_unit INT NOT NULL DEFAULT 0,
   ram_unit INT NOT NULL DEFAULT 0,
   disk_unit INT NOT NULL DEFAULT 0,

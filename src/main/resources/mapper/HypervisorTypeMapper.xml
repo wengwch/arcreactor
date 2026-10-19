@@ -12,6 +12,8 @@
         <result column="disk_type" property="diskType"/>
         <result column="gpu_type" property="gpuType"/>
         <result column="gpu_total" property="gpuTotal"/>
+        <result column="numa_node_cnt" property="numaNodeCnt"/>
+        <result column="socket_cnt" property="socketCnt"/>
         <result column="vcpu_unit" property="vcpuUnit"/>
         <result column="ram_unit" property="ramUnit"/>
         <result column="disk_unit" property="diskUnit"/>
@@ -27,11 +29,11 @@
         <result column="discount_monthly_pay_price" property="discountMonthlyPayPrice"/>
     </resultMap>
 
-    <sql id="columns">id, name, description, vcpu_spec, gpu_spec, cpu_type, ram_type, disk_type, gpu_type, gpu_total, vcpu_unit, ram_unit, disk_unit, enabled, privately, original_hourly_pay_price, original_daily_pay_price, original_weekly_pay_price, original_monthly_pay_price, discount_hourly_pay_price, discount_daily_pay_price, discount_weekly_pay_price, discount_monthly_pay_price</sql>
+    <sql id="columns">id, name, description, vcpu_spec, gpu_spec, cpu_type, ram_type, disk_type, gpu_type, gpu_total, numa_node_cnt, socket_cnt, vcpu_unit, ram_unit, disk_unit, enabled, privately, original_hourly_pay_price, original_daily_pay_price, original_weekly_pay_price, original_monthly_pay_price, discount_hourly_pay_price, discount_daily_pay_price, discount_weekly_pay_price, discount_monthly_pay_price</sql>
 
     <insert id="insert">
         INSERT INTO hypervisor_type (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{description}, #{vcpuSpec}, #{gpuSpec}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{gpuTotal}, #{vcpuUnit}, #{ramUnit}, #{diskUnit}, #{enabled}, #{privately}, #{originalHourlyPayPrice}, #{originalDailyPayPrice}, #{originalWeeklyPayPrice}, #{originalMonthlyPayPrice}, #{discountHourlyPayPrice}, #{discountDailyPayPrice}, #{discountWeeklyPayPrice}, #{discountMonthlyPayPrice})
+        VALUES (#{id}, #{name}, #{description}, #{vcpuSpec}, #{gpuSpec}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{gpuTotal}, #{numaNodeCnt}, #{socketCnt}, #{vcpuUnit}, #{ramUnit}, #{diskUnit}, #{enabled}, #{privately}, #{originalHourlyPayPrice}, #{originalDailyPayPrice}, #{originalWeeklyPayPrice}, #{originalMonthlyPayPrice}, #{discountHourlyPayPrice}, #{discountDailyPayPrice}, #{discountWeeklyPayPrice}, #{discountMonthlyPayPrice})
     </insert>
 
     <select id="findById" resultMap="entity">
@@ -53,6 +55,8 @@
             disk_type = #{diskType},
             gpu_type = #{gpuType},
             gpu_total = #{gpuTotal},
+            numa_node_cnt = #{numaNodeCnt},
+            socket_cnt = #{socketCnt},
             vcpu_unit = #{vcpuUnit},
             ram_unit = #{ramUnit},
             disk_unit = #{diskUnit},

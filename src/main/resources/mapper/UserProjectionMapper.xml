@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.actor.user.projection.mybatis.UserProjectionMapper">
+    <insert id="upsertProject">
+        INSERT INTO user_region_project (user_id, region_id, project_id)
+        VALUES (#{userId}, #{regionId}, #{projectId})
+        ON DUPLICATE KEY UPDATE project_id = #{projectId}
+    </insert>
+</mapper>

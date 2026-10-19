@@ -1,4 +1,4 @@
-package cn.veryai.arcreactor.actor.hypervisor.projection;
+package cn.veryai.arcreactor.actor.projection;
 
 import org.apache.pekko.NotUsed;
 import org.apache.pekko.persistence.query.Offset;
@@ -13,11 +13,11 @@ import java.util.concurrent.CompletionStage;
 import java.util.function.Supplier;
 
 /** Loads backtracking event payloads before a synchronous JDBC handler receives them. */
-final class EventLoadingSourceProvider<Event> extends SourceProvider<Offset, EventEnvelope<Event>> {
+public final class EventLoadingSourceProvider<Event> extends SourceProvider<Offset, EventEnvelope<Event>> {
     private final SourceProvider<Offset, EventEnvelope<Event>> delegate;
     private final LoadEventQuery loadEventQuery;
 
-    EventLoadingSourceProvider(SourceProvider<Offset, EventEnvelope<Event>> delegate) {
+    public EventLoadingSourceProvider(SourceProvider<Offset, EventEnvelope<Event>> delegate) {
         if (!(delegate instanceof LoadEventQuery query)) {
             throw new IllegalArgumentException("source provider must support LoadEventQuery");
         }

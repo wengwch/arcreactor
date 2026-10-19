@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS flavor (
   ram INT NOT NULL DEFAULT 0,
   disk INT NOT NULL DEFAULT 0,
   gpus INT NOT NULL DEFAULT 0,
+  vram INT NOT NULL DEFAULT 0,
   hypervisor_type VARCHAR(255),
   cpu_type VARCHAR(255),
   ram_type VARCHAR(255),

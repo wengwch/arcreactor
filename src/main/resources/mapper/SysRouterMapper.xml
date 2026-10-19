@@ -5,19 +5,19 @@
         <id column="id" property="id"/>
         <result column="name" property="name"/>
         <result column="ext_net_id" property="extNetId"/>
+        <result column="shared_net_id" property="sharedNetId"/>
         <result column="os_router_id" property="osRouterId"/>
         <result column="os_project_id" property="osProjectId"/>
         <result column="os_ext_net_id" property="osExtNetId"/>
-        <result column="os_shared_net_subnet_id" property="osSharedNetSubnetId"/>
-        <result column="os_shared_net_port_id" property="osSharedNetPortId"/>
+        <result column="os_shared_net_id" property="osSharedNetId"/>
         <result column="region_id" property="regionId"/>
     </resultMap>
 
-    <sql id="columns">id, name, ext_net_id, os_router_id, os_project_id, os_ext_net_id, os_shared_net_subnet_id, os_shared_net_port_id, region_id</sql>
+    <sql id="columns">id, name, ext_net_id, shared_net_id, os_router_id, os_project_id, os_ext_net_id, os_shared_net_id, region_id</sql>
 
     <insert id="insert">
         INSERT INTO sys_router (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{extNetId}, #{osRouterId}, #{osProjectId}, #{osExtNetId}, #{osSharedNetSubnetId}, #{osSharedNetPortId}, #{regionId})
+        VALUES (#{id}, #{name}, #{extNetId}, #{sharedNetId}, #{osRouterId}, #{osProjectId}, #{osExtNetId}, #{osSharedNetId}, #{regionId})
     </insert>
 
     <select id="findById" resultMap="entity">
@@ -37,11 +37,11 @@
         UPDATE sys_router SET
             name = #{name},
             ext_net_id = #{extNetId},
+            shared_net_id = #{sharedNetId},
             os_router_id = #{osRouterId},
             os_project_id = #{osProjectId},
             os_ext_net_id = #{osExtNetId},
-            os_shared_net_subnet_id = #{osSharedNetSubnetId},
-            os_shared_net_port_id = #{osSharedNetPortId},
+            os_shared_net_id = #{osSharedNetId},
             region_id = #{regionId}
         WHERE id = #{id}
     </update>

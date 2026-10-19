@@ -8,6 +8,7 @@ import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
 import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
 import cn.veryai.arcreactor.actor.user.UserResources;
+import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import com.typesafe.config.Config;
@@ -84,6 +85,11 @@ public final class PekkoRuntime {
                 dataSource,
                 sqlSessionFactory,
                 actorSystem.settings().config().getInt("cloud.projection.slice-ranges"));
+        UserProjection.init(
+            actorSystem,
+            dataSource,
+            sqlSessionFactory,
+            actorSystem.settings().config().getInt("cloud.projection.slice-ranges"));
       }
     } catch (Exception ex) {
       actorSystem.terminate();
