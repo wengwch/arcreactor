@@ -12,6 +12,13 @@ spring:
       pool-name: arc-reactor-mysql
       maximum-pool-size: "${DATABASE_POOL_SIZE:10}"
       auto-commit: false
+  freemarker:
+    suffix: .ftl
+    charset: UTF-8
+    settings:
+      number_format: computer
+      template_exception_handler: rethrow
+      log_template_exceptions: false
 mybatis:
   mapper-locations: "classpath*:/mapper/**/*.xml"
   configuration:
@@ -19,6 +26,7 @@ mybatis:
     default-executor-type: reuse
 
 openstack:
+  manila-fs-name: "${MANILA_FS_NAME:}"
   enabled: "${OPENSTACK_ENABLED:false}"
   default-cluster: "${OPENSTACK_DEFAULT_CLUSTER:default}"
   token-refresh-before-expiry: "${OPENSTACK_TOKEN_REFRESH_BEFORE_EXPIRY:PT10M}"

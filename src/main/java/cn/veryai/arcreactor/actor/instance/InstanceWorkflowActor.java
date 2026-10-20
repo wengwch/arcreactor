@@ -98,6 +98,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -142,6 +143,8 @@ public final class InstanceWorkflowActor
   private static final String PROJECT_DEADLINE_TIMER = "project-preparation-deadline";
   private static final Executor NETWORK_DEPENDENCY_EXECUTOR =
       task -> Thread.ofVirtual().name("instance-network-dependency").start(task);
+  private static final Executor CLOUD_INIT_EXECUTOR =
+      task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
   private record SharedNetworkIds(String networkId, String subnetId) {}
 
   private final String instanceId;
@@ -151,6 +154,7 @@ public final class InstanceWorkflowActor
   private final OpenStackClient openStackClient;
   private final UserResources userResources;
   private final SysNetworkRepo sysNetworkRepo;
+  private final CloudInitRenderer cloudInitRenderer;
   private final FloatingIpForwardings floatingIpForwardings;
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
@@ -166,9 +170,10 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       UserResources userResources,
       SysNetworkRepo sysNetworkRepo,
+      CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings) {
-    return create(instanceId, placement, openStackClient, userResources, sysNetworkRepo,
+    return create(instanceId, placement, openStackClient, userResources, sysNetworkRepo, cloudInitRenderer,
         floatingIpForwardings, settings, Clock.systemUTC());
   }
 
@@ -178,6 +183,7 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       UserResources userResources,
       SysNetworkRepo sysNetworkRepo,
+      CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings,
       Clock clock) {
@@ -187,7 +193,7 @@ public final class InstanceWorkflowActor
                 timers ->
                     new InstanceWorkflowActor(
                         instanceId, context, timers, placement, openStackClient, userResources, sysNetworkRepo,
-                        floatingIpForwardings, settings, clock)));
+                        cloudInitRenderer, floatingIpForwardings, settings, clock)));
   }
 
   private InstanceWorkflowActor(
@@ -198,6 +204,7 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       UserResources userResources,
       SysNetworkRepo sysNetworkRepo,
+      CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings,
       Clock clock) {
@@ -209,6 +216,7 @@ public final class InstanceWorkflowActor
     this.openStackClient = Objects.requireNonNull(openStackClient);
     this.userResources = Objects.requireNonNull(userResources);
     this.sysNetworkRepo = Objects.requireNonNull(sysNetworkRepo);
+    this.cloudInitRenderer = Objects.requireNonNull(cloudInitRenderer);
     this.floatingIpForwardings = Objects.requireNonNull(floatingIpForwardings);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
@@ -290,6 +298,10 @@ public final class InstanceWorkflowActor
     }
     if (command.spec().network().userNetwork() == null) {
       command.replyTo().tell(InstanceReply.rejected("user network specification is required for subport creation"));
+      return Effect().none();
+    }
+    if (command.spec().cloudInit() == null) {
+      command.replyTo().tell(InstanceReply.rejected("cloud-init credentials and settings are required"));
       return Effect().none();
     }
     Instant now = clock.instant();
@@ -1239,6 +1251,51 @@ public final class InstanceWorkflowActor
   }
 
   private void startNovaCreate(InstanceWorkflowState state) {
+    CompletionStage<String> rendered;
+    try {
+      if (state.spec().cloudInit() == null) {
+        // Resume older persisted workflows with their original boot behavior.
+        rendered = CompletableFuture.completedFuture(null);
+      } else {
+        Map<String, Object> model = cloudInitModel(state);
+        rendered = CompletableFuture.supplyAsync(() -> cloudInitRenderer.render(model), CLOUD_INIT_EXECUTOR);
+      }
+    } catch (RuntimeException error) {
+      context.getSelf().tell(new NovaCreateFailed("Cloud-init input data is incomplete"));
+      return;
+    }
+    context.pipeToSelf(rendered.thenCompose(userData -> createNovaServer(state, userData)), (result, error) -> {
+      if (error == null) return new NovaCreateSucceeded(result.serverId());
+      Throwable cause = rootCause(error);
+      if (cause instanceof CloudInitRenderer.RenderingException) return new NovaCreateFailed(cause.getMessage());
+      return cause instanceof OpenStackOperationException
+          ? new NovaCreateFailed(cause.getMessage())
+          : new NovaCreateUnknown(state.novaOperationId(), cause.toString());
+    });
+  }
+
+  private static Map<String, Object> cloudInitModel(InstanceWorkflowState state) {
+    var cloudInit = state.spec().cloudInit();
+    PreparedShare share = Objects.requireNonNull(state.preparedShare(), "preparedShare");
+    PreparedNetwork network = Objects.requireNonNull(state.networkPreparation(), "networkPreparation").resources();
+    if (!hasText(network.trunkId()) || !hasText(network.subPortId())
+        || !hasText(network.subMacAddress()) || !hasText(network.subFixedIp())) {
+      throw new IllegalStateException("Instance ports and trunk must be ready before rendering cloud-init");
+    }
+    return Map.ofEntries(
+        Map.entry("share_access_key", share.accessKey()),
+        Map.entry("share_export_location", share.exportLocationPath()),
+        Map.entry("share_access_to", state.shareSpec().accessTo()),
+        Map.entry("segmentId", state.spec().network().segmentationId()),
+        Map.entry("macaddress", network.subMacAddress()),
+        Map.entry("ipv4", network.subFixedIp() + "/16"),
+        Map.entry("username", cloudInit.username()),
+        Map.entry("password", cloudInit.password()),
+        Map.entry("jupyter_token", cloudInit.jupyterToken()),
+        Map.entry("hostRoutes", cloudInit.hostRoutes()));
+  }
+
+  private CompletionStage<OpenStackClient.NovaServer> createNovaServer(InstanceWorkflowState state, String userData) {
     InstanceSpec spec = state.spec();
     OpenStackClient.CreateServerRequest request =
         new OpenStackClient.CreateServerRequest(
@@ -1252,16 +1309,9 @@ public final class InstanceWorkflowActor
             state.hypervisorId(),
             spec.metadata(),
             state.networkPreparation() != null ? state.networkPreparation().resources().parentPortId()
-                : spec.forwarding() == null ? null : spec.forwarding().parentPortId());
-    context.pipeToSelf(
-        openStackClient.createServer(request),
-        (result, error) -> {
-          if (error == null) return new NovaCreateSucceeded(result.serverId());
-          Throwable cause = rootCause(error);
-          return cause instanceof OpenStackOperationException
-              ? new NovaCreateFailed(cause.getMessage())
-              : new NovaCreateUnknown(state.novaOperationId(), cause.toString());
-        });
+                : spec.forwarding() == null ? null : spec.forwarding().parentPortId(),
+            userData);
+    return openStackClient.createServer(request);
   }
 
   private void startConfirm(InstanceWorkflowState state) {

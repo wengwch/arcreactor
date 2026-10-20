@@ -18,7 +18,8 @@ public record InstanceSpec(
         ShareRequirement share,
         ForwardingRequirement forwarding,
         NetworkRequirement network,
-        String projectName) implements Serializable {
+        String projectName,
+        CloudInitSpec cloudInit) implements Serializable {
     public InstanceSpec {
         requireText(clusterId, "clusterId");
         if (projectId != null) requireText(projectId, "projectId");
@@ -56,6 +57,15 @@ public record InstanceSpec(
                 && !network.userNetwork().regionId().equals(region)) {
             throw new IllegalArgumentException("user network must belong to the instance region");
         }
+    }
+
+    /** Older snapshots have no cloud-init input. New submissions require it in the actor. */
+    public InstanceSpec(String clusterId, String projectId, String region, String name,
+            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding,
+            NetworkRequirement network, String projectName) {
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+                metadata, share, forwarding, network, projectName, null);
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,

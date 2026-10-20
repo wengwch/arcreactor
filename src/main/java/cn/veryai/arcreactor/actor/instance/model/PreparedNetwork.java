@@ -8,4 +8,9 @@ public record PreparedNetwork(String parentPortId, String parentMacAddress, Stri
   public static PreparedNetwork empty() {
     return new PreparedNetwork(null, null, null, null, null, null);
   }
+
+  /** The subport is created and reconciled with the parent's MAC address. */
+  public String subMacAddress() {
+    return subPortId == null ? null : parentMacAddress;
+  }
 }

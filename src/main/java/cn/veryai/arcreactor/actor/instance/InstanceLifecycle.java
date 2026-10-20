@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.actor.instance;
 
 import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
+import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
@@ -19,6 +20,7 @@ public interface InstanceLifecycle {
      * Project IDs can be omitted. New projects use projectName or the share's user ID; existing projects are reused.
      * Network requirements must include a userNetwork specification; subport network/subnet IDs are resolved after READY.
      * Parent network/subnet IDs are resolved from the region's preset SHARED network.
+     * cloudInit supplies the SSH credentials, Jupyter token and static routes for the guest.
      */
     record CreateRequest(
             String requestId,
@@ -36,10 +38,18 @@ public interface InstanceLifecycle {
             ShareRequirement share,
             ForwardingRequirement forwarding,
             NetworkRequirement network,
-            String projectName) implements Serializable {
+            String projectName,
+            CloudInitSpec cloudInit) implements Serializable {
         public CreateRequest {
             metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
             Objects.requireNonNull(share, "share");
+        }
+        public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                int gpuCount, Map<String, String> metadata, ShareRequirement share,
+                ForwardingRequirement forwarding, NetworkRequirement network, String projectName) {
+            this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
+                    vcpus, memoryMb, gpuCount, metadata, share, forwarding, network, projectName, null);
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
                 String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,

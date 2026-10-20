@@ -43,6 +43,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -88,14 +89,27 @@ public class OpenStackClient {
       String flavorId,
       String hypervisorId,
       Map<String, String> metadata,
-      String networkPortId) implements Serializable {
+      String networkPortId,
+      String userData) implements Serializable {
     public CreateServerRequest {
       metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
     }
     public CreateServerRequest(ServerTarget target, String instanceId, String requestId,
         String operationId, String name, String imageId, String flavorId, String hypervisorId,
+        Map<String, String> metadata, String networkPortId) {
+      this(target, instanceId, requestId, operationId, name, imageId, flavorId, hypervisorId,
+          metadata, networkPortId, null);
+    }
+    public CreateServerRequest(ServerTarget target, String instanceId, String requestId,
+        String operationId, String name, String imageId, String flavorId, String hypervisorId,
         Map<String, String> metadata) {
       this(target, instanceId, requestId, operationId, name, imageId, flavorId, hypervisorId, metadata, null);
+    }
+
+    @Override
+    public String toString() {
+      return "CreateServerRequest[instanceId=" + instanceId + ", operationId=" + operationId
+          + ", userData=<redacted>]";
     }
   }
 
@@ -960,6 +974,10 @@ public class OpenStackClient {
                   .addMetadata(metadata);
           if (request.networkPortId() != null && !request.networkPortId().isBlank()) {
             builder.addNetworkPort(request.networkPortId());
+          }
+          if (request.userData() != null) {
+            builder.configDrive(true).userData(Base64.getEncoder()
+                .encodeToString(request.userData().getBytes(StandardCharsets.UTF_8)));
           }
           try {
             OSClient.OSClientV3 client = getOsAdminClient(region, request.target().projectId());
