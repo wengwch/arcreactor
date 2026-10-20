@@ -10,6 +10,8 @@ import java.util.List;
 public interface HypervisorHostMapper {
     int insert(HypervisorHostEntity entity);
 
+    int upsertFromOpenstack(HypervisorHostEntity entity);
+
     HypervisorHostEntity findById(@Param("id") String id);
 
     List<HypervisorHostEntity> findAll();

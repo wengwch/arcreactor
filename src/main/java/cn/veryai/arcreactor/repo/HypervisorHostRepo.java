@@ -17,6 +17,10 @@ public class HypervisorHostRepo {
         return mapper.insert(entity);
     }
 
+    public int upsertFromOpenstack(HypervisorHostEntity entity) {
+        return mapper.upsertFromOpenstack(entity);
+    }
+
     public HypervisorHostEntity findById(String id) {
         return mapper.findById(id);
     }

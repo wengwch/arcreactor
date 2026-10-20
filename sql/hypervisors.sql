@@ -52,5 +52,6 @@ CREATE TABLE IF NOT EXISTS hypervisor_host (
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   region_id VARCHAR(255) NOT NULL,
   PRIMARY KEY (id),
+  UNIQUE KEY uk_hypervisor_host_region_os_id (region_id, os_hypervisor_id),
   INDEX idx_hypervisor_host_region_name (region_id, name)
 ) ENGINE=InnoDB;

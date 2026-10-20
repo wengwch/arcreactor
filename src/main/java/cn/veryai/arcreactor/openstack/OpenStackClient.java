@@ -20,6 +20,7 @@ import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.common.Identifier;
 import org.openstack4j.model.compute.*;
 import org.openstack4j.model.compute.actions.RebuildOptions;
+import org.openstack4j.model.compute.ext.Hypervisor;
 import org.openstack4j.model.identity.v3.Project;
 import org.openstack4j.model.identity.v3.Token;
 import org.openstack4j.model.manila.Access;
@@ -174,6 +175,12 @@ public class OpenStackClient {
   public OpenstackClusterEntity getOpenstackCluster(String region) {
     RegionEntity regionEntity = regionRepo.findById(region);
     return clusterRepo.findById(regionEntity.getClusterId());
+  }
+
+  public List<? extends Hypervisor> listHypervisors(String region) {
+    OpenstackClusterEntity cluster = getOpenstackCluster(region);
+    return getOsAdminClient(region, cluster.getAdminDefaultProjectId())
+        .compute().hypervisors().list();
   }
 
   public CompletionStage<Void> grantProjectAdminRole(String region, String projectId) {

@@ -38,6 +38,28 @@
         SELECT <include refid="columns"/> FROM hypervisor_host WHERE id = #{id}
     </select>
 
+    <!-- Only Nova-owned fields are refreshed; local host configuration is preserved. -->
+    <insert id="upsertFromOpenstack">
+        INSERT INTO hypervisor_host (
+            id, name, hostname, ip, os_hypervisor_id, vcpus, ram, disk,
+            used_vcpus, used_ram, used_disk, status, state, enabled, region_id
+        ) VALUES (
+            #{id}, #{name}, #{hostname}, #{ip}, #{osHypervisorId}, #{vcpus}, #{ram}, #{disk},
+            #{usedVcpus}, #{usedRam}, #{usedDisk}, #{status}, #{state}, #{enabled}, #{regionId}
+        )
+        ON DUPLICATE KEY UPDATE
+            hostname = VALUES(hostname),
+            ip = VALUES(ip),
+            vcpus = VALUES(vcpus),
+            ram = VALUES(ram),
+            disk = VALUES(disk),
+            used_vcpus = VALUES(used_vcpus),
+            used_ram = VALUES(used_ram),
+            used_disk = VALUES(used_disk),
+            status = VALUES(status),
+            state = VALUES(state)
+    </insert>
+
     <select id="findAll" resultMap="entity">
         SELECT <include refid="columns"/> FROM hypervisor_host ORDER BY name, id
     </select>
