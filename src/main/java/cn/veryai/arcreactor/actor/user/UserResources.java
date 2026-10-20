@@ -38,11 +38,6 @@ public final class UserResources {
   private final ClusterSharding sharding;
   private final Duration askTimeout;
 
-  @PostConstruct
-  public void init() throws ExecutionException, InterruptedException {
-    log.info(createProject("test-user", "Test-SH-01", "test-project").toCompletableFuture().get().toString());
-  }
-
   public UserResources(ActorSystem<?> system, OpenStackClient client, SysNetworkRepo sysNetworkRepo) {
     this.system = system;
     this.sharding = ClusterSharding.get(system);

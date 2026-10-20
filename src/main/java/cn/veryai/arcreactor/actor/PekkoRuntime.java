@@ -31,18 +31,6 @@ public final class PekkoRuntime {
   @Getter private final ActorSystem<Void> actorSystem;
   private final ClusterSharding sharding;
 
-  //    @PostConstruct
-  //    public void init() {
-  //        AskPattern.<HypervisorCommand, ActionReply>ask(
-  //                        hypervisorActor("hv-01"),
-  //                        replyTo -> new DrainHypervisor(replyTo),
-  //                        Duration.ofSeconds(5),
-  //                        system.scheduler())
-  //                .handle((reply, error) -> {
-  //                    return reply;
-  //                });
-  //    }
-
   public PekkoRuntime(
       ActorSystem<Void> actorSystem,
       OpenStackClient openStackClient,
