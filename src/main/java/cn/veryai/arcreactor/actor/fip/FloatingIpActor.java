@@ -24,12 +24,13 @@ import org.apache.pekko.persistence.typed.RecoveryCompleted;
 import org.apache.pekko.persistence.typed.javadsl.*;
 import org.openstack4j.api.exceptions.ResponseException;
 
-/** One region owns allocation across all its shared IPs and shared security-rule references. */
+/** One actor owns one floating IP and its external port reservations. */
 public final class FloatingIpActor
     extends EventSourcedBehavior<FloatingIpCommand, FloatingIpEvent, FloatingIpState> {
   public static final String ENTITY_TYPE = "FloatingIp";
   public static final EntityTypeKey<FloatingIpCommand> TYPE_KEY =
       EntityTypeKey.create(FloatingIpCommand.class, ENTITY_TYPE);
+  private final FloatingIpIdentity identity;
   private final String region;
   private final ActorContext<FloatingIpCommand> context;
   private final TimerScheduler<FloatingIpCommand> timers;
@@ -48,24 +49,39 @@ public final class FloatingIpActor
   public record StepCompleted(String claimId, long generation, StepResult result,
       boolean initialWrite, boolean definitive, String failure) implements FloatingIpCommand {}
 
-  public static Behavior<FloatingIpCommand> create(String region, OpenStackClient client,
+  public static Behavior<FloatingIpCommand> awaitingIdentity(String entityId, OpenStackClient client,
       FloatingIpSettings settings) {
-    return Behaviors.setup(context -> Behaviors.withTimers(
-        timers -> new FloatingIpActor(region, context, timers, client, settings)));
+    return Behaviors.withStash(1024, stash -> Behaviors.receive(FloatingIpCommand.class)
+        .onMessage(InitializeFloatingIp.class, command -> {
+          if (!entityId.equals(command.identity().entityId())) {
+            throw new IllegalArgumentException("Floating IP identity does not match its shard key");
+          }
+          return stash.unstashAll(create(command.identity(), client, settings));
+        })
+        .onAnyMessage(command -> { stash.stash(command); return Behaviors.same(); }).build());
   }
 
-  private FloatingIpActor(String region, ActorContext<FloatingIpCommand> context,
+  public static Behavior<FloatingIpCommand> create(FloatingIpIdentity identity, OpenStackClient client,
+      FloatingIpSettings settings) {
+    return Behaviors.setup(context -> Behaviors.withTimers(
+        timers -> new FloatingIpActor(identity, context, timers, client, settings)));
+  }
+
+  private FloatingIpActor(FloatingIpIdentity identity, ActorContext<FloatingIpCommand> context,
       TimerScheduler<FloatingIpCommand> timers, OpenStackClient client, FloatingIpSettings settings) {
-    super(PersistenceId.of(ENTITY_TYPE, region));
-    if (region == null || region.isBlank()) throw new IllegalArgumentException("region is required");
-    this.region = region; this.context = context; this.timers = timers;
+    super(PersistenceId.of(ENTITY_TYPE, identity.entityId()));
+    this.identity = identity;
+    this.region = identity.regionId(); this.context = context; this.timers = timers;
     this.client = Objects.requireNonNull(client); this.settings = Objects.requireNonNull(settings);
   }
 
-  @Override public FloatingIpState emptyState() { return new FloatingIpState(Map.of(), Set.of(), Set.of()); }
+  @Override public FloatingIpState emptyState() {
+    return new FloatingIpState(Map.of(), Set.of(), Set.of(), new BitSet());
+  }
 
   @Override public CommandHandler<FloatingIpCommand, FloatingIpEvent, FloatingIpState> commandHandler() {
     return newCommandHandlerBuilder().forAnyState()
+        .onCommand(InitializeFloatingIp.class, (state, command) -> Effect().none())
         .onCommand(CreatePortForwarding.class, this::onCreate)
         .onCommand(GetPortForwarding.class, this::onGet)
         .onCommand(DeletePortForwarding.class, this::onDelete)
@@ -93,7 +109,7 @@ public final class FloatingIpActor
     boolean duplicate = state.claims().values().stream().anyMatch(claim ->
         claim.phase() != Phase.DELETED && claim.phase() != Phase.FAILED
             && claim.spec().instanceId().equals(command.spec().instanceId())
-            && claim.spec().portId().equals(command.spec().portId())
+            && claim.spec().internalPortId().equals(command.spec().internalPortId())
             && claim.spec().internalPort() == command.spec().internalPort());
     if (duplicate) {
       command.replyTo().tell(new ForwardingReply(ForwardingReply.Status.REJECTED, null,
@@ -101,7 +117,8 @@ public final class FloatingIpActor
       return Effect().none();
     }
     long order = state.claims().values().stream().mapToLong(ForwardingClaim::order).max().orElse(0) + 1;
-    ForwardingClaim claim = ForwardingClaim.requested(command.claimId(), command.spec(), order);
+    ForwardingClaim claim = new ForwardingClaim(command.claimId(), identity.floatingIpId(), command.spec(), order,
+        Phase.ALLOCATING, ForwardingResources.empty(), false, false, false, 0, 0, null);
     return Effect().persist(new ForwardingUpdated(claim)).thenRun(next -> {
       command.replyTo().tell(ForwardingReply.from(claim)); drive(next);
     });
@@ -121,7 +138,7 @@ public final class FloatingIpActor
     if (claim.phase() == Phase.DELETED || (claim.deleteRequested() && !claim.paused())) {
       command.replyTo().tell(ForwardingReply.from(claim)); return Effect().none();
     }
-    ForwardingClaim deleting = claim.requestDelete();
+    ForwardingClaim deleting = requestDelete(claim);
     return Effect().persist(new ForwardingUpdated(deleting)).thenRun(next -> {
       delayed.remove(claim.claimId()); command.replyTo().tell(ForwardingReply.from(deleting)); drive(next);
     });
@@ -137,7 +154,7 @@ public final class FloatingIpActor
     for (ForwardingClaim claim : state.claims().values()) {
       if (!claim.spec().instanceId().equals(command.instanceId()) || claim.phase() == Phase.DELETED) continue;
       complete = false;
-      if (!claim.deleteRequested() || claim.paused()) events.add(new ForwardingUpdated(claim.requestDelete()));
+      if (!claim.deleteRequested() || claim.paused()) events.add(new ForwardingUpdated(requestDelete(claim)));
     }
     boolean reply = complete;
     return Effect().persist(events).thenRun(next -> {
@@ -154,7 +171,7 @@ public final class FloatingIpActor
     if (claim == null || !claim.paused()) {
       command.replyTo().tell(reply(claim)); return Effect().none();
     }
-    ForwardingClaim resumed = claim.resume();
+    ForwardingClaim resumed = resume(claim);
     return Effect().persist(new ForwardingUpdated(resumed)).thenRun(next -> {
       delayed.remove(claim.claimId()); command.replyTo().tell(ForwardingReply.from(resumed)); drive(next);
     });
@@ -183,19 +200,19 @@ public final class FloatingIpActor
     if (activeClaim != null || claim == null || claim.terminal() || claim.paused()
         || claim.generation() != command.generation() || delayed.contains(claim.claimId())) return Effect().none();
     if (claim.attempts() >= settings.maxAttempts()) {
-      return Effect().persist(new ForwardingUpdated(claim.pause("Operation requires reconciliation")))
+      return Effect().persist(new ForwardingUpdated(pause(claim, "Operation requires reconciliation")))
           .thenRun(this::drive);
     }
     boolean allowCreate = !claim.writeStarted();
-    ForwardingClaim attempted = claim.attempted();
+    ForwardingClaim attempted = attempted(claim);
     return Effect().persist(new ForwardingUpdated(attempted))
-        .thenRun(next -> execute(next, attempted, allowCreate));
+        .thenRun(next -> execute(attempted, allowCreate));
   }
 
-  private void execute(FloatingIpState state, ForwardingClaim claim, boolean allowCreate) {
+  private void execute(ForwardingClaim claim, boolean allowCreate) {
     activeClaim = claim.claimId(); activeGeneration = claim.generation();
     CompletionStage<StepResult> operation;
-    try { operation = performStep(state, claim, allowCreate); }
+    try { operation = performStep(claim, allowCreate); }
     catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation.toCompletableFuture().orTimeout(
         settings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
@@ -205,7 +222,9 @@ public final class FloatingIpActor
       boolean definitive = cause instanceof OpenStackOperationException && cause.getCause() == null;
       if (cause instanceof ResponseException response) {
         definitive = response.getStatus() >= 400 && response.getStatus() < 500
-            && response.getStatus() != 408 && response.getStatus() != 429;
+            && response.getStatus() != 408 && response.getStatus() != 429
+            && !(response.getStatus() == 409 && (claim.phase() == Phase.ENSURING_TCP_RULE
+                || claim.phase() == Phase.ENSURING_UDP_RULE));
       }
       return new StepCompleted(claim.claimId(), claim.generation(), null, allowCreate, definitive,
           cause instanceof OpenStackOperationException && cause.getCause() == null ? cause.getMessage()
@@ -223,7 +242,7 @@ public final class FloatingIpActor
     if (command.failure() != null) {
       if (claim.phase() == Phase.ALLOCATING || (command.definitive() && !claim.deleting()
           && (!claim.writing() || command.initialWrite()))) {
-        return save(claim.cleanup(!claim.deleteRequested(), command.failure()));
+        return save(cleanup(claim, command.failure()));
       }
       delay(claim); drive(state); return Effect().none();
     }
@@ -234,29 +253,29 @@ public final class FloatingIpActor
     StepResult result = command.result();
     ForwardingClaim next = switch (claim.phase()) {
       case ALLOCATING -> {
-        int port = availablePort(state, claim, result.target().occupiedPorts());
-        yield port == 0 ? claim.cleanup(true, "Floating IP port range exhausted")
-            : claim.advance(Phase.CREATING_TCP, resources.allocated(result.target().floatingIpAddress(),
+        if (!identity.floatingIp().equals(result.target().floatingIpAddress())) {
+          yield cleanup(claim, "Floating IP address changed from the actor identity");
+        }
+        int port = availablePort(state, result.target().occupiedPorts());
+        yield port == 0 ? cleanup(claim, "Floating IP port range exhausted")
+            : advance(claim, Phase.CREATING_TCP, resources.allocated(result.target().floatingIpAddress(),
                 result.target().securityGroupId(), port));
       }
-      case CREATING_TCP -> claim.advance(Phase.CREATING_UDP, resources.forwarding(true, result.resource().id()));
-      case CREATING_UDP -> claim.advance(Phase.ENSURING_TCP_RULE, resources.forwarding(false, result.resource().id()));
-      case ENSURING_TCP_RULE -> claim.advance(Phase.ENSURING_UDP_RULE, resources.rule(true, result.resource()));
-      case ENSURING_UDP_RULE -> claim.advance(Phase.READY, resources.rule(false, result.resource()));
-      case DELETING_TCP -> claim.advance(Phase.DELETING_UDP, resources.forwarding(true, null));
-      case DELETING_UDP -> claim.advance(Phase.DELETING_TCP_RULE, resources.forwarding(false, null));
-      case DELETING_TCP_RULE -> claim.advance(Phase.DELETING_UDP_RULE, resources.rule(true, null));
+      case CREATING_TCP -> advance(claim, Phase.CREATING_UDP, resources.forwarding(true, result.resource().id()));
+      case CREATING_UDP -> advance(claim, Phase.ENSURING_TCP_RULE, resources.forwarding(false, result.resource().id()));
+      case ENSURING_TCP_RULE -> advance(claim, Phase.ENSURING_UDP_RULE, resources.rule(true, result.resource()));
+      case ENSURING_UDP_RULE -> advance(claim, Phase.READY, resources.rule(false, result.resource()));
+      case DELETING_TCP -> advance(claim, Phase.DELETING_UDP, resources.forwarding(true, null));
+      case DELETING_UDP -> advance(claim, Phase.DELETING_TCP_RULE, resources.forwarding(false, null));
+      case DELETING_TCP_RULE -> advance(claim, Phase.DELETING_UDP_RULE, resources.rule(true, null));
       case DELETING_UDP_RULE -> {
-        if (claim.deleteRequested()) yield claim.advance(Phase.DELETED, ForwardingResources.empty());
-        if (claim.retryNextCandidate() && claim.candidateIndex() + 1 < claim.spec().floatingIpIds().size()) {
-          yield claim.nextCandidate();
-        }
-        yield claim.advance(Phase.FAILED, ForwardingResources.empty());
+        if (claim.deleteRequested()) yield advance(claim, Phase.DELETED, ForwardingResources.empty());
+        yield advance(claim, Phase.FAILED, ForwardingResources.empty());
       }
       case READY, FAILED, DELETED -> claim;
     };
     if (next.deleteRequested() && !next.deleting() && next.phase() != Phase.DELETED) {
-      next = next.cleanup(false, next.failure());
+      next = cleanup(next, next.failure());
     }
     return save(next);
   }
@@ -270,7 +289,7 @@ public final class FloatingIpActor
     timers.startSingleTimer(claim.claimId(), new ContinueClaim(claim.claimId(), claim.generation()), settings.retryDelay());
   }
 
-  private CompletionStage<StepResult> performStep(FloatingIpState state, ForwardingClaim claim, boolean allowCreate) {
+  private CompletionStage<StepResult> performStep(ForwardingClaim claim, boolean allowCreate) {
     ForwardingSpec spec = claim.spec(); ForwardingResources r = claim.resources();
     NetProtocol protocol = switch (claim.phase()) {
       case CREATING_UDP, ENSURING_UDP_RULE, DELETING_UDP, DELETING_UDP_RULE -> NetProtocol.UDP;
@@ -278,50 +297,62 @@ public final class FloatingIpActor
     };
     return switch (claim.phase()) {
       case ALLOCATING -> client.prepareForwardingTarget(region, spec.projectId(), claim.floatingIpId(),
-          spec.portId(), spec.fixedIp(), spec.securityGroupId()).thenApply(target -> new StepResult(target, null, false));
+          spec.internalPortId(), spec.fixedIp(), spec.securityGroupId()).thenApply(target -> new StepResult(target, null, false));
       case CREATING_TCP, CREATING_UDP -> client.ensurePortForwarding(region, claim.floatingIpId(),
-          r.externalPort(), spec.fixedIp(), spec.internalPort(), spec.portId(), protocol,
+          r.externalPort(), spec.fixedIp(), spec.internalPort(), spec.internalPortId(), protocol,
           forwardingMarker(claim, protocol), allowCreate).thenApply(resource -> new StepResult(null, resource, resource == null));
       case ENSURING_TCP_RULE, ENSURING_UDP_RULE -> client.ensureForwardingSecurityRule(region, spec.projectId(),
           r.securityGroupId(), spec.internalPort(), protocol, securityMarker(claim, protocol), allowCreate)
-          .thenApply(resource -> new StepResult(null, resource, resource == null));
+          .thenApply(resource -> new StepResult(null, resource == null ? null
+              : new ManagedNetworkResource(resource.id(), false), resource == null));
       case DELETING_TCP, DELETING_UDP -> client.deleteManagedPortForwarding(region, claim.floatingIpId(),
           protocol == NetProtocol.TCP ? r.tcpForwardingId() : r.udpForwardingId(), forwardingMarker(claim, protocol))
           .thenApply(done -> new StepResult(null, null, !done));
-      case DELETING_TCP_RULE, DELETING_UDP_RULE -> {
-        boolean owned = protocol == NetProtocol.TCP ? r.tcpRuleOwned() : r.udpRuleOwned();
-        String id = protocol == NetProtocol.TCP ? r.tcpRuleId() : r.udpRuleId();
-        if (!owned || id == null || referencedByOtherClaim(state, claim, protocol, id)) {
-          yield CompletableFuture.completedFuture(StepResult.done());
-        }
-        yield client.deleteManagedSecurityRule(region, spec.projectId(), id, securityMarker(claim, protocol))
-            .thenApply(done -> new StepResult(null, null, !done));
-      }
+      // Security rules are shared across IP actors. Keep them as shared port policy; deleting a
+      // forwarding must never revoke another IP actor's access to the same internal service.
+      case DELETING_TCP_RULE, DELETING_UDP_RULE -> CompletableFuture.completedFuture(StepResult.done());
       case READY, FAILED, DELETED -> CompletableFuture.completedFuture(StepResult.done());
     };
   }
 
-  private int availablePort(FloatingIpState state, ForwardingClaim claim, Set<Integer> remoteOccupied) {
-    Set<Integer> occupied = new HashSet<>(remoteOccupied);
-    state.claims().values().stream().filter(other -> !other.claimId().equals(claim.claimId())
-        && other.floatingIpId().equals(claim.floatingIpId()) && other.resources().externalPort() > 0)
-        .forEach(other -> occupied.add(other.resources().externalPort()));
-    for (int port = settings.portRangeStart(); port <= settings.portRangeEnd(); port++) {
-      if (!occupied.contains(port)) return port;
+  private static int availablePort(FloatingIpState state, Set<Integer> remoteOccupied) {
+    BitSet occupied = state.usedPorts();
+    for (int port : remoteOccupied) {
+      if (port >= FloatingIpSettings.FIRST_PORT && port <= FloatingIpSettings.LAST_PORT) {
+        occupied.set(port - FloatingIpSettings.FIRST_PORT);
+      }
     }
-    return 0;
+    int index = occupied.nextClearBit(0);
+    return index > FloatingIpSettings.LAST_PORT - FloatingIpSettings.FIRST_PORT
+        ? 0 : FloatingIpSettings.FIRST_PORT + index;
   }
 
-  private boolean referencedByOtherClaim(FloatingIpState state, ForwardingClaim claim,
-      NetProtocol protocol, String ruleId) {
-    return state.claims().values().stream().anyMatch(other -> !other.claimId().equals(claim.claimId())
-        && other.phase() != Phase.DELETED && other.phase() != Phase.FAILED
-        && other.spec().projectId().equals(claim.spec().projectId())
-        && other.spec().internalPort() == claim.spec().internalPort()
-        && Objects.equals(other.resources().securityGroupId(), claim.resources().securityGroupId())
-        && (ruleId.equals(protocol == NetProtocol.TCP ? other.resources().tcpRuleId() : other.resources().udpRuleId())
-            || (other.writeStarted() && other.phase() == (protocol == NetProtocol.TCP
-                ? Phase.ENSURING_TCP_RULE : Phase.ENSURING_UDP_RULE))));
+  private static ForwardingClaim copy(ForwardingClaim claim, Phase phase, ForwardingResources resources,
+      boolean deleteRequested, boolean writeStarted, boolean paused, int attempts, String detail) {
+    return new ForwardingClaim(claim.claimId(), claim.floatingIpId(), claim.spec(), claim.order(), phase,
+        resources, deleteRequested, writeStarted, paused, attempts, claim.generation() + 1, detail);
+  }
+  private static ForwardingClaim attempted(ForwardingClaim claim) {
+    return copy(claim, claim.phase(), claim.resources(), claim.deleteRequested(),
+        claim.writeStarted() || claim.writing(), false, claim.attempts() + 1, claim.failure());
+  }
+  private static ForwardingClaim advance(ForwardingClaim claim, Phase phase, ForwardingResources resources) {
+    return copy(claim, phase, resources, claim.deleteRequested(), false, false, 0,
+        phase == Phase.READY ? null : claim.failure());
+  }
+  private static ForwardingClaim cleanup(ForwardingClaim claim, String detail) {
+    return copy(claim, Phase.DELETING_TCP, claim.resources(), claim.deleteRequested(), false, false, 0, detail);
+  }
+  private static ForwardingClaim requestDelete(ForwardingClaim claim) {
+    Phase phase = claim.writing() && claim.writeStarted() ? claim.phase()
+        : claim.deleting() ? claim.phase() : Phase.DELETING_TCP;
+    return copy(claim, phase, claim.resources(), true, phase == claim.phase() && claim.writeStarted(), false, 0, claim.failure());
+  }
+  private static ForwardingClaim pause(ForwardingClaim claim, String detail) {
+    return copy(claim, claim.phase(), claim.resources(), claim.deleteRequested(), claim.writeStarted(), true, claim.attempts(), detail);
+  }
+  private static ForwardingClaim resume(ForwardingClaim claim) {
+    return copy(claim, claim.phase(), claim.resources(), claim.deleteRequested(), claim.writeStarted(), false, 0, claim.failure());
   }
 
   private String forwardingMarker(ForwardingClaim claim, NetProtocol protocol) {

@@ -401,12 +401,12 @@ public class OpenStackClient {
         }
         return new ManagedNetworkResource(rule.getId(), true);
       }
-      if (!allowCreate) return null;
       for (SecurityGroupRule rule : rules) {
         if (coversForwarding(rule, groupId, internalPort, protocol)) {
           return new ManagedNetworkResource(rule.getId(), false);
         }
       }
+      if (!allowCreate) return null;
       SecurityGroupRule created = service.create(Builders.securityGroupRule().securityGroupId(groupId)
           .protocol(protocol.name().toLowerCase(Locale.ROOT)).direction("ingress").ethertype("IPv4")
           .portRangeMin(internalPort).portRangeMax(internalPort).remoteIpPrefix("0.0.0.0/0")
@@ -458,6 +458,11 @@ public class OpenStackClient {
 
   private OSClient.OSClientV3 getOsForwardingClient(String region) {
     return getOsAdminClient(region, getOpenstackCluster(region).getAdminDefaultProjectId());
+  }
+
+  public CompletionStage<NetFloatingIP> getFloatingIp(String region, String floatingIpId) {
+    return CompletableFuture.supplyAsync(
+        () -> getOsForwardingClient(region).networking().floatingip().get(floatingIpId), NETWORK_EXECUTOR);
   }
 
   private static void requireDeleteResponse(ActionResponse response) {

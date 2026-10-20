@@ -43,6 +43,7 @@ import cn.veryai.arcreactor.actor.instance.command.UserNetworkStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
@@ -851,9 +852,11 @@ public final class InstanceWorkflowActor
         ForwardingClaim claim = reply.claim();
         if (claim == null || claim.phase() != ForwardingClaim.Phase.READY || claim.deleteRequested()
             || !forwardingClaimId(state).equals(claim.claimId()) || !forwardingSpec(state).equals(claim.spec())
+            || !forwardingFloatingIpId(state).equals(claim.floatingIpId())
             || !hasText(claim.resources().tcpForwardingId()) || !hasText(claim.resources().udpForwardingId())
             || !hasText(claim.resources().tcpRuleId()) || !hasText(claim.resources().udpRuleId())
-            || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 1) {
+            || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 10000
+            || claim.resources().externalPort() > 40000) {
           yield beginCompensation("FORWARDING_RESULT_INVALID", "Incomplete or mismatched port forwarding result");
         }
         Instant now = clock.instant();
@@ -861,7 +864,14 @@ public final class InstanceWorkflowActor
                 new SchedulingStarted(instanceId, state.requestId(), 1, now)))
             .thenRun(next -> { cancelForwardingTimers(); startScheduling(next); });
       }
-      case FAILED, REJECTED, DELETED -> beginCompensation("FORWARDING_PREPARATION_FAILED", reply.detail());
+      case FAILED, REJECTED, DELETED -> {
+        int nextCandidate = state.forwardingCandidateIndex() + 1;
+        if (nextCandidate >= state.spec().forwarding().floatingIpIds().size()) {
+          yield beginCompensation("FORWARDING_PREPARATION_FAILED", "All floating IP candidates failed: " + reply.detail());
+        }
+        yield Effect().persist(new ForwardingCandidateSelected(instanceId, nextCandidate))
+            .thenRun(this::startForwardingPreparation);
+      }
       case NOT_FOUND -> {
         if (command.submission()) {
           scheduleForwardingPoll(state, command.attempt() + 1); yield Effect().none();
@@ -887,8 +897,8 @@ public final class InstanceWorkflowActor
     forwardingRequestInFlight = true;
     CompletionStage<ForwardingReply> request;
     try {
-      request = submission ? floatingIpForwardings.create(forwardingClaimId(state), forwardingSpec(state))
-          : floatingIpForwardings.get(state.spec().region(), forwardingClaimId(state));
+      request = submission ? floatingIpForwardings.create(forwardingFloatingIpId(state), forwardingClaimId(state), forwardingSpec(state))
+          : floatingIpForwardings.get(state.spec().region(), forwardingFloatingIpId(state), forwardingClaimId(state));
     } catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(request, (reply, error) -> new ForwardingStatusCompleted(
         state.pollingGeneration(), attempt, submission, error == null ? reply : null));
@@ -899,11 +909,14 @@ public final class InstanceWorkflowActor
       PreparedNetwork network = state.networkPreparation().resources();
       var required = state.spec().forwarding();
       return new ForwardingSpec(instanceId, state.spec().share().userId(), state.spec().region(),
-          state.projectId(), network.subPortId(), network.subFixedIp(), required.internalPort(),
-          required.securityGroupId(), required.floatingIpIds());
+          state.projectId(), network.parentPortId(), network.parentFixedIp(), required.internalPort(),
+          required.securityGroupId());
     }
     return state.spec().forwarding().toSpec(instanceId, state.spec().share().userId(),
         state.spec().region(), state.projectId());
+  }
+  private static String forwardingFloatingIpId(InstanceWorkflowState state) {
+    return state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
   }
   private static String forwardingClaimId(InstanceWorkflowState state) {
     return "fip:" + state.instanceId() + ":" + state.requestId();
@@ -1337,7 +1350,7 @@ public final class InstanceWorkflowActor
     CompletionStage<Boolean> forwardingCleanup = delete.thenCompose(deleted -> {
       if (!deleted) return CompletableFuture.completedFuture(false);
       return state.spec().forwarding() == null ? CompletableFuture.completedFuture(true)
-          : floatingIpForwardings.deleteInstance(state.spec().region(), instanceId)
+          : floatingIpForwardings.deleteInstance(state.spec().region(), state.spec().forwarding().floatingIpIds(), instanceId)
               .handle((done, error) -> error == null && Boolean.TRUE.equals(done));
     });
     CompletionStage<Boolean> networkCleanup = forwardingCleanup.thenCompose(deleted -> {
@@ -1445,6 +1458,7 @@ public final class InstanceWorkflowActor
         .onEvent(NetworkCreationRequested.class, (state, event) -> state.networkRequested())
         .onEvent(NetworkResourcePrepared.class, this::applyNetworkResourcePrepared)
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding(event.deadline()))
+        .onEvent(ForwardingCandidateSelected.class, (state, event) -> state.forwardingCandidateSelected(event.candidateIndex()))
         .onEvent(ForwardingStatusCheckStarted.class, (state, event) -> state.dependencyCheckStarted())
         .onEvent(ForwardingPrepared.class, (state, event) -> state.forwardingPrepared(event.forwarding()))
         .onEvent(SchedulingStarted.class, (state, event) -> state.scheduling(event.attempt()))

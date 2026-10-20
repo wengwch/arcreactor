@@ -27,12 +27,13 @@ public record InstanceWorkflowState(
         Instant forwardingPreparationDeadline,
         PreparedForwarding preparedForwarding,
         NetworkPreparation networkPreparation,
-        ProjectPreparation projectPreparation) implements Serializable {
+        ProjectPreparation projectPreparation,
+        int forwardingCandidateIndex) implements Serializable {
 
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, null, 0, 0, null, null, 0, null, null, null, null, null, null);
+                null, null, null, null, null, 0, 0, null, null, 0, null, null, null, null, null, null, 0);
     }
 
     public InstanceWorkflowState preparingProject(Instant deadline) {
@@ -48,7 +49,7 @@ public record InstanceWorkflowState(
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
                 sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, preparedForwarding,
-                networkPreparation, preparation);
+                networkPreparation, preparation, forwardingCandidateIndex);
     }
 
     public String projectId() {
@@ -65,7 +66,7 @@ public record InstanceWorkflowState(
                 hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration + 1,
                 schedulingAttempts, failureCode, failureMessage, version + 1, deadline, null,
-                forwardingPreparationDeadline, preparedForwarding, networkPreparation, projectPreparation);
+                forwardingPreparationDeadline, preparedForwarding, networkPreparation, projectPreparation, forwardingCandidateIndex);
     }
 
     public InstanceWorkflowState dependencyCheckStarted() {
@@ -79,21 +80,29 @@ public record InstanceWorkflowState(
                 reservationId, novaOperationId, novaServerId, novaStatus, provisioningStartedAt,
                 provisioningDeadline, pollingGeneration, schedulingAttempts, failureCode,
                 failureMessage, version + 1, sharePreparationDeadline, share,
-                forwardingPreparationDeadline, preparedForwarding, networkPreparation, projectPreparation);
+                forwardingPreparationDeadline, preparedForwarding, networkPreparation, projectPreparation, forwardingCandidateIndex);
     }
 
     public InstanceWorkflowState preparingForwarding(Instant deadline) {
         return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_FORWARDING, spec,
                 hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration + 1, schedulingAttempts,
-                failureCode, failureMessage, version + 1, sharePreparationDeadline, preparedShare, deadline, null, networkPreparation, projectPreparation);
+                failureCode, failureMessage, version + 1, sharePreparationDeadline, preparedShare, deadline, null, networkPreparation, projectPreparation, 0);
     }
 
     public InstanceWorkflowState forwardingPrepared(PreparedForwarding forwarding) {
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, failureCode, failureMessage, version + 1,
-                sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, forwarding, networkPreparation, projectPreparation);
+                sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, forwarding, networkPreparation, projectPreparation, forwardingCandidateIndex);
+    }
+
+    public InstanceWorkflowState forwardingCandidateSelected(int candidateIndex) {
+        return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
+                novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
+                pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
+                sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, preparedForwarding,
+                networkPreparation, projectPreparation, candidateIndex);
     }
 
     public InstanceWorkflowState preparingNetwork(Instant deadline, NetworkPreparation.Step firstStep) {
@@ -113,7 +122,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, nextPhase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
-                sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, preparedForwarding, preparation, projectPreparation);
+                sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, preparedForwarding, preparation, projectPreparation, forwardingCandidateIndex);
     }
 
     public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec) {
@@ -212,6 +221,6 @@ public record InstanceWorkflowState(
                 nextHypervisorId, nextReservationId, nextOperationId, nextServerId, nextNovaStatus,
                 nextStartedAt, nextDeadline, nextGeneration, nextAttempts,
                 nextFailureCode, nextFailureMessage, version + 1, sharePreparationDeadline, preparedShare,
-                forwardingPreparationDeadline, preparedForwarding, networkPreparation, projectPreparation);
+                forwardingPreparationDeadline, preparedForwarding, networkPreparation, projectPreparation, forwardingCandidateIndex);
     }
 }

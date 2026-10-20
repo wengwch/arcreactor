@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.actor.instance.projection;
 
 import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
@@ -63,7 +64,8 @@ public final class InstanceProjectionHandler
                 || event instanceof NetworkResourcePrepared || event instanceof UserNetworkPrepared
                 || event instanceof SharedNetworkPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_NETWORK", version, timestamp);
-        } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingStatusCheckStarted
+        } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected
+                || event instanceof ForwardingStatusCheckStarted
                 || event instanceof ForwardingPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
