@@ -11,6 +11,7 @@ import cn.veryai.arcreactor.actor.user.UserResources;
 import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
+import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import com.typesafe.config.Config;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
@@ -45,6 +46,7 @@ public final class PekkoRuntime {
       ActorSystem<Void> actorSystem,
       OpenStackClient openStackClient,
       UserResources userResources,
+      SysNetworkRepo sysNetworkRepo,
       FloatingIpForwardings floatingIpForwardings,
       DataSource dataSource,
       SqlSessionFactory sqlSessionFactory,
@@ -73,7 +75,7 @@ public final class PekkoRuntime {
               context ->
                   InstanceWorkflowActor.create(
                       context.getEntityId(), hypervisorPlacement, openStackClient, userResources,
-                      floatingIpForwardings, settings)));
+                      sysNetworkRepo, floatingIpForwardings, settings)));
       if (actorSystem.settings().config().getBoolean("cloud.projection.enabled")) {
         HypervisorProjection.init(
             actorSystem,

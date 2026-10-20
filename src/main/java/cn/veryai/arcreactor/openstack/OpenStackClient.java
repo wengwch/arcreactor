@@ -592,6 +592,10 @@ public class OpenStackClient {
     return getOsAdminClient(regionId, projectId).networking().network().get(networkId);
   }
 
+  public Subnet getSubnet(String regionId, String projectId, String subnetId) {
+    return getOsAdminClient(regionId, projectId).networking().subnet().get(subnetId);
+  }
+
   public List<? extends Network> listNetworks(String regionId, String projectId) {
     return getOsAdminClient(regionId, projectId).networking().network().list();
   }

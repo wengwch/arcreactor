@@ -29,6 +29,8 @@ import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
 import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
+import cn.veryai.arcreactor.actor.instance.event.SharedNetworkPrepared;
+import cn.veryai.arcreactor.actor.instance.event.UserNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -58,7 +60,8 @@ public final class InstanceProjectionHandler
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
         } else if (event instanceof NetworkPreparationStarted || event instanceof NetworkCreationRequested
-                || event instanceof NetworkResourcePrepared) {
+                || event instanceof NetworkResourcePrepared || event instanceof UserNetworkPrepared
+                || event instanceof SharedNetworkPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_NETWORK", version, timestamp);
         } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingStatusCheckStarted
                 || event instanceof ForwardingPrepared) {

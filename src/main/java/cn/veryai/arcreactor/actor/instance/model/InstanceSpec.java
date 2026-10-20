@@ -52,6 +52,10 @@ public record InstanceSpec(
                 throw new IllegalArgumentException("share must belong to the instance region");
             }
         }
+        if (network != null && network.userNetwork() != null
+                && !network.userNetwork().regionId().equals(region)) {
+            throw new IllegalArgumentException("user network must belong to the instance region");
+        }
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,

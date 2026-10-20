@@ -96,17 +96,17 @@ public record InstanceWorkflowState(
                 sharePreparationDeadline, preparedShare, forwardingPreparationDeadline, forwarding, networkPreparation, projectPreparation);
     }
 
-    public InstanceWorkflowState preparingNetwork(Instant deadline) {
+    public InstanceWorkflowState preparingNetwork(Instant deadline, NetworkPreparation.Step firstStep) {
         return withNetwork(InstancePhase.PREPARING_NETWORK, new NetworkPreparation(deadline,
-                NetworkPreparation.Step.PARENT_PORT, false, PreparedNetwork.empty()));
+                firstStep, false, PreparedNetwork.empty()));
     }
 
     public InstanceWorkflowState networkRequested() {
         return withNetwork(phase, networkPreparation.requested());
     }
 
-    public InstanceWorkflowState networkPrepared(PreparedNetwork resources) {
-        return withNetwork(phase, networkPreparation.prepared(resources));
+    public InstanceWorkflowState networkPrepared(NetworkPreparation preparation) {
+        return withNetwork(phase, preparation);
     }
 
     private InstanceWorkflowState withNetwork(InstancePhase nextPhase, NetworkPreparation preparation) {

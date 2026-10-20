@@ -37,7 +37,9 @@ import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.SharePreparationTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.ShareStatusQueryFailed;
 import cn.veryai.arcreactor.actor.instance.command.ShareStatusSucceeded;
+import cn.veryai.arcreactor.actor.instance.command.SharedNetworkStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.StartCompensation;
+import cn.veryai.arcreactor.actor.instance.command.UserNetworkStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
@@ -68,21 +70,29 @@ import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
 import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
+import cn.veryai.arcreactor.actor.instance.event.SharedNetworkPrepared;
+import cn.veryai.arcreactor.actor.instance.event.UserNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.NetworkPreparation;
+import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.actor.user.UserResources;
+import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.model.UserShareState;
+import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
+import cn.veryai.arcreactor.entity.SysNetworkEntity;
+import cn.veryai.arcreactor.enums.SysNetworkType;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
+import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -93,6 +103,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -106,6 +118,9 @@ import org.apache.pekko.persistence.typed.javadsl.EventHandler;
 import org.apache.pekko.persistence.typed.javadsl.EventSourcedBehavior;
 import org.apache.pekko.persistence.typed.javadsl.RetentionCriteria;
 import org.apache.pekko.persistence.typed.javadsl.SignalHandler;
+import org.openstack4j.api.exceptions.ResponseException;
+import org.openstack4j.model.network.Network;
+import org.openstack4j.model.network.Subnet;
 
 /** The sole Saga coordinator for one OpenStack instance. */
 public final class InstanceWorkflowActor
@@ -125,6 +140,9 @@ public final class InstanceWorkflowActor
   private static final String NETWORK_TIMER = "network-preparation";
   private static final String PROJECT_POLL_TIMER = "project-status-poll";
   private static final String PROJECT_DEADLINE_TIMER = "project-preparation-deadline";
+  private static final Executor NETWORK_DEPENDENCY_EXECUTOR =
+      task -> Thread.ofVirtual().name("instance-network-dependency").start(task);
+  private record SharedNetworkIds(String networkId, String subnetId) {}
 
   private final String instanceId;
   private final ActorContext<WorkflowCommand> context;
@@ -132,6 +150,7 @@ public final class InstanceWorkflowActor
   private final HypervisorPlacement placement;
   private final OpenStackClient openStackClient;
   private final UserResources userResources;
+  private final SysNetworkRepo sysNetworkRepo;
   private final FloatingIpForwardings floatingIpForwardings;
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
@@ -146,9 +165,11 @@ public final class InstanceWorkflowActor
       HypervisorPlacement placement,
       OpenStackClient openStackClient,
       UserResources userResources,
+      SysNetworkRepo sysNetworkRepo,
       FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings) {
-    return create(instanceId, placement, openStackClient, userResources, floatingIpForwardings, settings, Clock.systemUTC());
+    return create(instanceId, placement, openStackClient, userResources, sysNetworkRepo,
+        floatingIpForwardings, settings, Clock.systemUTC());
   }
 
   static Behavior<WorkflowCommand> create(
@@ -156,6 +177,7 @@ public final class InstanceWorkflowActor
       HypervisorPlacement placement,
       OpenStackClient openStackClient,
       UserResources userResources,
+      SysNetworkRepo sysNetworkRepo,
       FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings,
       Clock clock) {
@@ -164,7 +186,7 @@ public final class InstanceWorkflowActor
             Behaviors.withTimers(
                 timers ->
                     new InstanceWorkflowActor(
-                        instanceId, context, timers, placement, openStackClient, userResources,
+                        instanceId, context, timers, placement, openStackClient, userResources, sysNetworkRepo,
                         floatingIpForwardings, settings, clock)));
   }
 
@@ -175,6 +197,7 @@ public final class InstanceWorkflowActor
       HypervisorPlacement placement,
       OpenStackClient openStackClient,
       UserResources userResources,
+      SysNetworkRepo sysNetworkRepo,
       FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings,
       Clock clock) {
@@ -185,6 +208,7 @@ public final class InstanceWorkflowActor
     this.placement = Objects.requireNonNull(placement);
     this.openStackClient = Objects.requireNonNull(openStackClient);
     this.userResources = Objects.requireNonNull(userResources);
+    this.sysNetworkRepo = Objects.requireNonNull(sysNetworkRepo);
     this.floatingIpForwardings = Objects.requireNonNull(floatingIpForwardings);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
@@ -206,6 +230,8 @@ public final class InstanceWorkflowActor
         .onCommand(ProjectStatusCompleted.class, this::onProjectStatusCompleted)
         .onCommand(ProjectPreparationTimedOut.class, this::onProjectPreparationTimedOut)
         .onCommand(CheckNetwork.class, this::onCheckNetwork)
+        .onCommand(UserNetworkStatusCompleted.class, this::onUserNetworkStatusCompleted)
+        .onCommand(SharedNetworkStatusCompleted.class, this::onSharedNetworkStatusCompleted)
         .onCommand(NetworkStepCompleted.class, this::onNetworkStepCompleted)
         .onCommand(CheckShareStatus.class, this::onCheckShareStatus)
         .onCommand(ShareStatusSucceeded.class, this::onShareStatusSucceeded)
@@ -260,6 +286,10 @@ public final class InstanceWorkflowActor
     }
     if (command.spec().network() == null) {
       command.replyTo().tell(InstanceReply.rejected("network dependency is required"));
+      return Effect().none();
+    }
+    if (command.spec().network().userNetwork() == null) {
+      command.replyTo().tell(InstanceReply.rejected("user network specification is required for subport creation"));
       return Effect().none();
     }
     Instant now = clock.instant();
@@ -575,19 +605,152 @@ public final class InstanceWorkflowActor
       return Effect().none();
     }
     if (networkWaitExpired(state)) {
-      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out preparing instance ports and trunk");
+      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out preparing user network, instance ports and trunk");
     }
-    requestNetworkStep(state, false);
+    if (state.networkPreparation().step() == NetworkPreparation.Step.USER_NETWORK) requestUserNetwork(state, false);
+    else if (needsSharedNetwork(state)) requestSharedNetwork(state);
+    else requestNetworkStep(state, false);
     return Effect().none();
+  }
+
+  private static boolean needsSharedNetwork(InstanceWorkflowState state) {
+    NetworkPreparation preparation = state.networkPreparation();
+    // Recover older in-flight writes using their original network IDs instead of moving an existing port.
+    return preparation.step() == NetworkPreparation.Step.PARENT_PORT && !preparation.createRequested()
+        && !hasText(preparation.resources().parentPortId())
+        && (!hasText(preparation.sharedNetworkId()) || !hasText(preparation.sharedSubnetId()));
+  }
+
+  private void requestSharedNetwork(InstanceWorkflowState state) {
+    networkRequestInFlight = true;
+    scheduleNetworkPoll(state);
+    long remainingMillis = Math.max(1,
+        Duration.between(clock.instant(), state.networkPreparation().deadline()).toMillis());
+    CompletableFuture<SharedNetworkIds> request = CompletableFuture.supplyAsync(
+        () -> resolveSharedNetwork(state.spec().region(), state.projectId()), NETWORK_DEPENDENCY_EXECUTOR);
+    context.pipeToSelf(request.orTimeout(remainingMillis, TimeUnit.MILLISECONDS), (ids, error) -> {
+      if (error == null) {
+        return new SharedNetworkStatusCompleted(state.pollingGeneration(), ids.networkId(), ids.subnetId(), false, null);
+      }
+      Throwable cause = rootCause(error);
+      boolean rejected = cause instanceof OpenStackOperationException && cause.getCause() == null;
+      if (cause instanceof ResponseException response) {
+        int status = response.getStatus();
+        rejected = status >= 400 && status < 500 && status != 408 && status != 429;
+      }
+      String detail = cause instanceof OpenStackOperationException && cause.getCause() == null
+          ? cause.getMessage() : "Preset SHARED network lookup failed: " + cause.getClass().getSimpleName();
+      return new SharedNetworkStatusCompleted(state.pollingGeneration(), null, null, rejected, detail);
+    });
+  }
+
+  private SharedNetworkIds resolveSharedNetwork(String regionId, String projectId) {
+    List<SysNetworkEntity> matches = sysNetworkRepo.findByRegionId(regionId).stream()
+        .filter(network -> network.getSysNetworkType() == SysNetworkType.SHARED).toList();
+    if (matches.size() != 1) {
+      throw new OpenStackOperationException("Exactly one preset SHARED network is required in this region", null);
+    }
+    SysNetworkEntity preset = matches.getFirst();
+    if (!preset.isShared() || !hasText(preset.getOsNetId()) || !hasText(preset.getOsSubNetId())) {
+      throw new OpenStackOperationException("Preset SHARED network must be shared with OpenStack network and subnet IDs", null);
+    }
+    Network network = openStackClient.getNetwork(regionId, projectId, preset.getOsNetId());
+    if (network == null || !network.isShared() || !preset.getOsNetId().equals(network.getId())) {
+      throw new OpenStackOperationException("Preset SHARED network is not a shared Neutron network", null);
+    }
+    Subnet subnet = openStackClient.getSubnet(regionId, projectId, preset.getOsSubNetId());
+    if (subnet == null || !preset.getOsSubNetId().equals(subnet.getId())
+        || !network.getId().equals(subnet.getNetworkId())) {
+      throw new OpenStackOperationException("Preset SHARED subnet does not belong to the configured network", null);
+    }
+    return new SharedNetworkIds(network.getId(), subnet.getId());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSharedNetworkStatusCompleted(
+      InstanceWorkflowState state, SharedNetworkStatusCompleted command) {
+    if (!matchesNetwork(state, command.generation()) || !needsSharedNetwork(state)) return Effect().none();
+    networkRequestInFlight = false;
+    if (networkWaitExpired(state)) {
+      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out resolving the preset SHARED network");
+    }
+    if (command.rejected()) return beginCompensation("SHARED_NETWORK_PREPARATION_FAILED", command.detail());
+    if (!hasText(command.networkId()) || !hasText(command.subnetId())) {
+      scheduleNetworkPoll(state);
+      return Effect().none();
+    }
+    return Effect().persist(new SharedNetworkPrepared(instanceId, command.networkId(), command.subnetId()))
+        .thenRun(this::startNetworkPreparation);
+  }
+
+  private void requestUserNetwork(InstanceWorkflowState state, boolean submission) {
+    networkRequestInFlight = true;
+    scheduleNetworkPoll(state);
+    CompletionStage<NetworkReply> request;
+    try {
+      String userId = state.spec().share().userId();
+      request = submission ? userResources.createNetwork(userId, state.spec().network().userNetwork())
+          : userResources.getNetwork(userId, state.spec().region());
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (reply, error) -> new UserNetworkStatusCompleted(
+        state.pollingGeneration(), submission, error == null ? reply : null));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUserNetworkStatusCompleted(
+      InstanceWorkflowState state, UserNetworkStatusCompleted command) {
+    if (!matchesNetwork(state, command.generation())
+        || state.networkPreparation().step() != NetworkPreparation.Step.USER_NETWORK) return Effect().none();
+    networkRequestInFlight = false;
+    if (networkWaitExpired(state)) {
+      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out waiting for the user network");
+    }
+    NetworkReply reply = command.reply();
+    if (reply == null) {
+      // A timeout can follow a successful submission; query UserActor before submitting again.
+      scheduleNetworkPoll(state);
+      return Effect().none();
+    }
+    return switch (reply.status()) {
+      case READY -> {
+        UserNetworkState network = reply.network();
+        if (!state.spec().share().userId().equals(reply.userId())
+            || !state.spec().region().equals(reply.regionId())
+            || network == null || network.phase() != UserNetworkState.Phase.READY
+            || !state.spec().network().userNetwork().equals(network.spec())
+            || !state.projectId().equals(network.projectId())
+            || !hasText(network.networkId()) || !hasText(network.subnetId())
+            || !hasText(network.routerId()) || !hasText(network.localNetworkId())
+            || !hasText(network.routerPortId())) {
+          yield beginCompensation("USER_NETWORK_RESULT_INVALID", "User network readiness result is incomplete or mismatched");
+        }
+        yield Effect().persist(new UserNetworkPrepared(instanceId, network.networkId(), network.subnetId()))
+            .thenRun(this::startNetworkPreparation);
+      }
+      case FAILED -> beginCompensation("USER_NETWORK_PREPARATION_FAILED", reply.detail());
+      case REJECTED -> beginCompensation("USER_NETWORK_PREPARATION_REJECTED", reply.detail());
+      case NOT_FOUND -> {
+        if (command.submission()) scheduleNetworkPoll(state);
+        // UserActor serializes submissions from concurrent instances for this user and region.
+        else requestUserNetwork(state, true);
+        yield Effect().none();
+      }
+      case IN_PROGRESS -> {
+        scheduleNetworkPoll(state);
+        yield Effect().none();
+      }
+    };
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onNetworkStepCompleted(
       InstanceWorkflowState state, NetworkStepCompleted command) {
-    if (!matchesNetwork(state, command.generation())) return Effect().none();
+    if (!matchesNetwork(state, command.generation())
+        || state.networkPreparation().step() == NetworkPreparation.Step.USER_NETWORK
+        || needsSharedNetwork(state)) return Effect().none();
     networkRequestInFlight = false;
     if (command.rejected()) return beginCompensation("NETWORK_PREPARATION_FAILED", command.detail());
     if (networkWaitExpired(state)) {
-      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out preparing instance ports and trunk");
+      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out preparing user network, instance ports and trunk");
     }
     if (command.resources() != null) {
       NetworkPreparation.Step step = state.networkPreparation().step();
@@ -613,7 +776,7 @@ public final class InstanceWorkflowActor
     CompletionStage<PreparedNetwork> request;
     try {
       request = openStackClient.ensureInstanceNetworkStep(target(state), networkOperationId(state),
-          state.spec().network(), state.networkPreparation().step(), state.networkPreparation().resources(), allowCreate);
+          resolvedNetworkRequirement(state), state.networkPreparation().step(), state.networkPreparation().resources(), allowCreate);
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
@@ -622,6 +785,23 @@ public final class InstanceWorkflowActor
       return new NetworkStepCompleted(state.pollingGeneration(), resources,
           cause instanceof OpenStackOperationException, cause == null ? null : cause.toString());
     });
+  }
+
+  private static NetworkRequirement resolvedNetworkRequirement(InstanceWorkflowState state) {
+    NetworkRequirement requirement = state.spec().network();
+    NetworkPreparation preparation = state.networkPreparation();
+    if (hasText(preparation.sharedNetworkId()) && hasText(preparation.sharedSubnetId())) {
+      requirement = requirement.withParentNetwork(preparation.sharedNetworkId(), preparation.sharedSubnetId());
+    } else if (!hasText(requirement.parentNetworkId()) || !hasText(requirement.parentSubnetId())
+        || (!preparation.createRequested() && !hasText(preparation.resources().parentPortId()))) {
+      throw new OpenStackOperationException("Preset SHARED network must be resolved before preparing the parent port", null);
+    }
+    if (requirement.userNetwork() == null) return requirement; // Existing workflows retain their recorded subnet IDs.
+    if (preparation.step() == NetworkPreparation.Step.USER_NETWORK
+        || !hasText(preparation.userNetworkId()) || !hasText(preparation.userSubnetId())) {
+      throw new OpenStackOperationException("User network must be READY before preparing instance ports", null);
+    }
+    return requirement.withSubNetwork(preparation.userNetworkId(), preparation.userSubnetId());
   }
 
   private void scheduleNetworkPoll(InstanceWorkflowState state) {
@@ -1201,9 +1381,19 @@ public final class InstanceWorkflowActor
         .onEvent(SharePreparationStarted.class, (state, event) -> state.preparingShare(event.deadline()))
         .onEvent(ShareStatusCheckStarted.class, (state, event) -> state.dependencyCheckStarted())
         .onEvent(SharePrepared.class, (state, event) -> state.sharePrepared(event.share()))
-        .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline()))
+        .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline(),
+            state.spec().network().userNetwork() == null
+                ? NetworkPreparation.Step.PARENT_PORT : NetworkPreparation.Step.USER_NETWORK))
+        .onEvent(UserNetworkPrepared.class, (state, event) -> state.networkPrepared(new NetworkPreparation(
+            state.networkPreparation().deadline(), NetworkPreparation.Step.PARENT_PORT, false,
+            state.networkPreparation().resources(), event.networkId(), event.subnetId(),
+            state.networkPreparation().sharedNetworkId(), state.networkPreparation().sharedSubnetId())))
+        .onEvent(SharedNetworkPrepared.class, (state, event) -> state.networkPrepared(new NetworkPreparation(
+            state.networkPreparation().deadline(), NetworkPreparation.Step.PARENT_PORT, false,
+            state.networkPreparation().resources(), state.networkPreparation().userNetworkId(),
+            state.networkPreparation().userSubnetId(), event.networkId(), event.subnetId())))
         .onEvent(NetworkCreationRequested.class, (state, event) -> state.networkRequested())
-        .onEvent(NetworkResourcePrepared.class, (state, event) -> state.networkPrepared(event.resources()))
+        .onEvent(NetworkResourcePrepared.class, this::applyNetworkResourcePrepared)
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding(event.deadline()))
         .onEvent(ForwardingStatusCheckStarted.class, (state, event) -> state.dependencyCheckStarted())
         .onEvent(ForwardingPrepared.class, (state, event) -> state.forwardingPrepared(event.forwarding()))
@@ -1238,6 +1428,19 @@ public final class InstanceWorkflowActor
             InstanceProvisioningFailed.class,
             (state, event) -> state.failed(event.failureCode(), event.failureMessage()))
         .build();
+  }
+
+  private InstanceWorkflowState applyNetworkResourcePrepared(InstanceWorkflowState state, NetworkResourcePrepared event) {
+    NetworkPreparation.Step nextStep = switch (event.step()) {
+      case PARENT_PORT -> NetworkPreparation.Step.SUB_PORT;
+      case SUB_PORT -> NetworkPreparation.Step.TRUNK;
+      case TRUNK, COMPLETE -> NetworkPreparation.Step.COMPLETE;
+      case USER_NETWORK -> throw new IllegalStateException("User network readiness requires UserNetworkPrepared");
+    };
+    NetworkPreparation preparation = state.networkPreparation();
+    return state.networkPrepared(new NetworkPreparation(preparation.deadline(), nextStep, false,
+        event.resources(), preparation.userNetworkId(), preparation.userSubnetId(),
+        preparation.sharedNetworkId(), preparation.sharedSubnetId()));
   }
 
   @Override

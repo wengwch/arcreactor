@@ -15,7 +15,11 @@ public interface InstanceLifecycle {
 
     CompletionStage<View> get(String instanceId);
 
-    /** Project IDs can be omitted. New projects use projectName or the share's user ID; existing projects are reused. */
+    /**
+     * Project IDs can be omitted. New projects use projectName or the share's user ID; existing projects are reused.
+     * Network requirements must include a userNetwork specification; subport network/subnet IDs are resolved after READY.
+     * Parent network/subnet IDs are resolved from the region's preset SHARED network.
+     */
     record CreateRequest(
             String requestId,
             String instanceId,
