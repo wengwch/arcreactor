@@ -84,7 +84,7 @@ public class DataSyncService {
 
     private HypervisorHostEntity toHost(String regionId, Hypervisor hypervisor) {
         HypervisorHostEntity host = new HypervisorHostEntity();
-        host.setId(UUID.randomUUID().toString());
+        host.setId(hypervisor.getId());
         host.setName(hypervisor.getHypervisorHostname());
         host.setHostname(hypervisor.getHypervisorHostname());
         host.setIp(hypervisor.getHostIP());

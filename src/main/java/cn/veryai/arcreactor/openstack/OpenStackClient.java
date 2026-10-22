@@ -179,8 +179,13 @@ public class OpenStackClient {
 
   public List<? extends Hypervisor> listHypervisors(String region) {
     OpenstackClusterEntity cluster = getOpenstackCluster(region);
-    return getOsAdminClient(region, cluster.getAdminDefaultProjectId())
-        .compute().hypervisors().list();
+    OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+    if (osClient instanceof OSClientSession.OSClientSessionV3 clientSessionV3) {
+      HashMap<String, String> map = new HashMap<>();
+      map.put("OpenStack-API-Version", "compute 2.87");
+      clientSessionV3.headers(map);
+    }
+    return osClient.compute().hypervisors().list();
   }
 
   public CompletionStage<Void> grantProjectAdminRole(String region, String projectId) {
