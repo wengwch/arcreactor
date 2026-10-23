@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.FlavorEntity;
 import cn.veryai.arcreactor.entity.GpuTypeEntity;
 import cn.veryai.arcreactor.entity.HypervisorTypeEntity;
@@ -19,10 +20,8 @@ import org.openstack4j.model.compute.Flavor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -51,7 +50,7 @@ public class FlavorService {
   public FlavorEntity get(String id) {
     FlavorEntity entity = flavorRepo.findById(id);
     if (entity == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "Flavor not found");
+      throw new BaseException(ErrorCode.FLAVOR_NOT_FOUND);
     }
     return entity;
   }
@@ -59,25 +58,25 @@ public class FlavorService {
   @Transactional
   public FlavorEntity create(SaveFlavorParam param) {
     if (regionRepo.findById(param.getRegionId()) == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "regionId does not exist");
+      throw new BaseException(ErrorCode.REGION_NOT_FOUND);
     }
     HypervisorTypeEntity hypervisorTypeEntity =
         hypervisorTypeRepo.findById(param.getHypervisorType());
     if (hypervisorTypeEntity == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "hypervisorType does not exist");
+      throw new BaseException(ErrorCode.HYPERVISOR_TYPE_NOT_FOUND);
     }
     if (cpuTypeRepo.findById(param.getCpuType()) == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "cpuType does not exist");
+      throw new BaseException(ErrorCode.CPU_TYPE_NOT_FOUND);
     }
     if (ramTypeRepo.findById(param.getRamType()) == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "ramType does not exist");
+      throw new BaseException(ErrorCode.RAM_TYPE_NOT_FOUND);
     }
     if (diskTypeRepo.findById(param.getDiskType()) == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "diskType does not exist");
+      throw new BaseException(ErrorCode.DISK_TYPE_NOT_FOUND);
     }
     if (StringUtils.isNotBlank(param.getGpuType())
         && gpuTypeRepo.findById(param.getGpuType()) == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "gpuType does not exist");
+      throw new BaseException(ErrorCode.GPU_TYPE_NOT_FOUND);
     }
 
     Flavor flavor;
@@ -90,8 +89,7 @@ public class FlavorService {
               param.getRam(),
               param.getDisk());
     } catch (Exception exception) {
-      throw new BaseException(
-          BaseException.ERROR_CODE, "规格名称" + param.getName() + " 创建失败！" + exception.getMessage());
+      throw new BaseException(ErrorCode.FLAVOR_CREATE_FAILED, exception, param.getName());
     }
     FlavorEntity flavorEntity = new FlavorEntity();
     flavorEntity.setId(flavor.getId());
@@ -134,7 +132,7 @@ public class FlavorService {
   public void delete(String id) {
     FlavorEntity flavorEntity = get(id);
     if (flavorEntity == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "规格不存在");
+      throw new BaseException(ErrorCode.FLAVOR_NOT_FOUND);
     }
     flavorRepo.deleteById(id);
     openStackClient.deleteFlavor(

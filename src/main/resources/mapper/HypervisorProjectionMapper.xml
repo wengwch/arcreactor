@@ -62,6 +62,13 @@
         WHERE hypervisor_id = #{hypervisorId} AND resource_version &lt; #{version}
     </update>
 
+    <update id="applyHostStatus">
+        UPDATE hypervisor_host
+        SET hypervisor_status = #{status},
+            expected_maintenance_time = COALESCE(#{expectedMaintenanceTime,jdbcType=TIMESTAMP}, expected_maintenance_time)
+        WHERE id = #{hypervisorId}
+    </update>
+
     <insert id="upsertAllocation">
         INSERT INTO instance_allocation(
           instance_id, hypervisor_id, reservation_id, vcpus, memory_mb, gpu_count,

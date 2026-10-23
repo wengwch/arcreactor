@@ -232,14 +232,14 @@ public final class HypervisorActor
     }
 
     private Effect<HypervisorEvent, HypervisorState> onDrain(HypervisorState state, DrainHypervisor command) {
-        if (state.status() == HypervisorStatus.DRAINING || state.status() == HypervisorStatus.MAINTENANCE) {
+        if (state.status() == HypervisorStatus.DRAINING && command.expectedMaintenanceTime() == null) {
             command.replyTo().tell(ActionReply.succeeded(true));
             return Effect().none();
         }
-        List<HypervisorEvent> events = new ArrayList<>();
-        events.add(new HypervisorDrainStarted(clock.instant()));
-        if (state.allocations().isEmpty()) events.add(new HypervisorMaintenanceEntered(clock.instant()));
-        return Effect().persist(events).thenRun(next -> command.replyTo().tell(ActionReply.succeeded(false)));
+        // A maintenance plan first enters DRAINING, even when no instances are currently allocated.
+        // Persist dated requests while draining as well, so a revised plan reaches the projection.
+        return Effect().persist(new HypervisorDrainStarted(clock.instant(), command.expectedMaintenanceTime()))
+                .thenRun(next -> command.replyTo().tell(ActionReply.succeeded(false)));
     }
 
     private Effect<HypervisorEvent, HypervisorState> onMaintenance(

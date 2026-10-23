@@ -1,10 +1,7 @@
 package cn.veryai.arcreactor.web.params;
 
-import cn.veryai.arcreactor.enums.HypervisorStatus;
 import jakarta.validation.constraints.*;
 import lombok.Data;
-
-import java.time.LocalDateTime;
 
 @Data
 public class UpdateHypervisorHostParam {
@@ -38,9 +35,6 @@ public class UpdateHypervisorHostParam {
     private int usedDisk;
     @PositiveOrZero
     private int usedGpus;
-    @NotNull
-    private HypervisorStatus hypervisorStatus = HypervisorStatus.MAINTENANCE;
-    private LocalDateTime expectedMaintenanceTime;
     @NotNull
     private Boolean enabled = true;
     @NotBlank

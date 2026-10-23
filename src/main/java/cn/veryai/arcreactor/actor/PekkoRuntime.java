@@ -29,6 +29,7 @@ import org.springframework.stereotype.Component;
 @Component
 public final class PekkoRuntime {
   @Getter private final ActorSystem<Void> actorSystem;
+  @Getter private final Duration askTimeout;
   private final ClusterSharding sharding;
 
   public PekkoRuntime(
@@ -44,6 +45,7 @@ public final class PekkoRuntime {
       throws Exception {
     this.actorSystem = actorSystem;
     Config config = actorSystem.settings().config();
+    this.askTimeout = config.getDuration("cloud.scheduler.ask-timeout");
     InstanceWorkflowSettings settings =
         new InstanceWorkflowSettings(
             duration(config, "cloud.reservation.ttl"),

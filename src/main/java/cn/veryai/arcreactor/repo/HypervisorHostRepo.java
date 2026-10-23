@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.repo;
 
 import cn.veryai.arcreactor.entity.HypervisorHostEntity;
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import cn.veryai.arcreactor.mapper.HypervisorHostMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
@@ -17,8 +18,12 @@ public class HypervisorHostRepo {
         return mapper.insert(entity);
     }
 
-    public int upsertFromOpenstack(HypervisorHostEntity entity) {
-        return mapper.upsertFromOpenstack(entity);
+    /** Must run inside the sync transaction so the upsert's row lock is retained. */
+    public boolean upsertFromOpenstack(HypervisorHostEntity entity) {
+        mapper.upsertFromOpenstack(entity);
+        // MySQL's affected-row count cannot reliably distinguish a skipped row from unchanged data.
+        return mapper.findStatusByOpenstackIdForUpdate(entity.getRegionId(), entity.getOsHypervisorId())
+                == HypervisorStatus.MAINTENANCE;
     }
 
     public HypervisorHostEntity findById(String id) {

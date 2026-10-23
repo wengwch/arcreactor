@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.exceptions.BaseException;
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.ImageEntity;
 import cn.veryai.arcreactor.repo.ImageRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
@@ -9,10 +11,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.UUID;
@@ -34,7 +34,7 @@ public class ImageService {
     public ImageEntity get(String id) {
         ImageEntity entity = repo.findById(id);
         if (entity == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Image not found");
+            throw new BaseException(ErrorCode.IMAGE_NOT_FOUND);
         }
         return entity;
     }
@@ -46,7 +46,7 @@ public class ImageService {
         try {
             repo.insert(entity);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Image ID already exists");
+            throw new BaseException(ErrorCode.IMAGE_ALREADY_EXISTS);
         }
         return entity;
     }
@@ -61,7 +61,7 @@ public class ImageService {
             // MySQL may report zero for an unchanged row; distinguish it from a missing row.
             if (updated == 0) get(id);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Image ID already exists");
+            throw new BaseException(ErrorCode.IMAGE_ALREADY_EXISTS);
         }
         return entity;
     }
@@ -70,10 +70,10 @@ public class ImageService {
     public void delete(String id) {
         try {
             if (repo.deleteById(id) == 0) {
-                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Image not found");
+                throw new BaseException(ErrorCode.IMAGE_NOT_FOUND);
             }
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Image is still referenced");
+            throw new BaseException(ErrorCode.IMAGE_STILL_REFERENCED);
         }
     }
 
@@ -84,13 +84,13 @@ public class ImageService {
 
     private void requireRegion(String regionId) {
         if (regionRepo.findById(regionId) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "regionId does not exist");
+            throw new BaseException(ErrorCode.REGION_NOT_FOUND);
         }
     }
 
     private void requireCategory(String categoryId) {
         if (categoryRepo.findById(categoryId) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "categoryId does not exist");
+            throw new BaseException(ErrorCode.IMAGE_CATEGORY_NOT_FOUND);
         }
     }
 

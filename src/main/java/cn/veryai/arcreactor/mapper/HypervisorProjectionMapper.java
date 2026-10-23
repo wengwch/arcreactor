@@ -4,6 +4,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
@@ -47,6 +48,11 @@ public interface HypervisorProjectionMapper {
             @Param("status") String status,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
+
+    int applyHostStatus(
+            @Param("hypervisorId") String hypervisorId,
+            @Param("status") String status,
+            @Param("expectedMaintenanceTime") LocalDateTime expectedMaintenanceTime);
 
     int upsertAllocation(
             @Param("instanceId") String instanceId,

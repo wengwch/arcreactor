@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.exceptions.BaseException;
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.ImageCategoryEntity;
 import cn.veryai.arcreactor.repo.ImageCategoryRepo;
 import cn.veryai.arcreactor.web.params.SaveImageCategoryParam;
@@ -7,10 +9,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.UUID;
@@ -28,7 +28,7 @@ public class ImageCategoryService {
     public ImageCategoryEntity get(String id) {
         ImageCategoryEntity entity = repo.findById(id);
         if (entity == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Image category not found");
+            throw new BaseException(ErrorCode.IMAGE_CATEGORY_NOT_FOUND);
         }
         return entity;
     }
@@ -39,7 +39,7 @@ public class ImageCategoryService {
         try {
             repo.insert(entity);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Image category ID already exists");
+            throw new BaseException(ErrorCode.IMAGE_CATEGORY_ALREADY_EXISTS);
         }
         return entity;
     }
@@ -53,7 +53,7 @@ public class ImageCategoryService {
             // MySQL may report zero for an unchanged row; distinguish it from a missing row.
             if (updated == 0) get(id);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Image category ID already exists");
+            throw new BaseException(ErrorCode.IMAGE_CATEGORY_ALREADY_EXISTS);
         }
         return entity;
     }
@@ -62,10 +62,10 @@ public class ImageCategoryService {
     public void delete(String id) {
         try {
             if (repo.deleteById(id) == 0) {
-                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Image category not found");
+                throw new BaseException(ErrorCode.IMAGE_CATEGORY_NOT_FOUND);
             }
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Image category is still referenced");
+            throw new BaseException(ErrorCode.IMAGE_CATEGORY_STILL_REFERENCED);
         }
     }
 

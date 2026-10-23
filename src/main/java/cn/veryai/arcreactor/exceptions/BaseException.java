@@ -1,22 +1,25 @@
 package cn.veryai.arcreactor.exceptions;
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+import cn.veryai.arcreactor.i18n.ErrorCode;
+import lombok.Getter;
 
-@EqualsAndHashCode(callSuper = true)
-@Data
+/** Carries a message code and arguments; the HTTP boundary resolves the request's locale. */
+@Getter
 public class BaseException extends RuntimeException {
-  public static final int SUCCESS_CODE = 200;
-  public static final int ERROR_CODE = 500;
-  public static final int SYS_CODE = 500;
-  public static final int UNAUTH_CODE = 401;
-  public static final int BAD_REQUEST_CODE = 400;
-  public static final int BASE_CODE = 1000;
-
   private final int code;
+  private final Object[] args;
 
-  public BaseException(int code, String message) {
-    super(message);
-    this.code = code;
+  public BaseException(ErrorCode errorCode, Object... args) {
+    this(errorCode, null, args);
+  }
+
+  public BaseException(ErrorCode errorCode, Throwable cause, Object... args) {
+    super(Integer.toString(errorCode.getCode()), cause);
+    this.code = errorCode.getCode();
+    this.args = args == null ? new Object[0] : args.clone();
+  }
+
+  public Object[] getArgs() {
+    return args.clone();
   }
 }

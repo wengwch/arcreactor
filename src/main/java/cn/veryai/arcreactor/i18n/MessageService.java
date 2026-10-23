@@ -2,27 +2,21 @@ package cn.veryai.arcreactor.i18n;
 
 import org.springframework.context.MessageSource;
 import org.springframework.context.i18n.LocaleContextHolder;
-import org.springframework.context.support.ResourceBundleMessageSource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 /**
- * Looks up messages by code using an isolated Spring MessageSource.
+ * Looks up messages by code using the application MessageSource shared with Bean Validation.
  * Missing translations fall back to the Chinese base bundle; unknown codes return the code.
  */
 @Service
 public class MessageService {
     private final MessageSource messageSource;
 
-    public MessageService() {
-        ResourceBundleMessageSource source = new ResourceBundleMessageSource();
-        source.setBasename("i18n/messages");
-        source.setDefaultEncoding(StandardCharsets.UTF_8.name());
-        source.setFallbackToSystemLocale(false);
-        this.messageSource = source;
+    public MessageService(MessageSource messageSource) {
+        this.messageSource = messageSource;
     }
 
     /** Uses the current Spring locale, including the request locale in Spring MVC. */

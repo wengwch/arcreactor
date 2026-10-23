@@ -178,6 +178,20 @@ public class OpenStackClient {
   }
 
   public List<? extends Hypervisor> listHypervisors(String region) {
+    return getOsHypervisorClient(region).compute().hypervisors().list();
+  }
+
+  public Hypervisor getHypervisor(String region, String hypervisorId) {
+    OSClient.OSClientV3 osClient = getOsHypervisorClient(region);
+    try {
+      return osClient.compute().hypervisors().get(hypervisorId);
+    } catch (ResponseException exception) {
+      if (exception.getStatus() == 404) return null;
+      throw exception;
+    }
+  }
+
+  private OSClient.OSClientV3 getOsHypervisorClient(String region) {
     OpenstackClusterEntity cluster = getOpenstackCluster(region);
     OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
     if (osClient instanceof OSClientSession.OSClientSessionV3 clientSessionV3) {
@@ -185,7 +199,7 @@ public class OpenStackClient {
       map.put("OpenStack-API-Version", "compute 2.87");
       clientSessionV3.headers(map);
     }
-    return osClient.compute().hypervisors().list();
+    return osClient;
   }
 
   public CompletionStage<Void> grantProjectAdminRole(String region, String projectId) {

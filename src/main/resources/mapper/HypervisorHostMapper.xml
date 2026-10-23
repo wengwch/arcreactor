@@ -41,7 +41,7 @@
         SELECT <include refid="columns"/> FROM hypervisor_host WHERE id = #{id}
     </select>
 
-    <!-- Only Nova-owned fields are refreshed; local host configuration is preserved. -->
+    <!-- Existing hosts are refreshed only in MAINTENANCE; local configuration is preserved. -->
     <insert id="upsertFromOpenstack">
         INSERT INTO hypervisor_host (
             id, name, hostname, ip, os_hypervisor_id, vcpus, ram, disk,
@@ -53,18 +53,24 @@
             #{hypervisorStatus}, #{expectedMaintenanceTime}, #{enabled}, #{regionId}
         )
         ON DUPLICATE KEY UPDATE
-            hostname = VALUES(hostname),
-            ip = VALUES(ip),
-            vcpus = VALUES(vcpus),
-            ram = VALUES(ram),
-            disk = VALUES(disk),
-            used_vcpus = VALUES(used_vcpus),
-            used_ram = VALUES(used_ram),
-            used_disk = VALUES(used_disk),
-            running_vms = VALUES(running_vms),
-            status = VALUES(status),
-            state = VALUES(state)
+            hostname = IF(hypervisor_status = 'MAINTENANCE', VALUES(hostname), hostname),
+            ip = IF(hypervisor_status = 'MAINTENANCE', VALUES(ip), ip),
+            vcpus = IF(hypervisor_status = 'MAINTENANCE', VALUES(vcpus), vcpus),
+            ram = IF(hypervisor_status = 'MAINTENANCE', VALUES(ram), ram),
+            disk = IF(hypervisor_status = 'MAINTENANCE', VALUES(disk), disk),
+            used_vcpus = IF(hypervisor_status = 'MAINTENANCE', VALUES(used_vcpus), used_vcpus),
+            used_ram = IF(hypervisor_status = 'MAINTENANCE', VALUES(used_ram), used_ram),
+            used_disk = IF(hypervisor_status = 'MAINTENANCE', VALUES(used_disk), used_disk),
+            running_vms = IF(hypervisor_status = 'MAINTENANCE', VALUES(running_vms), running_vms),
+            status = IF(hypervisor_status = 'MAINTENANCE', VALUES(status), status),
+            state = IF(hypervisor_status = 'MAINTENANCE', VALUES(state), state)
     </insert>
+
+    <select id="findStatusByOpenstackIdForUpdate" resultType="cn.veryai.arcreactor.enums.HypervisorStatus">
+        SELECT hypervisor_status FROM hypervisor_host
+        WHERE region_id = #{regionId} AND os_hypervisor_id = #{osHypervisorId}
+        FOR UPDATE
+    </select>
 
     <select id="findAll" resultMap="entity">
         SELECT <include refid="columns"/> FROM hypervisor_host ORDER BY name, id
@@ -93,8 +99,6 @@
             running_vms = #{runningVms},
             status = #{status},
             state = #{state},
-            hypervisor_status = #{hypervisorStatus},
-            expected_maintenance_time = #{expectedMaintenanceTime},
             enabled = #{enabled},
             region_id = #{regionId}
         WHERE id = #{id}

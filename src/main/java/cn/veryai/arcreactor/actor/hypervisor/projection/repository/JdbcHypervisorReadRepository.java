@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 @Component
 public final class JdbcHypervisorReadRepository implements HypervisorReadRepository {
@@ -40,11 +41,12 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
                         Timestamp.from(eventTimestamp));
             }
         } else if (event instanceof HypervisorEnabled) {
-            applyStatus(mapper, hypervisorId, HypervisorStatus.ACTIVE, sequenceNumber, eventTimestamp);
-        } else if (event instanceof HypervisorDrainStarted) {
-            applyStatus(mapper, hypervisorId, HypervisorStatus.DRAINING, sequenceNumber, eventTimestamp);
+            applyStatus(mapper, hypervisorId, HypervisorStatus.ACTIVE, null, sequenceNumber, eventTimestamp);
+        } else if (event instanceof HypervisorDrainStarted drainStarted) {
+            applyStatus(mapper, hypervisorId, HypervisorStatus.DRAINING,
+                    drainStarted.expectedMaintenanceTime(), sequenceNumber, eventTimestamp);
         } else if (event instanceof HypervisorMaintenanceEntered) {
-            applyStatus(mapper, hypervisorId, HypervisorStatus.MAINTENANCE, sequenceNumber, eventTimestamp);
+            applyStatus(mapper, hypervisorId, HypervisorStatus.MAINTENANCE, null, sequenceNumber, eventTimestamp);
         }
     }
 
@@ -75,8 +77,9 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
     }
 
     private void applyStatus(HypervisorProjectionMapper mapper, String hypervisorId, HypervisorStatus status,
-            long version, Instant timestamp) {
+            LocalDateTime expectedMaintenanceTime, long version, Instant timestamp) {
         mapper.applyStatus(hypervisorId, status.name(), version, Timestamp.from(timestamp));
+        mapper.applyHostStatus(hypervisorId, status.name(), expectedMaintenanceTime);
     }
 
     private void upsertAllocation(HypervisorProjectionMapper mapper, String hypervisorId,

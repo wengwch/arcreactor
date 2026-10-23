@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.exceptions.BaseException;
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.HypervisorTypeEntity;
 import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
 import cn.veryai.arcreactor.repo.CpuTypeRepo;
@@ -11,10 +13,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.UUID;
@@ -37,7 +37,7 @@ public class HypervisorTypeService {
     public HypervisorTypeEntity get(String id) {
         HypervisorTypeEntity entity = repo.findById(id);
         if (entity == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Hypervisor type not found");
+            throw new BaseException(ErrorCode.HYPERVISOR_TYPE_NOT_FOUND);
         }
         return entity;
     }
@@ -49,9 +49,9 @@ public class HypervisorTypeService {
         try {
             repo.insert(entity);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Hypervisor type already exists");
+            throw new BaseException(ErrorCode.HYPERVISOR_TYPE_ALREADY_EXISTS);
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Referenced resource changed or database constraint violated");
+            throw new BaseException(ErrorCode.RESOURCE_CONSTRAINT_VIOLATION);
         }
         return entity;
     }
@@ -66,9 +66,9 @@ public class HypervisorTypeService {
             // MySQL may report zero for an unchanged row; distinguish it from a missing row.
             if (updated == 0) get(id);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Hypervisor type already exists");
+            throw new BaseException(ErrorCode.HYPERVISOR_TYPE_ALREADY_EXISTS);
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Referenced resource changed or database constraint violated");
+            throw new BaseException(ErrorCode.RESOURCE_CONSTRAINT_VIOLATION);
         }
         return entity;
     }
@@ -77,29 +77,29 @@ public class HypervisorTypeService {
     public void delete(String id) {
         try {
             if (repo.deleteById(id) == 0) {
-                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Hypervisor type not found");
+                throw new BaseException(ErrorCode.HYPERVISOR_TYPE_NOT_FOUND);
             }
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Hypervisor type is still referenced");
+            throw new BaseException(ErrorCode.HYPERVISOR_TYPE_STILL_REFERENCED);
         }
     }
 
     private void validate(HypervisorTypeEntity entity) {
         if (entity.getCpuType() != null
                 && cpuTypeRepo.findById(entity.getCpuType()) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "cpuType does not exist");
+            throw new BaseException(ErrorCode.CPU_TYPE_NOT_FOUND);
         }
         if (entity.getRamType() != null
                 && ramTypeRepo.findById(entity.getRamType()) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "ramType does not exist");
+            throw new BaseException(ErrorCode.RAM_TYPE_NOT_FOUND);
         }
         if (entity.getDiskType() != null
                 && diskTypeRepo.findById(entity.getDiskType()) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "diskType does not exist");
+            throw new BaseException(ErrorCode.DISK_TYPE_NOT_FOUND);
         }
         if (entity.getGpuType() != null
                 && gpuTypeRepo.findById(entity.getGpuType()) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "gpuType does not exist");
+            throw new BaseException(ErrorCode.GPU_TYPE_NOT_FOUND);
         }
     }
 

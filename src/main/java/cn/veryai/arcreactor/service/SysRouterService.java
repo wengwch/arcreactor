@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.entity.SysNetworkEntity;
@@ -17,10 +18,8 @@ import org.openstack4j.model.network.Router;
 import org.openstack4j.model.network.RouterInterface;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Objects;
@@ -46,7 +45,7 @@ public class SysRouterService {
   public SysRouterEntity get(String id) {
     SysRouterEntity entity = sysRouterRepo.findById(id);
     if (entity == null) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System router not found");
+      throw new BaseException(ErrorCode.SYSTEM_ROUTER_NOT_FOUND);
     }
     return entity;
   }
@@ -55,12 +54,12 @@ public class SysRouterService {
   public SysRouterEntity create(SaveSysRouterParam param) {
     RegionEntity regionEntity = regionRepo.findById(param.getRegionId());
     if (regionEntity == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "Region not found");
+      throw new BaseException(ErrorCode.REGION_NOT_FOUND);
     }
     OpenstackClusterEntity openstackClusterEntity =
         openstackClusterRepo.findById(regionEntity.getClusterId());
     if (openstackClusterEntity == null) {
-      throw new BaseException(BaseException.ERROR_CODE, "Openstack cluster not found");
+      throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
     }
     String adminDefaultProjectId = openstackClusterEntity.getAdminDefaultProjectId();
 
@@ -72,7 +71,7 @@ public class SysRouterService {
         || !externalNetwork.isRouterExternally()
         || externalNetwork.getOsNetId() == null
         || externalNetwork.getOsNetId().isBlank()) {
-      throw new BaseException(BaseException.ERROR_CODE, "External network not found");
+      throw new BaseException(ErrorCode.EXTERNAL_NETWORK_NOT_FOUND);
     }
     entity.setOsExtNetId(externalNetwork.getOsNetId());
     SysNetworkEntity sharedNetwork = sysNetworkRepo.findById(entity.getSharedNetId());
@@ -81,7 +80,7 @@ public class SysRouterService {
         || !sharedNetwork.isRouterExternally()
         || sharedNetwork.getOsNetId() == null
         || sharedNetwork.getOsNetId().isBlank()) {
-      throw new BaseException(BaseException.ERROR_CODE, "Shared network not found");
+      throw new BaseException(ErrorCode.SHARED_NETWORK_NOT_FOUND);
     }
     entity.setOsSharedNetId(sharedNetwork.getOsNetId());
     try {
@@ -104,7 +103,7 @@ public class SysRouterService {
       return entity;
     } catch (Exception exception) {
       log.error("create sys router error", exception);
-      throw new BaseException(BaseException.ERROR_CODE, "系统异常");
+      throw new BaseException(ErrorCode.SYSTEM_ROUTER_CREATE_FAILED, exception);
     }
   }
 
@@ -112,16 +111,16 @@ public class SysRouterService {
   public void delete(String id) {
     try {
       if (sysRouterRepo.deleteById(id) == 0) {
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System router not found");
+        throw new BaseException(ErrorCode.SYSTEM_ROUTER_NOT_FOUND);
       }
     } catch (DataIntegrityViolationException exception) {
-      throw new ResponseStatusException(HttpStatus.CONFLICT, "System router is still referenced");
+      throw new BaseException(ErrorCode.SYSTEM_ROUTER_STILL_REFERENCED);
     }
   }
 
   private void requireRegion(String regionId) {
     if (regionRepo.findById(regionId) == null) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "regionId does not exist");
+      throw new BaseException(ErrorCode.REGION_NOT_FOUND);
     }
   }
 

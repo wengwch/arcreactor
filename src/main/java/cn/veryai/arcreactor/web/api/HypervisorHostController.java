@@ -1,7 +1,10 @@
 package cn.veryai.arcreactor.web.api;
 
 import cn.veryai.arcreactor.entity.HypervisorHostEntity;
+import cn.veryai.arcreactor.service.DataSyncService;
+import cn.veryai.arcreactor.service.DataSyncService.HypervisorSyncResult;
 import cn.veryai.arcreactor.service.HypervisorHostService;
+import cn.veryai.arcreactor.web.params.SetHypervisorMaintenancePlanParam;
 import cn.veryai.arcreactor.web.params.UpdateHypervisorHostParam;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +18,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class HypervisorHostController {
   private final HypervisorHostService hypervisorHostService;
+  private final DataSyncService dataSyncService;
 
   @GetMapping
   public List<HypervisorHostEntity> list() {
@@ -24,6 +28,19 @@ public class HypervisorHostController {
   @GetMapping("/{id}")
   public HypervisorHostEntity get(@PathVariable("id") String id) {
     return hypervisorHostService.get(id);
+  }
+
+  @PostMapping("/{id}/sync")
+  public HypervisorSyncResult sync(@PathVariable("id") String id) {
+    return dataSyncService.syncHypervisor(id);
+  }
+
+  @PutMapping("/{id}/maintenance-plan")
+  @ResponseStatus(HttpStatus.ACCEPTED)
+  public void setMaintenancePlan(
+      @PathVariable("id") String id,
+      @Valid @RequestBody SetHypervisorMaintenancePlanParam param) {
+    hypervisorHostService.setMaintenancePlan(id, param.getExpectedMaintenanceTime());
   }
 
   @PutMapping("/{id}")

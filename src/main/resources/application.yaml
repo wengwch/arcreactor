@@ -4,6 +4,10 @@ spring:
   main:
     web-application-type: servlet
     keep-alive: true
+  messages:
+    basename: i18n/messages
+    encoding: UTF-8
+    fallback-to-system-locale: false
   datasource:
     url: "${DATABASE_URL:jdbc:mysql://localhost:3306/arc_reactor?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}"
     username: "${DATABASE_USER:root}"

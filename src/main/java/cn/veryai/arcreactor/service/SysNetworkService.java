@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.entity.SysNetworkEntity;
@@ -15,10 +16,8 @@ import org.openstack4j.model.network.Network;
 import org.openstack4j.model.network.Subnet;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.UUID;
@@ -46,7 +45,7 @@ public class SysNetworkService {
     public SysNetworkEntity get(String id) {
         SysNetworkEntity entity = sysNetworkRepo.findById(id);
         if (entity == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System network not found");
+            throw new BaseException(ErrorCode.SYSTEM_NETWORK_NOT_FOUND);
         }
         return entity;
     }
@@ -55,11 +54,11 @@ public class SysNetworkService {
     public SysNetworkEntity create(SaveSysNetworkParam param) {
         RegionEntity regionEntity = regionRepo.findById(param.getRegionId());
         if (regionEntity == null) {
-            throw new BaseException(BaseException.ERROR_CODE, "Region not found");
+            throw new BaseException(ErrorCode.REGION_NOT_FOUND);
         }
         OpenstackClusterEntity openstackClusterEntity = openstackClusterRepo.findById(regionEntity.getClusterId());
         if (openstackClusterEntity == null) {
-            throw new BaseException(BaseException.ERROR_CODE, "Openstack cluster not found");
+            throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
         }
         String adminDefaultProjectId = openstackClusterEntity.getAdminDefaultProjectId();
 
@@ -111,7 +110,7 @@ public class SysNetworkService {
             return entity;
         } catch (Exception exception) {
             log.error("create sys network error", exception);
-            throw new BaseException(BaseException.ERROR_CODE, "系统异常");
+            throw new BaseException(ErrorCode.SYSTEM_NETWORK_CREATE_FAILED, exception);
         }
     }
 
@@ -119,16 +118,16 @@ public class SysNetworkService {
     public void delete(String id) {
         try {
             if (sysNetworkRepo.deleteById(id) == 0) {
-                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "System network not found");
+                throw new BaseException(ErrorCode.SYSTEM_NETWORK_NOT_FOUND);
             }
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "System network is still referenced");
+            throw new BaseException(ErrorCode.SYSTEM_NETWORK_STILL_REFERENCED);
         }
     }
 
     private void requireRegion(String regionId) {
         if (regionRepo.findById(regionId) == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "regionId does not exist");
+            throw new BaseException(ErrorCode.REGION_NOT_FOUND);
         }
     }
 }

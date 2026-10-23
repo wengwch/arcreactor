@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.exceptions.BaseException;
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
@@ -8,10 +10,8 @@ import cn.veryai.arcreactor.web.params.SaveRegionParam;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -31,7 +31,7 @@ public class RegionService {
     public RegionEntity get(String id) {
         RegionEntity entity = repo.findById(id);
         if (entity == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Region not found");
+            throw new BaseException(ErrorCode.REGION_NOT_FOUND);
         }
         return entity;
     }
@@ -43,9 +43,9 @@ public class RegionService {
         try {
             repo.insert(entity);
         } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Region ID already exists");
+            throw new BaseException(ErrorCode.REGION_ALREADY_EXISTS);
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Region violates database constraints");
+            throw new BaseException(ErrorCode.REGION_CONSTRAINT_VIOLATION);
         }
         return entity;
     }
@@ -59,7 +59,7 @@ public class RegionService {
             // MySQL may report zero when all values are unchanged.
             if (repo.update(entity) == 0) get(id);
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Region violates database constraints");
+            throw new BaseException(ErrorCode.REGION_CONSTRAINT_VIOLATION);
         }
         return entity;
     }
@@ -68,16 +68,16 @@ public class RegionService {
     public void delete(String id) {
         try {
             if (repo.deleteById(id) == 0) {
-                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Region not found");
+                throw new BaseException(ErrorCode.REGION_NOT_FOUND);
             }
         } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Region is still referenced");
+            throw new BaseException(ErrorCode.REGION_STILL_REFERENCED);
         }
     }
 
     private void requireCluster(String clusterId) {
         if (clusterRepo.findById(clusterId) == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "OpenStack cluster not found");
+            throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
         }
     }
 
