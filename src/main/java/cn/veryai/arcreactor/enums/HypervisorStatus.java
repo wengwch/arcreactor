@@ -1,4 +1,4 @@
-package cn.veryai.arcreactor.actor.hypervisor.model;
+package cn.veryai.arcreactor.enums;
 
 public enum HypervisorStatus {
     ACTIVE,

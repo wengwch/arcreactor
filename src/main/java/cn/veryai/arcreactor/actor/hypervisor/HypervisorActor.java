@@ -4,6 +4,7 @@ import cn.veryai.arcreactor.actor.hypervisor.command.*;
 import cn.veryai.arcreactor.actor.hypervisor.event.*;
 import cn.veryai.arcreactor.actor.hypervisor.model.*;
 import cn.veryai.arcreactor.actor.hypervisor.reply.*;
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;

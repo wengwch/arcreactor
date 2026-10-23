@@ -8,7 +8,7 @@ import cn.veryai.arcreactor.repo.DiskTypeRepo;
 import cn.veryai.arcreactor.repo.GpuTypeRepo;
 import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
-import cn.veryai.arcreactor.web.params.SaveHypervisorHostParam;
+import cn.veryai.arcreactor.web.params.UpdateHypervisorHostParam;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -19,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -47,23 +46,9 @@ public class HypervisorHostService {
     }
 
     @Transactional
-    public HypervisorHostEntity create(SaveHypervisorHostParam param) {
-        HypervisorHostEntity entity = toEntity(UUID.randomUUID().toString(), param);
-        validate(entity);
-        try {
-            hypervisorHostRepo.insert(entity);
-        } catch (DuplicateKeyException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Hypervisor host already exists");
-        } catch (DataIntegrityViolationException exception) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Referenced resource changed or database constraint violated");
-        }
-        return entity;
-    }
-
-    @Transactional
-    public HypervisorHostEntity update(String id, SaveHypervisorHostParam param) {
-        get(id);
-        HypervisorHostEntity entity = toEntity(id, param);
+    public HypervisorHostEntity update(String id, UpdateHypervisorHostParam param) {
+        HypervisorHostEntity entity = get(id);
+        BeanUtils.copyProperties(param, entity);
         validate(entity);
         try {
             int updated = hypervisorHostRepo.update(entity);
@@ -119,10 +104,4 @@ public class HypervisorHostService {
         }
     }
 
-    private HypervisorHostEntity toEntity(String id, SaveHypervisorHostParam param) {
-        HypervisorHostEntity entity = new HypervisorHostEntity();
-        BeanUtils.copyProperties(param, entity);
-        entity.setId(id);
-        return entity;
-    }
 }

@@ -1,7 +1,7 @@
 package cn.veryai.arcreactor.actor.hypervisor.projection.repository;
 
 import cn.veryai.arcreactor.actor.hypervisor.event.*;
-import cn.veryai.arcreactor.actor.hypervisor.model.HypervisorStatus;
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import cn.veryai.arcreactor.actor.hypervisor.model.ResourceRequest;
 import cn.veryai.arcreactor.mapper.HypervisorProjectionMapper;
 import cn.veryai.arcreactor.actor.hypervisor.projection.JdbcProjectionSession;

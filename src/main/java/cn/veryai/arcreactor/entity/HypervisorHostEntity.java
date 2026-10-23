@@ -1,7 +1,10 @@
 package cn.veryai.arcreactor.entity;
 
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import lombok.Data;
 import lombok.experimental.FieldNameConstants;
+
+import java.time.LocalDateTime;
 
 @FieldNameConstants(innerTypeName = "F")
 @Data
@@ -26,9 +29,14 @@ public class HypervisorHostEntity {
   private int usedRam;
   private int usedDisk;
   private int usedGpus;
+  /** 运行实例数量。 */
+  private int runningVms;
 
   private String status;
   private String state;
+  private HypervisorStatus hypervisorStatus = HypervisorStatus.MAINTENANCE;
+  /** 预计维护时间，未安排时为空。 */
+  private LocalDateTime expectedMaintenanceTime;
   private boolean enabled;
 
   private String regionId;

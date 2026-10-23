@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.hypervisor.scheduler;
 
-import cn.veryai.arcreactor.actor.hypervisor.model.HypervisorStatus;
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.HypervisorCandidate;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.SchedulingRequest;
 import cn.veryai.arcreactor.repo.HypervisorReadRepo;

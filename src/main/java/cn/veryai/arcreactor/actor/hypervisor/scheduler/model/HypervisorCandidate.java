@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.hypervisor.scheduler.model;
 
-import cn.veryai.arcreactor.actor.hypervisor.model.HypervisorStatus;
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import java.io.Serializable;
 import java.util.Objects;
 

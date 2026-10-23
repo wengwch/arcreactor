@@ -21,17 +21,20 @@
         <result column="used_ram" property="usedRam"/>
         <result column="used_disk" property="usedDisk"/>
         <result column="used_gpus" property="usedGpus"/>
+        <result column="running_vms" property="runningVms"/>
         <result column="status" property="status"/>
         <result column="state" property="state"/>
+        <result column="hypervisor_status" property="hypervisorStatus"/>
+        <result column="expected_maintenance_time" property="expectedMaintenanceTime"/>
         <result column="enabled" property="enabled"/>
         <result column="region_id" property="regionId"/>
     </resultMap>
 
-    <sql id="columns">id, name, description, hostname, ip, os_hypervisor_id, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus, status, state, enabled, region_id</sql>
+    <sql id="columns">id, name, description, hostname, ip, os_hypervisor_id, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus, running_vms, status, state, hypervisor_status, expected_maintenance_time, enabled, region_id</sql>
 
     <insert id="insert">
         INSERT INTO hypervisor_host (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{description}, #{hostname}, #{ip}, #{osHypervisorId}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{usedVcpus}, #{usedRam}, #{usedDisk}, #{usedGpus}, #{status}, #{state}, #{enabled}, #{regionId})
+        VALUES (#{id}, #{name}, #{description}, #{hostname}, #{ip}, #{osHypervisorId}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{usedVcpus}, #{usedRam}, #{usedDisk}, #{usedGpus}, #{runningVms}, #{status}, #{state}, #{hypervisorStatus}, #{expectedMaintenanceTime}, #{enabled}, #{regionId})
     </insert>
 
     <select id="findById" resultMap="entity">
@@ -42,10 +45,12 @@
     <insert id="upsertFromOpenstack">
         INSERT INTO hypervisor_host (
             id, name, hostname, ip, os_hypervisor_id, vcpus, ram, disk,
-            used_vcpus, used_ram, used_disk, status, state, enabled, region_id
+            used_vcpus, used_ram, used_disk, running_vms, status, state,
+            hypervisor_status, expected_maintenance_time, enabled, region_id
         ) VALUES (
             #{id}, #{name}, #{hostname}, #{ip}, #{osHypervisorId}, #{vcpus}, #{ram}, #{disk},
-            #{usedVcpus}, #{usedRam}, #{usedDisk}, #{status}, #{state}, #{enabled}, #{regionId}
+            #{usedVcpus}, #{usedRam}, #{usedDisk}, #{runningVms}, #{status}, #{state},
+            #{hypervisorStatus}, #{expectedMaintenanceTime}, #{enabled}, #{regionId}
         )
         ON DUPLICATE KEY UPDATE
             hostname = VALUES(hostname),
@@ -56,6 +61,7 @@
             used_vcpus = VALUES(used_vcpus),
             used_ram = VALUES(used_ram),
             used_disk = VALUES(used_disk),
+            running_vms = VALUES(running_vms),
             status = VALUES(status),
             state = VALUES(state)
     </insert>
@@ -84,8 +90,11 @@
             used_ram = #{usedRam},
             used_disk = #{usedDisk},
             used_gpus = #{usedGpus},
+            running_vms = #{runningVms},
             status = #{status},
             state = #{state},
+            hypervisor_status = #{hypervisorStatus},
+            expected_maintenance_time = #{expectedMaintenanceTime},
             enabled = #{enabled},
             region_id = #{regionId}
         WHERE id = #{id}

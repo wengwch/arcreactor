@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.actor.hypervisor.model;
 
+import cn.veryai.arcreactor.enums.HypervisorStatus;
+
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.*;
