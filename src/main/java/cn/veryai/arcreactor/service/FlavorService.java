@@ -97,6 +97,7 @@ public class FlavorService {
     flavorEntity.setName(flavor.getName());
     flavorEntity.setDescription(param.getDescription());
     flavorEntity.setVcpus(flavor.getVcpus());
+    // Nova reports RAM in MB; application memory uses GB (1024 MB).
     flavorEntity.setRam(flavor.getRam() / 1024);
     flavorEntity.setDisk(flavor.getDisk());
 

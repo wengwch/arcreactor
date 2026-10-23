@@ -14,6 +14,7 @@ public class SaveFlavorParam {
     private String description;
     @PositiveOrZero
     private int vcpus;
+    /** 内存容量，单位 GB。 */
     @PositiveOrZero
     private int ram;
     @PositiveOrZero

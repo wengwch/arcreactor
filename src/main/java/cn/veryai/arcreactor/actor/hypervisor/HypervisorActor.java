@@ -327,7 +327,7 @@ public final class HypervisorActor
         return existing.requestId().equals(command.requestId())
                 && existing.instanceId().equals(command.instanceId())
                 && existing.resources().vcpus() == command.resources().vcpus()
-                && existing.resources().memoryMb() == command.resources().memoryMb()
+                && existing.resources().memoryGb() == command.resources().memoryGb()
                 && existing.resources().gpuRequest() == command.resources().gpuRequest();
     }
 

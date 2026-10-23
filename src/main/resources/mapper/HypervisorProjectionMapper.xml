@@ -6,14 +6,14 @@
 
     <insert id="upsertCapacity">
         INSERT INTO hypervisor_resource(
-          hypervisor_id, status, availability_zone, traits, total_vcpu, total_memory_mb,
+          hypervisor_id, status, availability_zone, traits, total_vcpu, total_memory_gb,
           total_gpu, resource_version, updated_at)
-        VALUES (#{hypervisorId}, 'ACTIVE', #{availabilityZone}, '[]', #{totalVcpu},
-          #{totalMemoryMb}, #{totalGpu}, #{version}, #{updatedAt})
+        VALUES (#{hypervisorId}, 'MAINTENANCE', #{availabilityZone}, '[]', #{totalVcpu},
+          #{totalMemoryGb}, #{totalGpu}, #{version}, #{updatedAt})
         ON DUPLICATE KEY UPDATE
           availability_zone = IF(resource_version &lt; VALUES(resource_version), VALUES(availability_zone), availability_zone),
           total_vcpu = IF(resource_version &lt; VALUES(resource_version), VALUES(total_vcpu), total_vcpu),
-          total_memory_mb = IF(resource_version &lt; VALUES(resource_version), VALUES(total_memory_mb), total_memory_mb),
+          total_memory_gb = IF(resource_version &lt; VALUES(resource_version), VALUES(total_memory_gb), total_memory_gb),
           total_gpu = IF(resource_version &lt; VALUES(resource_version), VALUES(total_gpu), total_gpu),
           updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
           resource_version = GREATEST(resource_version, VALUES(resource_version))
@@ -48,8 +48,8 @@
         UPDATE hypervisor_resource SET
           reserved_vcpu = reserved_vcpu + #{reservedVcpuDelta},
           allocated_vcpu = allocated_vcpu + #{allocatedVcpuDelta},
-          reserved_memory_mb = reserved_memory_mb + #{reservedMemoryMbDelta},
-          allocated_memory_mb = allocated_memory_mb + #{allocatedMemoryMbDelta},
+          reserved_memory_gb = reserved_memory_gb + #{reservedMemoryGbDelta},
+          allocated_memory_gb = allocated_memory_gb + #{allocatedMemoryGbDelta},
           reserved_gpu = reserved_gpu + #{reservedGpuDelta},
           allocated_gpu = allocated_gpu + #{allocatedGpuDelta},
           resource_version = #{version}, updated_at = #{updatedAt}
@@ -71,9 +71,9 @@
 
     <insert id="upsertAllocation">
         INSERT INTO instance_allocation(
-          instance_id, hypervisor_id, reservation_id, vcpus, memory_mb, gpu_count,
+          instance_id, hypervisor_id, reservation_id, vcpus, memory_gb, gpu_count,
           allocation_status, resource_version, updated_at)
-        VALUES (#{instanceId}, #{hypervisorId}, #{reservationId}, #{vcpus}, #{memoryMb}, #{gpuCount},
+        VALUES (#{instanceId}, #{hypervisorId}, #{reservationId}, #{vcpus}, #{memoryGb}, #{gpuCount},
           'ALLOCATED', #{version}, #{updatedAt})
         ON DUPLICATE KEY UPDATE
           allocation_status = IF(resource_version &lt; VALUES(resource_version), 'ALLOCATED', allocation_status),

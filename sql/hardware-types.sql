@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS gpu_type (
   product_name VARCHAR(255),
   product_code VARCHAR(255),
   description TEXT,
-  vram BIGINT NOT NULL DEFAULT 0,
+  vram BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
   pci_passthrough_alias VARCHAR(255),
   PRIMARY KEY (id)
 ) ENGINE=InnoDB;

@@ -43,6 +43,18 @@ public class HypervisorHostController {
     hypervisorHostService.setMaintenancePlan(id, param.getExpectedMaintenanceTime());
   }
 
+  @PutMapping("/{id}/maintenance")
+  @ResponseStatus(HttpStatus.ACCEPTED)
+  public void setMaintenance(@PathVariable("id") String id) {
+    hypervisorHostService.setMaintenance(id);
+  }
+
+  @PutMapping("/{id}/enable")
+  @ResponseStatus(HttpStatus.ACCEPTED)
+  public void enable(@PathVariable("id") String id) {
+    hypervisorHostService.enable(id);
+  }
+
   @PutMapping("/{id}")
   public HypervisorHostEntity update(
       @PathVariable("id") String id, @Valid @RequestBody UpdateHypervisorHostParam param) {

@@ -11,9 +11,11 @@ public class FlavorEntity {
   private String name;
   private String description;
   private int vcpus;
+  /** 内存容量，单位 GB。 */
   private int ram;
   private int disk;
   private int gpus;
+  /** 显存总容量，单位 GB。 */
   private int vram;
 
   private String hypervisorType;

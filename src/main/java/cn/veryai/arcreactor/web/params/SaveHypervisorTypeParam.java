@@ -27,6 +27,7 @@ public class SaveHypervisorTypeParam {
     private int gpuTotal;
     @PositiveOrZero
     private int vcpuUnit;
+    /** 内存分配单元，单位 GB。 */
     @PositiveOrZero
     private int ramUnit;
     @PositiveOrZero

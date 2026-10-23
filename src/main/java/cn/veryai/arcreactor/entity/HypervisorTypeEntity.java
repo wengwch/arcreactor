@@ -26,6 +26,7 @@ public class HypervisorTypeEntity {
     private int socketCnt = 2;
 
     private int vcpuUnit;
+    /** 内存分配单元，单位 GB。 */
     private int ramUnit;
     private int diskUnit;
     private boolean enabled;

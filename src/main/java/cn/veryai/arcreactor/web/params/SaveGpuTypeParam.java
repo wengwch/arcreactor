@@ -19,6 +19,7 @@ public class SaveGpuTypeParam {
     @Size(max = 255)
     private String productCode;
     private String description;
+    /** 单卡显存容量，单位 GB。 */
     @PositiveOrZero
     private long vram;
 }

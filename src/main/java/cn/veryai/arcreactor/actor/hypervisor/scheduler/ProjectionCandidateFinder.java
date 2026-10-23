@@ -27,7 +27,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
     public CompletionStage<List<HypervisorCandidate>> find(SchedulingRequest request) {
         return CompletableFuture.supplyAsync(() -> repo.findCandidates(
                         request.resources().vcpus(),
-                        request.resources().memoryMb(),
+                        request.resources().memoryGb(),
                         request.constraints().availabilityZone(),
                         request.resources().gpuRequest(),
                         queryLimit).stream()
@@ -39,7 +39,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
         return new HypervisorCandidate(row.hypervisorId(), HypervisorStatus.valueOf(row.status()),
                 row.availabilityZone(),
                 row.totalVcpu(), row.reservedVcpu(), row.allocatedVcpu(),
-                row.totalMemoryMb(), row.reservedMemoryMb(), row.allocatedMemoryMb(),
+                row.totalMemoryGb(), row.reservedMemoryGb(), row.allocatedMemoryGb(),
                 row.totalGpu(), row.reservedGpu(), row.allocatedGpu(),
                 row.resourceVersion());
     }

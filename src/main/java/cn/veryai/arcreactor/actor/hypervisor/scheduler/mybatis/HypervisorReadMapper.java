@@ -9,7 +9,7 @@ import java.util.List;
 public interface HypervisorReadMapper {
     List<HypervisorResourceRow> findCandidates(
             @Param("vcpus") int vcpus,
-            @Param("memoryMb") long memoryMb,
+            @Param("memoryGb") long memoryGb,
             @Param("availabilityZone") String availabilityZone,
             @Param("gpuCount") int gpuCount,
             @Param("limit") int limit);

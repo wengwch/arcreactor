@@ -13,7 +13,7 @@ public interface HypervisorProjectionMapper {
             @Param("hypervisorId") String hypervisorId,
             @Param("availabilityZone") String availabilityZone,
             @Param("totalVcpu") int totalVcpu,
-            @Param("totalMemoryMb") long totalMemoryMb,
+            @Param("totalMemoryGb") long totalMemoryGb,
             @Param("totalGpu") int totalGpu,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
@@ -36,8 +36,8 @@ public interface HypervisorProjectionMapper {
             @Param("hypervisorId") String hypervisorId,
             @Param("reservedVcpuDelta") int reservedVcpuDelta,
             @Param("allocatedVcpuDelta") int allocatedVcpuDelta,
-            @Param("reservedMemoryMbDelta") long reservedMemoryMbDelta,
-            @Param("allocatedMemoryMbDelta") long allocatedMemoryMbDelta,
+            @Param("reservedMemoryGbDelta") long reservedMemoryGbDelta,
+            @Param("allocatedMemoryGbDelta") long allocatedMemoryGbDelta,
             @Param("reservedGpuDelta") int reservedGpuDelta,
             @Param("allocatedGpuDelta") int allocatedGpuDelta,
             @Param("version") long version,
@@ -59,7 +59,7 @@ public interface HypervisorProjectionMapper {
             @Param("hypervisorId") String hypervisorId,
             @Param("reservationId") String reservationId,
             @Param("vcpus") int vcpus,
-            @Param("memoryMb") long memoryMb,
+            @Param("memoryGb") long memoryGb,
             @Param("gpuCount") int gpuCount,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);

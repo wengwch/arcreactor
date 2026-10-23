@@ -1,9 +1,14 @@
 package cn.veryai.arcreactor.actor.instance.model;
 
+import cn.veryai.arcreactor.util.MemoryUnits;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
 
+/** Instance configuration; memory is measured in GB. */
 public record InstanceSpec(
         String clusterId,
         String projectId,
@@ -12,7 +17,7 @@ public record InstanceSpec(
         String imageId,
         String flavorId,
         int vcpus,
-        long memoryMb,
+        long memoryGb,
         int gpuCount,
         Map<String, String> metadata,
         ShareRequirement share,
@@ -26,7 +31,7 @@ public record InstanceSpec(
         requireText(name, "name");
         requireText(imageId, "imageId");
         requireText(flavorId, "flavorId");
-        if (vcpus < 0 || memoryMb < 0 || gpuCount < 0) {
+        if (vcpus < 0 || memoryGb < 0 || gpuCount < 0) {
             throw new IllegalArgumentException("resource values must not be negative");
         }
         if (forwarding != null && network == null && forwarding.parentPortId() == null) {
@@ -59,41 +64,64 @@ public record InstanceSpec(
         }
     }
 
+    @JsonCreator
+    public static InstanceSpec fromJson(
+            @JsonProperty("clusterId") String clusterId,
+            @JsonProperty("projectId") String projectId,
+            @JsonProperty("region") String region,
+            @JsonProperty("name") String name,
+            @JsonProperty("imageId") String imageId,
+            @JsonProperty("flavorId") String flavorId,
+            @JsonProperty("vcpus") int vcpus,
+            @JsonProperty("memoryGb") Long memoryGb,
+            @JsonProperty("memoryMb") Long legacyMemoryMb,
+            @JsonProperty("gpuCount") int gpuCount,
+            @JsonProperty("metadata") Map<String, String> metadata,
+            @JsonProperty("share") ShareRequirement share,
+            @JsonProperty("forwarding") ForwardingRequirement forwarding,
+            @JsonProperty("network") NetworkRequirement network,
+            @JsonProperty("projectName") String projectName,
+            @JsonProperty("cloudInit") CloudInitSpec cloudInit) {
+        return new InstanceSpec(clusterId, projectId, region, name, imageId, flavorId, vcpus,
+                MemoryUnits.readGigabytes(memoryGb, legacyMemoryMb), gpuCount, metadata,
+                share, forwarding, network, projectName, cloudInit);
+    }
+
     /** Older snapshots have no cloud-init input. New submissions require it in the actor. */
     public InstanceSpec(String clusterId, String projectId, String region, String name,
-            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            String imageId, String flavorId, int vcpus, long memoryGb, int gpuCount,
             Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding,
             NetworkRequirement network, String projectName) {
-        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryGb, gpuCount,
                 metadata, share, forwarding, network, projectName, null);
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,
-            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            String imageId, String flavorId, int vcpus, long memoryGb, int gpuCount,
             Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding,
             NetworkRequirement network) {
-        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryGb, gpuCount,
                 metadata, share, forwarding, network, null);
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,
-            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            String imageId, String flavorId, int vcpus, long memoryGb, int gpuCount,
             Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding) {
-        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryGb, gpuCount,
                 metadata, share, forwarding, null);
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,
-            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            String imageId, String flavorId, int vcpus, long memoryGb, int gpuCount,
             Map<String, String> metadata, ShareRequirement share) {
-        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryGb, gpuCount,
                 metadata, share, null);
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,
-            String imageId, String flavorId, int vcpus, long memoryMb, int gpuCount,
+            String imageId, String flavorId, int vcpus, long memoryGb, int gpuCount,
             Map<String, String> metadata) {
-        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryMb, gpuCount,
+        this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryGb, gpuCount,
                 metadata, null, null);
     }
 

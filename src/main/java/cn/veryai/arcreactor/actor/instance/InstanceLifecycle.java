@@ -21,6 +21,7 @@ public interface InstanceLifecycle {
      * Network requirements must include a userNetwork specification; subport network/subnet IDs are resolved after READY.
      * Parent network/subnet IDs are resolved from the region's preset SHARED network.
      * cloudInit supplies the SSH credentials, Jupyter token and static routes for the guest.
+     * memoryGb is measured in GB.
      */
     record CreateRequest(
             String requestId,
@@ -32,7 +33,7 @@ public interface InstanceLifecycle {
             String imageId,
             String flavorId,
             int vcpus,
-            long memoryMb,
+            long memoryGb,
             int gpuCount,
             Map<String, String> metadata,
             ShareRequirement share,
@@ -45,30 +46,30 @@ public interface InstanceLifecycle {
             Objects.requireNonNull(share, "share");
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
-                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryGb,
                 int gpuCount, Map<String, String> metadata, ShareRequirement share,
                 ForwardingRequirement forwarding, NetworkRequirement network, String projectName) {
             this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
-                    vcpus, memoryMb, gpuCount, metadata, share, forwarding, network, projectName, null);
+                    vcpus, memoryGb, gpuCount, metadata, share, forwarding, network, projectName, null);
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
-                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryGb,
                 int gpuCount, Map<String, String> metadata, ShareRequirement share,
                 ForwardingRequirement forwarding, NetworkRequirement network) {
             this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
-                    vcpus, memoryMb, gpuCount, metadata, share, forwarding, network, null);
+                    vcpus, memoryGb, gpuCount, metadata, share, forwarding, network, null);
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
-                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryGb,
                 int gpuCount, Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding) {
             this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
-                    vcpus, memoryMb, gpuCount, metadata, share, forwarding, null);
+                    vcpus, memoryGb, gpuCount, metadata, share, forwarding, null);
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
-                String region, String name, String imageId, String flavorId, int vcpus, long memoryMb,
+                String region, String name, String imageId, String flavorId, int vcpus, long memoryGb,
                 int gpuCount, Map<String, String> metadata, ShareRequirement share) {
             this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
-                    vcpus, memoryMb, gpuCount, metadata, share, null);
+                    vcpus, memoryGb, gpuCount, metadata, share, null);
         }
     }
 

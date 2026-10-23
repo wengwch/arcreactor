@@ -133,7 +133,7 @@ public class DataSyncService {
         host.setOsHypervisorId(hypervisor.getId());
         host.setVcpus(hypervisor.getVirtualCPU());
         host.setUsedVcpus(hypervisor.getVirtualUsedCPU());
-        // Local host capacities use GiB; Nova reports memory in MiB.
+        // Application memory uses GB (1024 MB); convert Nova's MB at the boundary.
         host.setRam(hypervisor.getLocalMemory() / 1024);
         host.setUsedRam(hypervisor.getLocalMemoryUsed() / 1024);
         host.setDisk(hypervisor.getLocalDisk());

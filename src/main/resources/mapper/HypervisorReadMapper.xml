@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorReadMapper">
+
+    <select id="findCandidates"
+            resultType="cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorResourceRow">
+        SELECT hypervisor_id, status, availability_zone,
+               total_vcpu, reserved_vcpu, allocated_vcpu,
+               total_memory_gb, reserved_memory_gb, allocated_memory_gb,
+               total_gpu, reserved_gpu, allocated_gpu, resource_version
+        FROM hypervisor_resource
+        WHERE status = 'ACTIVE'
+          AND available_vcpu &gt;= #{vcpus}
+          AND available_memory_gb &gt;= #{memoryGb}
+          AND available_gpu &gt;= #{gpuCount}
+        <if test="availabilityZone != null and availabilityZone.trim() != ''">
+          AND availability_zone = #{availabilityZone}
+        </if>
+        ORDER BY hypervisor_id
+        LIMIT #{limit}
+    </select>
+
+</mapper>

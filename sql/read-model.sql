@@ -14,11 +14,11 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource (
   reserved_vcpu INT NOT NULL DEFAULT 0,
   allocated_vcpu INT NOT NULL DEFAULT 0,
   available_vcpu INT GENERATED ALWAYS AS (total_vcpu - reserved_vcpu - allocated_vcpu) STORED,
-  total_memory_mb BIGINT NOT NULL DEFAULT 0,
-  reserved_memory_mb BIGINT NOT NULL DEFAULT 0,
-  allocated_memory_mb BIGINT NOT NULL DEFAULT 0,
-  available_memory_mb BIGINT GENERATED ALWAYS AS
-    (total_memory_mb - reserved_memory_mb - allocated_memory_mb) STORED,
+  total_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  reserved_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  allocated_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  available_memory_gb BIGINT GENERATED ALWAYS AS
+    (total_memory_gb - reserved_memory_gb - allocated_memory_gb) STORED,
   total_gpu INT NOT NULL DEFAULT 0,
   reserved_gpu INT NOT NULL DEFAULT 0,
   allocated_gpu INT NOT NULL DEFAULT 0,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource (
   resource_version BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   INDEX idx_hypervisor_candidate (
-    status, availability_zone, available_vcpu, available_memory_mb, available_gpu)
+    status, availability_zone, available_vcpu, available_memory_gb, available_gpu)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS instance_allocation (
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS instance_allocation (
   hypervisor_id VARCHAR(255) NOT NULL,
   reservation_id VARCHAR(255) NOT NULL,
   vcpus INT NOT NULL,
-  memory_mb BIGINT NOT NULL,
+  memory_gb BIGINT NOT NULL COMMENT 'GB',
   gpu_count INT NOT NULL,
   allocation_status VARCHAR(32) NOT NULL,
   resource_version BIGINT NOT NULL,
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS hypervisor_gpu (
   hypervisor_id VARCHAR(255) NOT NULL,
   gpu_id VARCHAR(255) NOT NULL,
   model VARCHAR(255) NOT NULL,
-  memory_mb BIGINT,
+  memory_gb BIGINT COMMENT 'GB',
   numa_node INT,
   traits JSON NOT NULL,
   assignment_status VARCHAR(32) NOT NULL DEFAULT 'AVAILABLE',

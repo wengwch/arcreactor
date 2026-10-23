@@ -21,6 +21,7 @@ public class UpdateHypervisorHostParam {
     private String gpuType;
     @PositiveOrZero
     private int vcpus;
+    /** 内存容量，单位 GB。 */
     @PositiveOrZero
     private int ram;
     @PositiveOrZero
@@ -29,6 +30,7 @@ public class UpdateHypervisorHostParam {
     private int gpus;
     @PositiveOrZero
     private int usedVcpus;
+    /** 已使用内存，单位 GB。 */
     @PositiveOrZero
     private int usedRam;
     @PositiveOrZero

@@ -22,10 +22,12 @@ public class HypervisorHostEntity {
   private String gpuType;
 
   private int vcpus;
+  /** 内存容量，单位 GB。 */
   private int ram;
   private int disk;
   private int gpus;
   private int usedVcpus;
+  /** 已使用内存，单位 GB。 */
   private int usedRam;
   private int usedDisk;
   private int usedGpus;

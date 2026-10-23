@@ -56,7 +56,7 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
                 hypervisorId,
                 event.capacity().availabilityZone(),
                 event.capacity().totalVcpus(),
-                event.capacity().totalMemoryMb(),
+                event.capacity().totalMemoryGb(),
                 event.capacity().gpus(),
                 version,
                 Timestamp.from(timestamp));
@@ -68,8 +68,8 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
                 hypervisorId,
                 resources.vcpus() * reservationMultiplier,
                 resources.vcpus() * allocationMultiplier,
-                resources.memoryMb() * reservationMultiplier,
-                resources.memoryMb() * allocationMultiplier,
+                resources.memoryGb() * reservationMultiplier,
+                resources.memoryGb() * allocationMultiplier,
                 resources.gpuRequest() * reservationMultiplier,
                 resources.gpuRequest() * allocationMultiplier,
                 version,
@@ -90,7 +90,7 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
                 hypervisorId,
                 reservation.reservationId(),
                 reservation.resources().vcpus(),
-                reservation.resources().memoryMb(),
+                reservation.resources().memoryGb(),
                 reservation.resources().gpuRequest(),
                 version,
                 Timestamp.from(timestamp));

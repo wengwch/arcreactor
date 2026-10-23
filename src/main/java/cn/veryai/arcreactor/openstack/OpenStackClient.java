@@ -1143,14 +1143,21 @@ public class OpenStackClient {
     }
   }
 
-  public Flavor createFlavor(String region, String name, int vcpus, int ram, int disk) {
+  public Flavor createFlavor(String region, String name, int vcpus, int ramGb, int disk) {
     OpenstackClusterEntity openstackCluster = getOpenstackCluster(region);
     OSClient.OSClientV3 osClient =
         getOsAdminClient(region, openstackCluster.getAdminDefaultProjectId());
+    // Nova requires MB; callers supply GB.
     return osClient
         .compute()
         .flavors()
-        .create(Builders.flavor().name(name).vcpus(vcpus).ram(ram * 1024).disk(disk).build());
+        .create(
+            Builders.flavor()
+                .name(name)
+                .vcpus(vcpus)
+                .ram(Math.multiplyExact(ramGb, 1024))
+                .disk(disk)
+                .build());
   }
 
   public void deleteFlavor(String region, String projectId, String flavorId) {

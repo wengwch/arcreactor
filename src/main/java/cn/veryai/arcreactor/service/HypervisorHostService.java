@@ -4,7 +4,11 @@ import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.hypervisor.command.DrainHypervisor;
+import cn.veryai.arcreactor.actor.hypervisor.command.EnableHypervisor;
+import cn.veryai.arcreactor.actor.hypervisor.command.EnterMaintenance;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
+import cn.veryai.arcreactor.actor.hypervisor.command.UpdateCapacity;
+import cn.veryai.arcreactor.actor.hypervisor.model.ResourceCapacity;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ActionReply;
 import cn.veryai.arcreactor.entity.HypervisorHostEntity;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
@@ -87,6 +91,93 @@ public class HypervisorHostService {
     }
 
     // The durable drain event carries the plan; the projection updates the host table.
+  }
+
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  public void setMaintenance(String id) {
+    get(id);
+    var system = pekkoRuntime.getActorSystem();
+    ActionReply reply;
+    try {
+      reply =
+          AskPattern.<HypervisorCommand, ActionReply>ask(
+                  pekkoRuntime.hypervisorActor(id),
+                  EnterMaintenance::new,
+                  pekkoRuntime.getAskTimeout(),
+                  system.scheduler())
+              .toCompletableFuture()
+              .get();
+    } catch (InterruptedException exception) {
+      Thread.currentThread().interrupt();
+      throw new BaseException(ErrorCode.HYPERVISOR_MAINTENANCE_INTERRUPTED, exception);
+    } catch (ExecutionException exception) {
+      Throwable cause = exception.getCause();
+      ErrorCode errorCode =
+          cause instanceof TimeoutException
+              ? ErrorCode.HYPERVISOR_MAINTENANCE_TIMEOUT
+              : ErrorCode.HYPERVISOR_MAINTENANCE_UNCONFIRMED;
+      throw new BaseException(errorCode, cause);
+    }
+    if (!reply.success()) {
+      log.warn("Hypervisor maintenance rejected: hypervisorId={}, detail={}", id, reply.detail());
+      throw new BaseException(ErrorCode.HYPERVISOR_MAINTENANCE_REJECTED);
+    }
+    // The persisted maintenance event updates the host status through the projection.
+  }
+
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  public void enable(String id) {
+    HypervisorHostEntity host = get(id);
+    ResourceCapacity capacity;
+    try {
+      capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getGpus());
+    } catch (IllegalArgumentException exception) {
+      throw new BaseException(ErrorCode.HYPERVISOR_CAPACITY_INVALID, exception);
+    }
+
+    var system = pekkoRuntime.getActorSystem();
+    var hypervisorActor = pekkoRuntime.hypervisorActor(id);
+    try {
+      ActionReply capacityReply =
+          AskPattern.<HypervisorCommand, ActionReply>ask(
+                  hypervisorActor,
+                  replyTo -> new UpdateCapacity(capacity, replyTo),
+                  pekkoRuntime.getAskTimeout(),
+                  system.scheduler())
+              .toCompletableFuture()
+              .get();
+      if (!capacityReply.success()) {
+        log.warn(
+            "Hypervisor capacity update rejected: hypervisorId={}, detail={}",
+            id,
+            capacityReply.detail());
+        throw new BaseException(ErrorCode.HYPERVISOR_CAPACITY_UPDATE_REJECTED);
+      }
+
+      ActionReply enableReply =
+          AskPattern.<HypervisorCommand, ActionReply>ask(
+                  hypervisorActor,
+                  EnableHypervisor::new,
+                  pekkoRuntime.getAskTimeout(),
+                  system.scheduler())
+              .toCompletableFuture()
+              .get();
+      if (!enableReply.success()) {
+        log.warn("Hypervisor enable rejected: hypervisorId={}, detail={}", id, enableReply.detail());
+        throw new BaseException(ErrorCode.HYPERVISOR_ENABLE_REJECTED);
+      }
+    } catch (InterruptedException exception) {
+      Thread.currentThread().interrupt();
+      throw new BaseException(ErrorCode.HYPERVISOR_ENABLE_INTERRUPTED, exception);
+    } catch (ExecutionException exception) {
+      Throwable cause = exception.getCause();
+      ErrorCode errorCode =
+          cause instanceof TimeoutException
+              ? ErrorCode.HYPERVISOR_ENABLE_TIMEOUT
+              : ErrorCode.HYPERVISOR_ENABLE_UNCONFIRMED;
+      throw new BaseException(errorCode, cause);
+    }
+    // The persisted enable event updates the host status through the projection.
   }
 
   @Transactional
