@@ -1254,7 +1254,9 @@ public final class InstanceWorkflowActor
             instanceId,
             resources,
             settings.reservationTtl(),
-            null);
+            null,
+            spec.region(),
+            spec.hypervisorType());
     context.pipeToSelf(
         placement.schedule(request),
         (result, error) ->
@@ -1289,6 +1291,7 @@ public final class InstanceWorkflowActor
 
   private static Map<String, Object> cloudInitModel(InstanceWorkflowState state) {
     var cloudInit = state.spec().cloudInit();
+    String cidr = state.spec().network().userNetwork().ipv4CIDR();
     PreparedShare share = Objects.requireNonNull(state.preparedShare(), "preparedShare");
     PreparedNetwork network = Objects.requireNonNull(state.networkPreparation(), "networkPreparation").resources();
     if (!hasText(network.trunkId()) || !hasText(network.subPortId())
@@ -1301,7 +1304,7 @@ public final class InstanceWorkflowActor
         Map.entry("share_access_to", state.shareSpec().accessTo()),
         Map.entry("segmentId", state.spec().network().segmentationId()),
         Map.entry("macaddress", network.subMacAddress()),
-        Map.entry("ipv4", network.subFixedIp() + "/16"),
+        Map.entry("ipv4", network.subFixedIp() + cidr.substring(cidr.lastIndexOf('/'))),
         Map.entry("username", cloudInit.username()),
         Map.entry("password", cloudInit.password()),
         Map.entry("jupyter_token", cloudInit.jupyterToken()),

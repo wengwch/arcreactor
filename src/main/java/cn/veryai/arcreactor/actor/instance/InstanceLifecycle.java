@@ -21,6 +21,7 @@ public interface InstanceLifecycle {
      * Network requirements must include a userNetwork specification; subport network/subnet IDs are resolved after READY.
      * Parent network/subnet IDs are resolved from the region's preset SHARED network.
      * cloudInit supplies the SSH credentials, Jupyter token and static routes for the guest.
+     * region and hypervisorType constrain placement to matching registered hosts.
      * memoryGb is measured in GB.
      */
     record CreateRequest(
@@ -40,7 +41,8 @@ public interface InstanceLifecycle {
             ForwardingRequirement forwarding,
             NetworkRequirement network,
             String projectName,
-            CloudInitSpec cloudInit) implements Serializable {
+            CloudInitSpec cloudInit,
+            String hypervisorType) implements Serializable {
         public CreateRequest {
             metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));
             Objects.requireNonNull(share, "share");
@@ -50,7 +52,7 @@ public interface InstanceLifecycle {
                 int gpuCount, Map<String, String> metadata, ShareRequirement share,
                 ForwardingRequirement forwarding, NetworkRequirement network, String projectName) {
             this(requestId, instanceId, clusterId, projectId, region, name, imageId, flavorId,
-                    vcpus, memoryGb, gpuCount, metadata, share, forwarding, network, projectName, null);
+                    vcpus, memoryGb, gpuCount, metadata, share, forwarding, network, projectName, null, null);
         }
         public CreateRequest(String requestId, String instanceId, String clusterId, String projectId,
                 String region, String name, String imageId, String flavorId, int vcpus, long memoryGb,

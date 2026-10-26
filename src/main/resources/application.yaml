@@ -32,6 +32,17 @@ mybatis:
     map-underscore-to-camel-case: true
     default-executor-type: reuse
 
+instance:
+  creation:
+    share-type: "${INSTANCE_SHARE_TYPE:}"
+    share-size: "${INSTANCE_SHARE_SIZE:100}"
+    network-cidr: "${INSTANCE_NETWORK_CIDR:10.0.0.0/16}"
+    network-dns: "${INSTANCE_NETWORK_DNS:}"
+    network-gateway: "${INSTANCE_NETWORK_GATEWAY:}"
+    segmentation-id: "${INSTANCE_SEGMENTATION_ID:100}"
+    ssh-username: "${INSTANCE_SSH_USERNAME:clouduser}"
+    host-routes: {}
+
 openstack:
   manila-fs-name: "${MANILA_FS_NAME:}"
   enabled: "${OPENSTACK_ENABLED:false}"

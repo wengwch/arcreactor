@@ -6,19 +6,27 @@
 
     <select id="findCandidates"
             resultType="cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorResourceRow">
-        SELECT hypervisor_id, status, availability_zone,
-               total_vcpu, reserved_vcpu, allocated_vcpu,
-               total_memory_gb, reserved_memory_gb, allocated_memory_gb,
-               total_gpu, reserved_gpu, allocated_gpu, resource_version
-        FROM hypervisor_resource
-        WHERE status = 'ACTIVE'
-          AND available_vcpu &gt;= #{vcpus}
-          AND available_memory_gb &gt;= #{memoryGb}
-          AND available_gpu &gt;= #{gpuCount}
+        SELECT r.hypervisor_id, r.status, r.availability_zone,
+               r.total_vcpu, r.reserved_vcpu, r.allocated_vcpu,
+               r.total_memory_gb, r.reserved_memory_gb, r.allocated_memory_gb,
+               r.total_gpu, r.reserved_gpu, r.allocated_gpu, r.resource_version
+        FROM hypervisor_resource r
+        JOIN hypervisor_host h ON h.id = r.hypervisor_id
+        WHERE r.status = 'ACTIVE'
+          AND h.hypervisor_status = 'ACTIVE'
+          AND r.available_vcpu &gt;= #{vcpus}
+          AND r.available_memory_gb &gt;= #{memoryGb}
+          AND r.available_gpu &gt;= #{gpuCount}
         <if test="availabilityZone != null and availabilityZone.trim() != ''">
-          AND availability_zone = #{availabilityZone}
+          AND r.availability_zone = #{availabilityZone}
         </if>
-        ORDER BY hypervisor_id
+        <if test="regionId != null and regionId.trim() != ''">
+          AND h.region_id = #{regionId}
+        </if>
+        <if test="hypervisorType != null and hypervisorType.trim() != ''">
+          AND h.hypervisor_type = #{hypervisorType}
+        </if>
+        ORDER BY r.hypervisor_id
         LIMIT #{limit}
     </select>
 

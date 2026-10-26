@@ -20,7 +20,8 @@ public record InstanceSpec(
         ForwardingRequirement forwarding,
         NetworkRequirement network,
         String projectName,
-        CloudInitSpec cloudInit) implements Serializable {
+        CloudInitSpec cloudInit,
+        String hypervisorType) implements Serializable {
     public InstanceSpec {
         requireText(clusterId, "clusterId");
         if (projectId != null) requireText(projectId, "projectId");
@@ -66,7 +67,7 @@ public record InstanceSpec(
             Map<String, String> metadata, ShareRequirement share, ForwardingRequirement forwarding,
             NetworkRequirement network, String projectName) {
         this(clusterId, projectId, region, name, imageId, flavorId, vcpus, memoryGb, gpuCount,
-                metadata, share, forwarding, network, projectName, null);
+                metadata, share, forwarding, network, projectName, null, null);
     }
 
     public InstanceSpec(String clusterId, String projectId, String region, String name,

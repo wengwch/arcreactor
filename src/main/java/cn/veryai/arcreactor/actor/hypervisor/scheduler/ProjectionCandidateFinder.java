@@ -30,6 +30,8 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
                         request.resources().memoryGb(),
                         request.constraints().availabilityZone(),
                         request.resources().gpuRequest(),
+                        request.constraints().regionId(),
+                        request.constraints().hypervisorType(),
                         queryLimit).stream()
                 .map(this::mapCandidate)
                 .toList(), blockingExecutor);

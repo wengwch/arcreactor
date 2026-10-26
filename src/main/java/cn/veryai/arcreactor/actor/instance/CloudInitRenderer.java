@@ -23,10 +23,14 @@ public final class CloudInitRenderer {
     this.manilaFsName = manilaFsName;
   }
 
-  public String render(Map<String, Object> values) {
+  public void validateConfiguration() {
     if (manilaFsName == null || !manilaFsName.matches("[A-Za-z0-9_.-]+")) {
       throw new RenderingException("openstack.manila-fs-name must be configured with a valid Ceph filesystem name", null);
     }
+  }
+
+  public String render(Map<String, Object> values) {
+    validateConfiguration();
     Map<String, Object> model = new HashMap<>(values);
     model.put("manila_fs_name", manilaFsName);
     try (StringWriter userData = new StringWriter()) {

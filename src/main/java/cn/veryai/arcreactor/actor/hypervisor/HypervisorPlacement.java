@@ -29,7 +29,9 @@ public interface HypervisorPlacement {
             String instanceId,
             Resources resources,
             Duration reservationTtl,
-            String availabilityZone) implements Serializable {
+            String availabilityZone,
+            String regionId,
+            String hypervisorType) implements Serializable {
         public ScheduleRequest {
             requireText(requestId, "requestId");
             requireText(reservationId, "reservationId");
