@@ -200,7 +200,7 @@ public final class HypervisorActor
         }
         List<HypervisorEvent> events = new ArrayList<>();
         events.add(new ResourcesReleased(allocation, clock.instant()));
-        if (state.status() == HypervisorStatus.DRAINING && state.allocations().size() == 1) {
+        if (state.status() == HypervisorStatus.DRAINING && state.runningVms() == 1) {
             events.add(new HypervisorMaintenanceEntered(clock.instant()));
         }
         return Effect().persist(events).thenRun(next -> {
@@ -232,12 +232,11 @@ public final class HypervisorActor
     }
 
     private Effect<HypervisorEvent, HypervisorState> onDrain(HypervisorState state, DrainHypervisor command) {
-        if (state.status() == HypervisorStatus.DRAINING && command.expectedMaintenanceTime() == null) {
-            command.replyTo().tell(ActionReply.succeeded(true));
+        if (state.status() != HypervisorStatus.ACTIVE) {
+            command.replyTo().tell(ActionReply.rejected("hypervisor must be ACTIVE before draining"));
             return Effect().none();
         }
         // A maintenance plan first enters DRAINING, even when no instances are currently allocated.
-        // Persist dated requests while draining as well, so a revised plan reaches the projection.
         return Effect().persist(new HypervisorDrainStarted(clock.instant(), command.expectedMaintenanceTime()))
                 .thenRun(next -> command.replyTo().tell(ActionReply.succeeded(false)));
     }
@@ -248,7 +247,7 @@ public final class HypervisorActor
             command.replyTo().tell(ActionReply.succeeded(true));
             return Effect().none();
         }
-        if (!state.allocations().isEmpty()) {
+        if (state.runningVms() > 0) {
             command.replyTo().tell(ActionReply.rejected("allocations must be released before maintenance"));
             return Effect().none();
         }

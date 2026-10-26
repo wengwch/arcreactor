@@ -18,6 +18,8 @@ public interface HypervisorHostMapper {
 
     HypervisorHostEntity findById(@Param("id") String id);
 
+    HypervisorHostEntity findByIdForUpdate(@Param("id") String id);
+
     List<HypervisorHostEntity> findAll();
 
     int update(HypervisorHostEntity entity);

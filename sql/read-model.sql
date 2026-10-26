@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS instance_allocation (
   gpu_count INT NOT NULL,
   allocation_status VARCHAR(32) NOT NULL,
   resource_version BIGINT NOT NULL,
-  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  INDEX idx_allocation_hypervisor_status (hypervisor_id, allocation_status)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS instance_view (
@@ -58,19 +59,4 @@ CREATE TABLE IF NOT EXISTS instance_view (
   INDEX idx_instance_hypervisor (hypervisor_id),
   INDEX idx_instance_phase (phase),
   INDEX idx_instance_nova_server (nova_server_id)
-) ENGINE=InnoDB;
-
-CREATE TABLE IF NOT EXISTS hypervisor_gpu (
-  hypervisor_id VARCHAR(255) NOT NULL,
-  gpu_id VARCHAR(255) NOT NULL,
-  model VARCHAR(255) NOT NULL,
-  memory_gb BIGINT COMMENT 'GB',
-  numa_node INT,
-  traits JSON NOT NULL,
-  assignment_status VARCHAR(32) NOT NULL DEFAULT 'AVAILABLE',
-  reservation_id VARCHAR(255),
-  instance_id VARCHAR(255),
-  resource_version BIGINT NOT NULL,
-  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (hypervisor_id, gpu_id)
 ) ENGINE=InnoDB;

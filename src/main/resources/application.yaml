@@ -4,6 +4,9 @@ spring:
   main:
     web-application-type: servlet
     keep-alive: true
+  web:
+    locale: zh-CN
+    locale-resolver: accept-header
   messages:
     basename: i18n/messages
     encoding: UTF-8

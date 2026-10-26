@@ -27,6 +27,7 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
             ResourceRequest resources = confirmed.reservation().resources();
             if (applyDelta(mapper, hypervisorId, resources, -1, 1, sequenceNumber, eventTimestamp)) {
                 upsertAllocation(mapper, hypervisorId, confirmed, sequenceNumber, eventTimestamp);
+                mapper.refreshHostRunningVms(hypervisorId);
             }
         } else if (event instanceof ReservationCancelled cancelled) {
             applyDelta(mapper, hypervisorId, cancelled.reservation().resources(), -1, 0,
@@ -39,6 +40,7 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
                     sequenceNumber, eventTimestamp)) {
                 mapper.markAllocationReleased(released.allocation().instanceId(), sequenceNumber,
                         Timestamp.from(eventTimestamp));
+                mapper.refreshHostRunningVms(hypervisorId);
             }
         } else if (event instanceof HypervisorEnabled) {
             applyStatus(mapper, hypervisorId, HypervisorStatus.ACTIVE, null, sequenceNumber, eventTimestamp);
@@ -60,6 +62,7 @@ public final class JdbcHypervisorReadRepository implements HypervisorReadReposit
                 event.capacity().gpus(),
                 version,
                 Timestamp.from(timestamp));
+        mapper.refreshHostRunningVms(hypervisorId);
     }
 
     private boolean applyDelta(HypervisorProjectionMapper mapper, String hypervisorId, ResourceRequest resources,

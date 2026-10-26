@@ -5,7 +5,6 @@ import org.apache.ibatis.annotations.Param;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Mapper
 public interface HypervisorProjectionMapper {
@@ -15,20 +14,6 @@ public interface HypervisorProjectionMapper {
             @Param("totalVcpu") int totalVcpu,
             @Param("totalMemoryGb") long totalMemoryGb,
             @Param("totalGpu") int totalGpu,
-            @Param("version") long version,
-            @Param("updatedAt") Timestamp updatedAt);
-
-    int deleteAllGpus(@Param("hypervisorId") String hypervisorId);
-
-    int deleteGpusExcept(
-            @Param("hypervisorId") String hypervisorId,
-            @Param("gpuIds") List<String> gpuIds);
-
-    int upsertGpu(
-            @Param("hypervisorId") String hypervisorId,
-            @Param("gpuId") String gpuId,
-            @Param("model") String model,
-            @Param("traits") String traits,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -54,6 +39,8 @@ public interface HypervisorProjectionMapper {
             @Param("status") String status,
             @Param("expectedMaintenanceTime") LocalDateTime expectedMaintenanceTime);
 
+    int refreshHostRunningVms(@Param("hypervisorId") String hypervisorId);
+
     int upsertAllocation(
             @Param("instanceId") String instanceId,
             @Param("hypervisorId") String hypervisorId,
@@ -65,15 +52,6 @@ public interface HypervisorProjectionMapper {
             @Param("updatedAt") Timestamp updatedAt);
 
     int markAllocationReleased(
-            @Param("instanceId") String instanceId,
-            @Param("version") long version,
-            @Param("updatedAt") Timestamp updatedAt);
-
-    int updateGpu(
-            @Param("hypervisorId") String hypervisorId,
-            @Param("gpuId") String gpuId,
-            @Param("status") String status,
-            @Param("reservationId") String reservationId,
             @Param("instanceId") String instanceId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);

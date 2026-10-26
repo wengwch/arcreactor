@@ -1,6 +1,8 @@
 package cn.veryai.arcreactor.web.params;
 
-import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.PositiveOrZero;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 @Data
@@ -20,26 +22,5 @@ public class UpdateHypervisorHostParam {
     @Size(max = 255)
     private String gpuType;
     @PositiveOrZero
-    private int vcpus;
-    /** 内存容量，单位 GB。 */
-    @PositiveOrZero
-    private int ram;
-    @PositiveOrZero
-    private int disk;
-    @PositiveOrZero
     private int gpus;
-    @PositiveOrZero
-    private int usedVcpus;
-    /** 已使用内存，单位 GB。 */
-    @PositiveOrZero
-    private int usedRam;
-    @PositiveOrZero
-    private int usedDisk;
-    @PositiveOrZero
-    private int usedGpus;
-    @NotNull
-    private Boolean enabled = true;
-    @NotBlank
-    @Size(max = 255)
-    private String regionId;
 }

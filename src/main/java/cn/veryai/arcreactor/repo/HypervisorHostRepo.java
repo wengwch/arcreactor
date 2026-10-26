@@ -30,6 +30,11 @@ public class HypervisorHostRepo {
         return mapper.findById(id);
     }
 
+    /** Must run inside the configuration update transaction to retain the row lock. */
+    public HypervisorHostEntity findByIdForUpdate(String id) {
+        return mapper.findByIdForUpdate(id);
+    }
+
     public List<HypervisorHostEntity> findAll() {
         return mapper.findAll();
     }

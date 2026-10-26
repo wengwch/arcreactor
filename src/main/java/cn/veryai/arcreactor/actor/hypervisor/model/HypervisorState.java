@@ -14,7 +14,8 @@ public record HypervisorState(
     Map<String, Allocation> allocations,
     Map<String, ReservationOutcome> reservationOutcomes,
     long version,
-    Map<String, Instant> reservationOutcomeTimes)
+    Map<String, Instant> reservationOutcomeTimes,
+    int runningVms)
     implements Serializable {
 
   public HypervisorState {
@@ -24,6 +25,9 @@ public record HypervisorState(
     Objects.requireNonNull(capacity, "capacity");
     reservations = Map.copyOf(Objects.requireNonNull(reservations, "reservations"));
     allocations = Map.copyOf(Objects.requireNonNull(allocations, "allocations"));
+    if (runningVms != allocations.size()) {
+      throw new IllegalArgumentException("runningVms must match the number of allocations");
+    }
     reservationOutcomes =
         Map.copyOf(Objects.requireNonNull(reservationOutcomes, "reservationOutcomes"));
     reservationOutcomeTimes =
@@ -40,7 +44,8 @@ public record HypervisorState(
         Map.of(),
         Map.of(),
         0,
-        Map.of());
+        Map.of(),
+        0);
   }
 
   public int reservedVcpus() {
@@ -183,7 +188,8 @@ public record HypervisorState(
         nextAllocations,
         nextOutcomes,
         version + 1,
-        nextOutcomeTimes);
+        nextOutcomeTimes,
+        nextAllocations.size());
   }
 
   public Set<String> expiredReservationOutcomes(Instant cutoff) {

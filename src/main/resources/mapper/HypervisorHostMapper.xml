@@ -41,15 +41,24 @@
         SELECT <include refid="columns"/> FROM hypervisor_host WHERE id = #{id}
     </select>
 
-    <!-- Existing hosts are refreshed only in MAINTENANCE; local configuration is preserved. -->
+    <select id="findByIdForUpdate" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_host WHERE id = #{id} FOR UPDATE
+    </select>
+
+    <!--
+        Existing hosts are refreshed only in MAINTENANCE.
+        name is initialized only on insert. Refreshes preserve name, description,
+        hypervisor_type, cpu_type, ram_type, disk_type, gpu_type and gpus.
+        running_vms is owned by the actor projection; inserts use the database default.
+    -->
     <insert id="upsertFromOpenstack">
         INSERT INTO hypervisor_host (
             id, name, hostname, ip, os_hypervisor_id, vcpus, ram, disk,
-            used_vcpus, used_ram, used_disk, running_vms, status, state,
+            used_vcpus, used_ram, used_disk, status, state,
             hypervisor_status, expected_maintenance_time, enabled, region_id
         ) VALUES (
             #{id}, #{name}, #{hostname}, #{ip}, #{osHypervisorId}, #{vcpus}, #{ram}, #{disk},
-            #{usedVcpus}, #{usedRam}, #{usedDisk}, #{runningVms}, #{status}, #{state},
+            #{usedVcpus}, #{usedRam}, #{usedDisk}, #{status}, #{state},
             #{hypervisorStatus}, #{expectedMaintenanceTime}, #{enabled}, #{regionId}
         )
         ON DUPLICATE KEY UPDATE
@@ -61,7 +70,6 @@
             used_vcpus = IF(hypervisor_status = 'MAINTENANCE', VALUES(used_vcpus), used_vcpus),
             used_ram = IF(hypervisor_status = 'MAINTENANCE', VALUES(used_ram), used_ram),
             used_disk = IF(hypervisor_status = 'MAINTENANCE', VALUES(used_disk), used_disk),
-            running_vms = IF(hypervisor_status = 'MAINTENANCE', VALUES(running_vms), running_vms),
             status = IF(hypervisor_status = 'MAINTENANCE', VALUES(status), status),
             state = IF(hypervisor_status = 'MAINTENANCE', VALUES(state), state)
     </insert>
@@ -80,28 +88,13 @@
         UPDATE hypervisor_host SET
             name = #{name},
             description = #{description},
-            hostname = #{hostname},
-            ip = #{ip},
-            os_hypervisor_id = #{osHypervisorId},
             hypervisor_type = #{hypervisorType},
             cpu_type = #{cpuType},
             ram_type = #{ramType},
             disk_type = #{diskType},
             gpu_type = #{gpuType},
-            vcpus = #{vcpus},
-            ram = #{ram},
-            disk = #{disk},
-            gpus = #{gpus},
-            used_vcpus = #{usedVcpus},
-            used_ram = #{usedRam},
-            used_disk = #{usedDisk},
-            used_gpus = #{usedGpus},
-            running_vms = #{runningVms},
-            status = #{status},
-            state = #{state},
-            enabled = #{enabled},
-            region_id = #{regionId}
-        WHERE id = #{id}
+            gpus = #{gpus}
+        WHERE id = #{id} AND hypervisor_status = 'MAINTENANCE'
     </update>
 
     <delete id="deleteById">

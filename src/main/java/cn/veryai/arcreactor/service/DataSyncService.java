@@ -138,10 +138,8 @@ public class DataSyncService {
         host.setUsedRam(hypervisor.getLocalMemoryUsed() / 1024);
         host.setDisk(hypervisor.getLocalDisk());
         host.setUsedDisk(hypervisor.getLocalDiskUsed());
-        host.setRunningVms(hypervisor.getRunningVM());
         host.setStatus(hypervisor.getStatus());
         host.setState(hypervisor.getState());
-        host.setEnabled(true);
         host.setRegionId(regionId);
         // hypervisorType references the local hardware dictionary, not Nova's QEMU/KVM type.
         // Nova's hypervisor API does not report GPU capacity or GPU usage.

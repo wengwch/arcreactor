@@ -1,9 +1,5 @@
 package cn.veryai.arcreactor.actor.instance.model;
 
-import cn.veryai.arcreactor.util.MemoryUnits;
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
@@ -62,29 +58,6 @@ public record InstanceSpec(
                 && !network.userNetwork().regionId().equals(region)) {
             throw new IllegalArgumentException("user network must belong to the instance region");
         }
-    }
-
-    @JsonCreator
-    public static InstanceSpec fromJson(
-            @JsonProperty("clusterId") String clusterId,
-            @JsonProperty("projectId") String projectId,
-            @JsonProperty("region") String region,
-            @JsonProperty("name") String name,
-            @JsonProperty("imageId") String imageId,
-            @JsonProperty("flavorId") String flavorId,
-            @JsonProperty("vcpus") int vcpus,
-            @JsonProperty("memoryGb") Long memoryGb,
-            @JsonProperty("memoryMb") Long legacyMemoryMb,
-            @JsonProperty("gpuCount") int gpuCount,
-            @JsonProperty("metadata") Map<String, String> metadata,
-            @JsonProperty("share") ShareRequirement share,
-            @JsonProperty("forwarding") ForwardingRequirement forwarding,
-            @JsonProperty("network") NetworkRequirement network,
-            @JsonProperty("projectName") String projectName,
-            @JsonProperty("cloudInit") CloudInitSpec cloudInit) {
-        return new InstanceSpec(clusterId, projectId, region, name, imageId, flavorId, vcpus,
-                MemoryUnits.readGigabytes(memoryGb, legacyMemoryMb), gpuCount, metadata,
-                share, forwarding, network, projectName, cloudInit);
     }
 
     /** Older snapshots have no cloud-init input. New submissions require it in the actor. */

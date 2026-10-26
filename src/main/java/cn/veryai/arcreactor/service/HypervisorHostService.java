@@ -11,18 +11,18 @@ import cn.veryai.arcreactor.actor.hypervisor.command.UpdateCapacity;
 import cn.veryai.arcreactor.actor.hypervisor.model.ResourceCapacity;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ActionReply;
 import cn.veryai.arcreactor.entity.HypervisorHostEntity;
+import cn.veryai.arcreactor.enums.HypervisorStatus;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
 import cn.veryai.arcreactor.repo.CpuTypeRepo;
 import cn.veryai.arcreactor.repo.RamTypeRepo;
 import cn.veryai.arcreactor.repo.DiskTypeRepo;
 import cn.veryai.arcreactor.repo.GpuTypeRepo;
 import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
-import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.web.params.UpdateHypervisorHostParam;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.pekko.actor.typed.javadsl.AskPattern;
-import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -45,7 +45,6 @@ public class HypervisorHostService {
   private final DiskTypeRepo diskTypeRepo;
   private final GpuTypeRepo gpuTypeRepo;
   private final HypervisorTypeRepo hypervisorTypeRepo;
-  private final RegionRepo regionIdRepo;
   private final PekkoRuntime pekkoRuntime;
 
   public List<HypervisorHostEntity> list() {
@@ -128,6 +127,13 @@ public class HypervisorHostService {
   @Transactional(propagation = Propagation.NOT_SUPPORTED)
   public void enable(String id) {
     HypervisorHostEntity host = get(id);
+    if (StringUtils.isAnyBlank(
+        host.getHypervisorType(), host.getCpuType(), host.getRamType(), host.getDiskType())) {
+      throw new BaseException(ErrorCode.HYPERVISOR_ENABLE_TYPES_REQUIRED);
+    }
+    if (StringUtils.isNotBlank(host.getGpuType()) && host.getGpus() <= 0) {
+      throw new BaseException(ErrorCode.HYPERVISOR_ENABLE_GPU_COUNT_INVALID);
+    }
     ResourceCapacity capacity;
     try {
       capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getGpus());
@@ -182,13 +188,25 @@ public class HypervisorHostService {
 
   @Transactional
   public HypervisorHostEntity update(String id, UpdateHypervisorHostParam param) {
-    HypervisorHostEntity entity = get(id);
-    BeanUtils.copyProperties(param, entity);
+    HypervisorHostEntity entity = hypervisorHostRepo.findByIdForUpdate(id);
+    if (entity == null) {
+      throw new BaseException(ErrorCode.HYPERVISOR_HOST_NOT_FOUND);
+    }
+    if (entity.getHypervisorStatus() != HypervisorStatus.MAINTENANCE) {
+      throw new BaseException(ErrorCode.HYPERVISOR_HOST_MAINTENANCE_REQUIRED);
+    }
+    entity.setName(param.getName());
+    entity.setDescription(param.getDescription());
+    entity.setHypervisorType(param.getHypervisorType());
+    entity.setCpuType(param.getCpuType());
+    entity.setRamType(param.getRamType());
+    entity.setDiskType(param.getDiskType());
+    entity.setGpuType(param.getGpuType());
+    entity.setGpus(param.getGpus());
     validate(entity);
     try {
-      int updated = hypervisorHostRepo.update(entity);
-      // MySQL may report zero for an unchanged row; distinguish it from a missing row.
-      if (updated == 0) get(id);
+      // The locked row remains in maintenance; an unchanged update may affect zero rows.
+      hypervisorHostRepo.update(entity);
     } catch (DuplicateKeyException exception) {
       throw new BaseException(ErrorCode.HYPERVISOR_HOST_ALREADY_EXISTS);
     } catch (DataIntegrityViolationException exception) {
@@ -224,15 +242,6 @@ public class HypervisorHostService {
     if (entity.getHypervisorType() != null
         && hypervisorTypeRepo.findById(entity.getHypervisorType()) == null) {
       throw new BaseException(ErrorCode.HYPERVISOR_TYPE_NOT_FOUND);
-    }
-    if (entity.getRegionId() != null && regionIdRepo.findById(entity.getRegionId()) == null) {
-      throw new BaseException(ErrorCode.REGION_NOT_FOUND);
-    }
-    if (entity.getUsedVcpus() > entity.getVcpus()
-        || entity.getUsedRam() > entity.getRam()
-        || entity.getUsedDisk() > entity.getDisk()
-        || entity.getUsedGpus() > entity.getGpus()) {
-      throw new BaseException(ErrorCode.HOST_RESOURCE_USAGE_EXCEEDED);
     }
   }
 }

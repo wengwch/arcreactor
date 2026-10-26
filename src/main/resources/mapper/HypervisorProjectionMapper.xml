@@ -19,31 +19,6 @@
           resource_version = GREATEST(resource_version, VALUES(resource_version))
     </insert>
 
-    <delete id="deleteAllGpus">
-        DELETE FROM hypervisor_gpu
-        WHERE hypervisor_id = #{hypervisorId}
-    </delete>
-
-    <delete id="deleteGpusExcept">
-        DELETE FROM hypervisor_gpu
-        WHERE hypervisor_id = #{hypervisorId}
-          AND gpu_id NOT IN
-        <foreach collection="gpuIds" item="gpuId" open="(" separator="," close=")">
-            #{gpuId}
-        </foreach>
-    </delete>
-
-    <insert id="upsertGpu">
-        INSERT INTO hypervisor_gpu(
-          hypervisor_id, gpu_id, model, traits, assignment_status, resource_version, updated_at)
-        VALUES (#{hypervisorId}, #{gpuId}, #{model}, #{traits}, 'AVAILABLE', #{version}, #{updatedAt})
-        ON DUPLICATE KEY UPDATE
-          model = IF(resource_version &lt; VALUES(resource_version), VALUES(model), model),
-          traits = IF(resource_version &lt; VALUES(resource_version), VALUES(traits), traits),
-          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
-          resource_version = GREATEST(resource_version, VALUES(resource_version))
-    </insert>
-
     <update id="applyResourceDelta">
         UPDATE hypervisor_resource SET
           reserved_vcpu = reserved_vcpu + #{reservedVcpuDelta},
@@ -69,6 +44,15 @@
         WHERE id = #{hypervisorId}
     </update>
 
+    <update id="refreshHostRunningVms">
+        UPDATE hypervisor_host
+        SET running_vms = (
+            SELECT COUNT(*) FROM instance_allocation
+            WHERE hypervisor_id = #{hypervisorId} AND allocation_status = 'ALLOCATED'
+        )
+        WHERE id = #{hypervisorId}
+    </update>
+
     <insert id="upsertAllocation">
         INSERT INTO instance_allocation(
           instance_id, hypervisor_id, reservation_id, vcpus, memory_gb, gpu_count,
@@ -85,14 +69,6 @@
         UPDATE instance_allocation
         SET allocation_status = 'RELEASED', resource_version = #{version}, updated_at = #{updatedAt}
         WHERE instance_id = #{instanceId} AND resource_version &lt; #{version}
-    </update>
-
-    <update id="updateGpu">
-        UPDATE hypervisor_gpu
-        SET assignment_status = #{status}, reservation_id = #{reservationId}, instance_id = #{instanceId},
-          resource_version = #{version}, updated_at = #{updatedAt}
-        WHERE hypervisor_id = #{hypervisorId} AND gpu_id = #{gpuId}
-          AND resource_version &lt; #{version}
     </update>
 
 </mapper>
