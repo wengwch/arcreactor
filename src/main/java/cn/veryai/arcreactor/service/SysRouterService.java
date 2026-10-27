@@ -77,7 +77,7 @@ public class SysRouterService {
     SysNetworkEntity sharedNetwork = sysNetworkRepo.findById(entity.getSharedNetId());
     if (sharedNetwork == null
         || !Objects.equals(sharedNetwork.getRegionId(), entity.getRegionId())
-        || !sharedNetwork.isRouterExternally()
+        || sharedNetwork.isRouterExternally()
         || sharedNetwork.getOsNetId() == null
         || sharedNetwork.getOsNetId().isBlank()) {
       throw new BaseException(ErrorCode.SHARED_NETWORK_NOT_FOUND);

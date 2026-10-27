@@ -15,27 +15,27 @@ import java.util.List;
 @RequestMapping("/api/v1/sys-networks")
 @RequiredArgsConstructor
 public class SysNetworkController {
-    private final SysNetworkService service;
+    private final SysNetworkService sysNetworkService;
 
     @PostMapping
     public ResponseEntity<SysNetworkEntity> create(@Valid @RequestBody SaveSysNetworkParam param) {
-        SysNetworkEntity entity = service.create(param);
+        SysNetworkEntity entity = sysNetworkService.create(param);
         return ResponseEntity.status(HttpStatus.CREATED).body(entity);
     }
 
     @GetMapping
     public List<SysNetworkEntity> list(@RequestParam(value = "regionId", required = false) String regionId) {
-        return service.list(regionId);
+        return sysNetworkService.list(regionId);
     }
 
     @GetMapping("/{id}")
     public SysNetworkEntity get(@PathVariable("id") String id) {
-        return service.get(id);
+        return sysNetworkService.get(id);
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable("id") String id) {
-        service.delete(id);
+        sysNetworkService.delete(id);
     }
 }

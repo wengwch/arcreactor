@@ -56,6 +56,7 @@ public final class FloatingIpActor
           if (!entityId.equals(command.identity().entityId())) {
             throw new IllegalArgumentException("Floating IP identity does not match its shard key");
           }
+          stash.stash(command);
           return stash.unstashAll(create(command.identity(), client, settings));
         })
         .onAnyMessage(command -> { stash.stash(command); return Behaviors.same(); }).build());
@@ -81,7 +82,7 @@ public final class FloatingIpActor
 
   @Override public CommandHandler<FloatingIpCommand, FloatingIpEvent, FloatingIpState> commandHandler() {
     return newCommandHandlerBuilder().forAnyState()
-        .onCommand(InitializeFloatingIp.class, (state, command) -> Effect().none())
+        .onCommand(InitializeFloatingIp.class, this::onInitialize)
         .onCommand(CreatePortForwarding.class, this::onCreate)
         .onCommand(GetPortForwarding.class, this::onGet)
         .onCommand(DeletePortForwarding.class, this::onDelete)
@@ -91,6 +92,31 @@ public final class FloatingIpActor
         .onCommand(ContinueClaim.class, this::onContinue)
         .onCommand(StartStep.class, this::onStartStep)
         .onCommand(StepCompleted.class, this::onStepCompleted).build();
+  }
+
+  private Effect<FloatingIpEvent, FloatingIpState> onInitialize(
+      FloatingIpState state, InitializeFloatingIp command) {
+    if (!identity.equals(command.identity())) {
+      acknowledgeInitialization(command, false);
+      return Effect().none();
+    }
+    byte[] portMask = command.portMask();
+    if (portMask == null) {
+      acknowledgeInitialization(command, true);
+      return Effect().none();
+    }
+    byte[] initialPortMask = state.initialPortMask();
+    if (initialPortMask != null) {
+      acknowledgeInitialization(command,
+          BitSet.valueOf(initialPortMask).equals(BitSet.valueOf(portMask)));
+      return Effect().none();
+    }
+    return Effect().persist(new FloatingIpInitialized(portMask))
+        .thenRun(next -> acknowledgeInitialization(command, true));
+  }
+
+  private static void acknowledgeInitialization(InitializeFloatingIp command, boolean accepted) {
+    if (command.replyTo() != null) command.replyTo().tell(accepted);
   }
 
   private Effect<FloatingIpEvent, FloatingIpState> onCreate(FloatingIpState state, CreatePortForwarding command) {
@@ -371,6 +397,7 @@ public final class FloatingIpActor
 
   @Override public EventHandler<FloatingIpState, FloatingIpEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
+        .onEvent(FloatingIpInitialized.class, (state, event) -> state.initialized(event.portMask()))
         .onEvent(ForwardingUpdated.class, (state, event) -> state.updated(event.claim()))
         .onEvent(ForwardingCancelled.class, (state, event) -> state.cancelled(event.claimId(), event.instanceId())).build();
   }

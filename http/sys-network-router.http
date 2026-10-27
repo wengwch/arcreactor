@@ -1,0 +1,104 @@
+# 来源：enqcloud_test.sys_network.csv、enqcloud_test.sys_router.csv。
+# 按顺序执行 3 个网络请求，再执行路由请求；修改 baseUrl 为实际服务地址。
+# 前置条件：Test-SH-01 区域及其 OpenStack 集群已存在，集群 adminDefaultProjectId
+# 应与源数据的 31205d8c26f4471cbed5f8c5a689a585 一致。
+# initOpenstack=false：仅在应用数据库创建记录，复用 CSV 中已有的 OpenStack 资源。
+# 应用业务 id 会重新生成；CSV 的 _id、_class 不属于创建接口字段。
+# 重复执行会新增业务记录，请按需运行。
+@baseUrl = http://localhost:8080
+
+### 1. 导入公网网络（CSV _id：16bce9f5-729f-428e-9619-ea0c241d3868）
+# @name createPublicNetwork
+POST {{baseUrl}}/api/v1/sys-networks
+Content-Type: application/json
+
+{
+  "name": "sys_public_network",
+  "ipv4CIDR": "172.30.64.0/21",
+  "gateway": "172.30.64.1",
+  "dns": "223.5.5.5",
+  "segmentId": "2225",
+  "sysNetworkType": "PUBLIC",
+  "physicalNetwork": "physnet1",
+  "osNetId": "16bce9f5-729f-428e-9619-ea0c241d3868",
+  "osSubNetId": "ecad5b72-97a3-41ce-b476-e1ff12d7a648",
+  "regionId": "Test-SH-01",
+  "hostRoute": {},
+  "initOpenstack": false
+}
+
+> {%
+  client.global.clear("csvPublicNetworkId");
+  if (response.status !== 201 || !response.body.id) {
+    throw new Error("公网网络导入失败，请检查响应后重新执行。");
+  }
+  client.global.set("csvPublicNetworkId", response.body.id);
+%}
+
+### 2. 导入本地网络（CSV _id：f464dee5-f8d1-477c-9184-56ad0bc33c04）
+# @name createLocalNetwork
+POST {{baseUrl}}/api/v1/sys-networks
+Content-Type: application/json
+
+{
+  "name": "sys_local_network",
+  "ipv4CIDR": "172.30.48.0/20",
+  "gateway": "172.30.48.1",
+  "dns": "223.5.5.5",
+  "segmentId": "2224",
+  "sysNetworkType": "LOCAL",
+  "physicalNetwork": "physnet1",
+  "osNetId": "f464dee5-f8d1-477c-9184-56ad0bc33c04",
+  "osSubNetId": "5d6b18b5-81ac-4647-8f25-8e18e4c5aca7",
+  "regionId": "Test-SH-01",
+  "hostRoute": {},
+  "initOpenstack": false
+}
+
+### 3. 导入共享网络（CSV _id：84500586-ee27-4237-b7fe-0871e82819db）
+# @name createSharedNetwork
+POST {{baseUrl}}/api/v1/sys-networks
+Content-Type: application/json
+
+{
+  "name": "sys_shared_network",
+  "ipv4CIDR": "100.125.0.0/16",
+  "gateway": "100.125.0.1",
+  "dns": "223.5.5.5",
+  "segmentId": "3000000",
+  "sysNetworkType": "SHARED",
+  "physicalNetwork": null,
+  "osNetId": "84500586-ee27-4237-b7fe-0871e82819db",
+  "osSubNetId": "1ab6ae07-9493-4eaa-b72a-5df9baba61d4",
+  "regionId": "Test-SH-01",
+  "hostRoute": {},
+  "initOpenstack": false
+}
+
+> {%
+  client.global.clear("csvSharedNetworkId");
+  if (response.status !== 201 || !response.body.id) {
+    throw new Error("共享网络导入失败，请检查响应后重新执行。");
+  }
+  client.global.set("csvSharedNetworkId", response.body.id);
+%}
+
+### 4. 导入路由（CSV _id：f632f981-0537-4b11-8431-3570d40fcbbb）
+# 当前代码会报 SHARED_NETWORK_NOT_FOUND：SysRouterService.create 要求共享网络
+# routerExternally=true，但源数据和 SHARED 网络创建结果均为 false。
+# 修正该业务校验后再执行本请求；initOpenstack=false 也不会绕过该校验。
+# extNetId/sharedNetId 使用上面创建响应的业务 id，不能直接使用 CSV _id。
+# CSV osSharedNetSubnetId 通过 sys_network.osSubNetId 匹配到了 sys_shared_network。
+# osSharedNetPortId 无对应请求字段；osExtNetId/osSharedNetId 由服务查询网络后填充。
+# @name createSysRouter
+POST {{baseUrl}}/api/v1/sys-routers
+Content-Type: application/json
+
+{
+  "name": "sys_public_router",
+  "extNetId": "{{csvPublicNetworkId}}",
+  "sharedNetId": "{{csvSharedNetworkId}}",
+  "osRouterId": "f632f981-0537-4b11-8431-3570d40fcbbb",
+  "regionId": "Test-SH-01",
+  "initOpenstack": false
+}

@@ -1,0 +1,37 @@
+# 新库先执行 sql/floating-ips.sql；已按旧结构建表的库执行 sql/migrations/add-floating-ip-port-mask.sql。
+# 先执行 http/sys-network-router.http 中的公网网络请求，保存 csvPublicNetworkId，
+# 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
+# Test-SH-01 所属集群的 adminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
+# portMask 使用 Base64 字符串，对应源记录的 BinData；省略时默认为空位图。
+# 新建和登记都会初始化对应的 FloatingIpActor，等待初始位图持久化确认后返回。
+@baseUrl = http://localhost:8080
+@regionId = Test-SH-01
+@extNetId = {{csvPublicNetworkId}}
+
+### 创建用于端口转发的浮动 IP，返回 HTTP 201 和浮动 IP 记录
+# 默认 initOpenstack=true，在 OpenStack 中分配地址，不绑定实例端口。
+POST {{baseUrl}}/api/v1/floating-ips
+Content-Type: application/json
+
+{
+  "name": "shared-floating-ip",
+  "regionId": "{{regionId}}",
+  "extNetId": "{{extNetId}}"
+}
+
+### 登记源记录中的浮动 IP（只保存记录，不创建 OpenStack 资源）
+# 源 _id：2a899f59-4d64-4be3-a023-2a3ec4c9b818；新业务 id 由服务生成。
+# name 根据 IP 地址命名；osProjectId 由区域所属集群配置填充。
+# fromIdx、createTime、_class 不属于当前接口参数。
+POST {{baseUrl}}/api/v1/floating-ips
+Content-Type: application/json
+
+{
+  "name": "floating-ip-172.30.67.137",
+  "regionId": "{{regionId}}",
+  "extNetId": "{{extNetId}}",
+  "osFloatingIpId": "2a899f59-4d64-4be3-a023-2a3ec4c9b818",
+  "floatingIp": "172.30.67.137",
+  "portMask": "MA8AAAAAwMA=",
+  "initOpenstack": false
+}

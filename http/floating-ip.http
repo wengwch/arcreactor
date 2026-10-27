@@ -1,0 +1,22 @@
+# CSV 中没有 floatingIP 记录；本文件是根据已有公网网络生成的新建请求模板。
+# 项目暂无 floatingIP 创建 HTTP 接口，以下请求直接调用 OpenStack Neutron。
+# 执行前填写 Test-SH-01 区域的 Neutron 地址（不含 /v2.0）及有效 Token。
+# Token 应具有项目 31205d8c26f4471cbed5f8c5a689a585 的相应权限。
+# 本请求会实际分配新的 floatingIP；地址及 floatingIP ID 以响应为准。
+# 官方接口：https://docs.openstack.org/api-ref/network/v2/index.html#create-floating-ip
+@neutronEndpoint = https://REPLACE_WITH_NEUTRON_ENDPOINT
+@token = REPLACE_WITH_OPENSTACK_TOKEN
+
+### 创建用于端口转发的 floatingIP（不直接绑定实例端口）
+# floating_network_id 使用 CSV 的 osNetId，不使用应用新生成的业务 id。
+# 直接绑定实例时，在 floatingip 中增加 port_id；端口 ID 不在这两份 CSV 中。
+POST {{neutronEndpoint}}/v2.0/floatingips
+X-Auth-Token: {{token}}
+Content-Type: application/json
+
+{
+  "floatingip": {
+    "floating_network_id": "16bce9f5-729f-428e-9619-ea0c241d3868",
+    "project_id": "31205d8c26f4471cbed5f8c5a689a585"
+  }
+}

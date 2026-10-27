@@ -13,11 +13,13 @@ import java.util.Set;
 public record FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> cancelledClaims,
     Set<String> cancelledInstances,
     @JsonSerialize(using = PortUsageJson.Serializer.class)
-    @JsonDeserialize(using = PortUsageJson.Deserializer.class) BitSet usedPorts) implements Serializable {
+    @JsonDeserialize(using = PortUsageJson.Deserializer.class) BitSet usedPorts,
+    byte[] initialPortMask) implements Serializable {
   public FloatingIpState {
     claims = Map.copyOf(claims);
     cancelledClaims = Set.copyOf(cancelledClaims);
     cancelledInstances = Set.copyOf(cancelledInstances);
+    initialPortMask = initialPortMask == null ? null : initialPortMask.clone();
     if (usedPorts == null) {
       usedPorts = new BitSet();
       for (ForwardingClaim claim : claims.values()) {
@@ -29,8 +31,22 @@ public record FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> c
     } else {
       usedPorts = (BitSet) usedPorts.clone();
     }
+    if (initialPortMask != null) usedPorts.or(BitSet.valueOf(initialPortMask));
   }
+
+  public FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> cancelledClaims,
+      Set<String> cancelledInstances, BitSet usedPorts) {
+    this(claims, cancelledClaims, cancelledInstances, usedPorts, null);
+  }
+
   @Override public BitSet usedPorts() { return (BitSet) usedPorts.clone(); }
+  @Override public byte[] initialPortMask() {
+    return initialPortMask == null ? null : initialPortMask.clone();
+  }
+
+  public FloatingIpState initialized(byte[] portMask) {
+    return new FloatingIpState(claims, cancelledClaims, cancelledInstances, usedPorts, portMask);
+  }
 
   public FloatingIpState updated(ForwardingClaim claim) {
     Map<String, ForwardingClaim> next = new HashMap<>(claims);
@@ -48,13 +64,13 @@ public record FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> c
       }
       ports.set(newPort - FloatingIpSettings.FIRST_PORT);
     }
-    return new FloatingIpState(next, cancelledClaims, cancelledInstances, ports);
+    return new FloatingIpState(next, cancelledClaims, cancelledInstances, ports, initialPortMask);
   }
   public FloatingIpState cancelled(String claimId, String instanceId) {
     Set<String> nextClaims = new HashSet<>(cancelledClaims);
     Set<String> nextInstances = new HashSet<>(cancelledInstances);
     if (claimId != null) nextClaims.add(claimId);
     if (instanceId != null) nextInstances.add(instanceId);
-    return new FloatingIpState(claims, nextClaims, nextInstances, usedPorts);
+    return new FloatingIpState(claims, nextClaims, nextInstances, usedPorts, initialPortMask);
   }
 }

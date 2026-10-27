@@ -11,6 +11,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.typesafe.config.Config;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -37,6 +38,20 @@ public final class FloatingIpForwardings {
         config.getDuration("operation-timeout"), config.getInt("max-attempts"));
     sharding.init(Entity.of(FloatingIpActor.TYPE_KEY,
         context -> FloatingIpActor.awaitingIdentity(context.getEntityId(), client, settings)));
+  }
+
+  /** Completes after the actor has persisted its initial port reservations. */
+  public CompletionStage<Boolean> initialize(FloatingIpIdentity identity, byte[] portMask) {
+    Objects.requireNonNull(identity, "identity");
+    Objects.requireNonNull(portMask, "portMask");
+    String key = identity.entityId();
+    EntityRef<FloatingIpCommand> ref = sharding.entityRefFor(FloatingIpActor.TYPE_KEY, key);
+    return AskPattern.<FloatingIpCommand, Boolean>ask(ref,
+        replyTo -> new InitializeFloatingIp(identity, portMask, replyTo), askTimeout, system.scheduler())
+        .thenApply(accepted -> {
+          if (Boolean.TRUE.equals(accepted)) identities.put(key, identity);
+          return accepted;
+        });
   }
 
   public CompletionStage<ForwardingReply> create(String floatingIpId, String claimId, ForwardingSpec spec) {
