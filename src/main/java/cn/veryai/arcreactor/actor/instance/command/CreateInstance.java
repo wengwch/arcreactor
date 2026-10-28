@@ -5,6 +5,7 @@ import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import java.util.Objects;
 import org.apache.pekko.actor.typed.ActorRef;
 
+/** spec.network carries independent parent/subport bandwidth limits, persisted with the create event. */
 public record CreateInstance(String requestId, String instanceId, InstanceSpec spec,
         ActorRef<InstanceReply> replyTo) implements WorkflowCommand {
     public CreateInstance {

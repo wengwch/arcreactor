@@ -40,6 +40,12 @@ instance:
     network-dns: "${INSTANCE_NETWORK_DNS:}"
     network-gateway: "${INSTANCE_NETWORK_GATEWAY:}"
     segmentation-id: "${INSTANCE_SEGMENTATION_ID:100}"
+    parent-port-bandwidth-limit:
+      max-kbps: "${INSTANCE_PARENT_PORT_MAX_KBPS:0}"
+      max-burst-kbits: "${INSTANCE_PARENT_PORT_MAX_BURST_KBITS:0}"
+    sub-port-bandwidth-limit:
+      max-kbps: "${INSTANCE_SUB_PORT_MAX_KBPS:0}"
+      max-burst-kbits: "${INSTANCE_SUB_PORT_MAX_BURST_KBITS:0}"
     ssh-username: "${INSTANCE_SSH_USERNAME:clouduser}"
     host-routes: {}
 

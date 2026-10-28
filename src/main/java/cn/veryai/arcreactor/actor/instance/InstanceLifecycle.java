@@ -20,6 +20,7 @@ public interface InstanceLifecycle {
      * Project IDs can be omitted. New projects use projectName or the share's user ID; existing projects are reused.
      * Network requirements must include a userNetwork specification; subport network/subnet IDs are resolved after READY.
      * Parent network/subnet IDs are resolved from the region's preset SHARED network.
+     * network also supplies independent parentPortBandwidthLimit and subPortBandwidthLimit values.
      * cloudInit supplies the SSH credentials, Jupyter token and static routes for the guest.
      * region and hypervisorType constrain placement to matching registered hosts.
      * memoryGb is measured in GB.

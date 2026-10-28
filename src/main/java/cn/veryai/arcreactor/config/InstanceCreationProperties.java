@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.config;
 
+import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.Data;
@@ -18,6 +19,8 @@ public class InstanceCreationProperties {
     private String networkDns = "";
     private String networkGateway;
     private int segmentationId = 100;
+    private PortBandwidthLimit parentPortBandwidthLimit = PortBandwidthLimit.UNLIMITED;
+    private PortBandwidthLimit subPortBandwidthLimit = PortBandwidthLimit.UNLIMITED;
     private String sshUsername = "clouduser";
     private Map<String, String> hostRoutes = new HashMap<>();
 }

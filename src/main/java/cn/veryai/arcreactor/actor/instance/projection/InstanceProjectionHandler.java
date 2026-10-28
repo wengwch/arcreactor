@@ -27,9 +27,6 @@ import cn.veryai.arcreactor.actor.instance.event.ProvisioningDeadlineReached;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.ResourcesReservedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
-import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
-import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharedNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.UserNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
@@ -55,9 +52,6 @@ public final class InstanceProjectionHandler
         } else if (event instanceof ProjectPreparationStarted || event instanceof ProjectStatusCheckStarted
                 || event instanceof ProjectPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_PROJECT", version, timestamp);
-        } else if (event instanceof SharePreparationStarted || event instanceof ShareStatusCheckStarted
-                || event instanceof SharePrepared) {
-            mapper.updatePhase(instanceId, "PREPARING_SHARE", version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
         } else if (event instanceof NetworkPreparationStarted || event instanceof NetworkCreationRequested

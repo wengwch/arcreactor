@@ -132,7 +132,8 @@ public class InstanceService {
             network = new NetworkRequirement(creationProperties.getSegmentationId(),
                     new NetworkSpec(region.getId(), "network-" + resourceId,
                             creationProperties.getNetworkCidr(), creationProperties.getNetworkDns(),
-                            creationProperties.getNetworkGateway()));
+                            creationProperties.getNetworkGateway()),
+                    creationProperties.getParentPortBandwidthLimit(), creationProperties.getSubPortBandwidthLimit());
             cloudInit = new CloudInitSpec(creationProperties.getSshUsername(), secret(24), secret(32),
                     creationProperties.getHostRoutes());
         } catch (IllegalArgumentException | NullPointerException | CloudInitRenderer.RenderingException exception) {

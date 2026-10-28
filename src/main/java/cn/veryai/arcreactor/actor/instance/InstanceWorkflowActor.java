@@ -9,7 +9,6 @@ import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
 import cn.veryai.arcreactor.actor.instance.command.CheckNetwork;
 import cn.veryai.arcreactor.actor.instance.command.CheckNovaStatus;
 import cn.veryai.arcreactor.actor.instance.command.CheckProjectStatus;
-import cn.veryai.arcreactor.actor.instance.command.CheckShareStatus;
 import cn.veryai.arcreactor.actor.instance.command.CompensationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmRejected;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmSucceeded;
@@ -34,9 +33,6 @@ import cn.veryai.arcreactor.actor.instance.command.RetryCompensation;
 import cn.veryai.arcreactor.actor.instance.command.RetryConfirm;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingFailed;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
-import cn.veryai.arcreactor.actor.instance.command.SharePreparationTimedOut;
-import cn.veryai.arcreactor.actor.instance.command.ShareStatusQueryFailed;
-import cn.veryai.arcreactor.actor.instance.command.ShareStatusSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.SharedNetworkStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.StartCompensation;
 import cn.veryai.arcreactor.actor.instance.command.UserNetworkStatusCompleted;
@@ -68,9 +64,6 @@ import cn.veryai.arcreactor.actor.instance.event.ProvisioningDeadlineReached;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.ResourcesReservedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
-import cn.veryai.arcreactor.actor.instance.event.SharePreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.SharePrepared;
-import cn.veryai.arcreactor.actor.instance.event.ShareStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.event.SharedNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.UserNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
@@ -81,14 +74,11 @@ import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
-import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.actor.user.UserResources;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
-import cn.veryai.arcreactor.actor.user.model.UserShareState;
 import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
-import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import cn.veryai.arcreactor.entity.SysNetworkEntity;
 import cn.veryai.arcreactor.enums.SysNetworkType;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
@@ -135,8 +125,6 @@ public final class InstanceWorkflowActor
   private static final String RECONCILE_TIMER = "nova-reconcile";
   private static final String CONFIRM_TIMER = "reservation-confirm";
   private static final String COMPENSATION_TIMER = "compensation";
-  private static final String SHARE_POLL_TIMER = "share-status-poll";
-  private static final String SHARE_DEADLINE_TIMER = "share-preparation-deadline";
   private static final String FORWARDING_POLL_TIMER = "forwarding-status-poll";
   private static final String FORWARDING_DEADLINE_TIMER = "forwarding-preparation-deadline";
   private static final String NETWORK_TIMER = "network-preparation";
@@ -160,7 +148,6 @@ public final class InstanceWorkflowActor
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
-  private boolean shareRequestInFlight;
   private boolean forwardingRequestInFlight;
   private boolean networkRequestInFlight;
   private boolean projectRequestInFlight;
@@ -242,10 +229,6 @@ public final class InstanceWorkflowActor
         .onCommand(UserNetworkStatusCompleted.class, this::onUserNetworkStatusCompleted)
         .onCommand(SharedNetworkStatusCompleted.class, this::onSharedNetworkStatusCompleted)
         .onCommand(NetworkStepCompleted.class, this::onNetworkStepCompleted)
-        .onCommand(CheckShareStatus.class, this::onCheckShareStatus)
-        .onCommand(ShareStatusSucceeded.class, this::onShareStatusSucceeded)
-        .onCommand(ShareStatusQueryFailed.class, this::onShareStatusQueryFailed)
-        .onCommand(SharePreparationTimedOut.class, this::onSharePreparationTimedOut)
         .onCommand(CheckForwardingStatus.class, this::onCheckForwardingStatus)
         .onCommand(ForwardingStatusCompleted.class, this::onForwardingStatusCompleted)
         .onCommand(ForwardingPreparationTimedOut.class, this::onForwardingPreparationTimedOut)
@@ -289,8 +272,8 @@ public final class InstanceWorkflowActor
                       "instance already belongs to another request or specification"));
       return Effect().none();
     }
-    if (command.spec().share() == null) {
-      command.replyTo().tell(InstanceReply.rejected("share dependency is required"));
+    if (command.spec().share() == null || command.spec().share().preparedShare() == null) {
+      command.replyTo().tell(InstanceReply.rejected("a prepared share dependency is required"));
       return Effect().none();
     }
     if (command.spec().network() == null) {
@@ -360,8 +343,8 @@ public final class InstanceWorkflowActor
         }
         Instant now = clock.instant();
         yield Effect().persist(List.of(new ProjectPrepared(instanceId, reply.projectId(), now),
-                new SharePreparationStarted(instanceId, now.plus(settings.sharePreparationTimeout()))))
-            .thenRun(next -> { cancelProjectTimers(); startSharePreparation(next); });
+                new NetworkPreparationStarted(instanceId, now.plus(settings.provisioningTimeout()))))
+            .thenRun(next -> { cancelProjectTimers(); startNetworkPreparation(next); });
       }
       case FAILED -> failProjectPreparation("PROJECT_PREPARATION_FAILED", reply.detail());
       case REJECTED -> failProjectPreparation("PROJECT_PREPARATION_REJECTED", reply.detail());
@@ -439,147 +422,6 @@ public final class InstanceWorkflowActor
     timers.cancel(PROJECT_POLL_TIMER);
     timers.cancel(PROJECT_DEADLINE_TIMER);
     projectRequestInFlight = false;
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckShareStatus(
-      InstanceWorkflowState state, CheckShareStatus command) {
-    if (!matchesShareRequest(state, command.generation()) || shareRequestInFlight) {
-      return Effect().none();
-    }
-    if (shareWaitExpired(state)) return failSharePreparation("SHARE_PREPARATION_TIMEOUT",
-        "Timeout waiting for the shared storage dependency");
-    return Effect().persist(new ShareStatusCheckStarted(instanceId))
-        .thenRun(next -> requestShare(next, command.attempt(), false));
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onShareStatusSucceeded(
-      InstanceWorkflowState state, ShareStatusSucceeded command) {
-    if (!matchesShareRequest(state, command.generation())) return Effect().none();
-    shareRequestInFlight = false;
-    if (shareWaitExpired(state)) return failSharePreparation("SHARE_PREPARATION_TIMEOUT",
-        "Timeout waiting for the shared storage dependency");
-    ShareReply reply = command.reply();
-    if (reply == null) {
-      scheduleSharePoll(state, command.attempt() + 1);
-      return Effect().none();
-    }
-    return switch (reply.status()) {
-      case READY -> {
-        UserShareState share = reply.share();
-        if (share == null || share.phase() != UserShareState.Phase.READY
-            || !state.shareSpec().equals(share.spec())
-            || !hasText(share.osShareId()) || !hasText(share.osExportLocationId())
-            || !hasText(share.exportLocationPath()) || !hasText(share.osGrantAccessId())
-            || !hasText(share.accessKey())) {
-          yield failSharePreparation("SHARE_RESULT_INVALID", "Share readiness result is incomplete or mismatched");
-        }
-        Instant now = clock.instant();
-        InstanceWorkflowEvent nextStage = state.spec().network() == null
-            ? afterNetworkStage(state, now)
-            : new NetworkPreparationStarted(instanceId, now.plus(settings.provisioningTimeout()));
-        yield Effect().persist(List.of(
-                new SharePrepared(instanceId, PreparedShare.from(share), now),
-                nextStage))
-            .thenRun(next -> {
-              cancelShareTimers();
-              if (next.phase() == InstancePhase.PREPARING_NETWORK) startNetworkPreparation(next);
-              else startAfterNetwork(next);
-            });
-      }
-      case FAILED -> failSharePreparation("SHARE_PREPARATION_FAILED", reply.detail());
-      case REJECTED -> failSharePreparation("SHARE_PREPARATION_REJECTED", reply.detail());
-      case NOT_FOUND -> {
-        if (command.submission()) {
-          scheduleSharePoll(state, command.attempt() + 1);
-          yield Effect().none();
-        }
-        // A crash may have occurred before the original submission reached UserActor.
-        yield Effect().persist(new ShareStatusCheckStarted(instanceId))
-            .thenRun(next -> requestShare(next, command.attempt(), true));
-      }
-      case IN_PROGRESS -> {
-        scheduleSharePoll(state, command.attempt() + 1);
-        yield Effect().none();
-      }
-    };
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onShareStatusQueryFailed(
-      InstanceWorkflowState state, ShareStatusQueryFailed command) {
-    if (!matchesShareRequest(state, command.generation())) return Effect().none();
-    shareRequestInFlight = false;
-    if (shareWaitExpired(state)) return failSharePreparation("SHARE_PREPARATION_TIMEOUT",
-        "Timeout waiting for the shared storage dependency");
-    // An ask timeout says nothing about the outcome of the shared resource creation.
-    scheduleSharePoll(state, command.attempt() + 1);
-    return Effect().none();
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSharePreparationTimedOut(
-      InstanceWorkflowState state, SharePreparationTimedOut command) {
-    if (state.phase() != InstancePhase.PREPARING_SHARE
-        || !Objects.equals(state.sharePreparationDeadline(), command.deadline())) return Effect().none();
-    if (!shareWaitExpired(state)) {
-      scheduleShareDeadline(state);
-      return Effect().none();
-    }
-    return failSharePreparation("SHARE_PREPARATION_TIMEOUT", "Timeout waiting for the shared storage dependency");
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failSharePreparation(String code, String detail) {
-    return Effect().persist(new InstanceProvisioningFailed(instanceId, code, detail, clock.instant()))
-        .thenRun(next -> {
-          cancelShareTimers();
-          // No host has been reserved yet, and shared storage remains owned by UserActor.
-          metrics.workflowFailed();
-        });
-  }
-
-  private void startSharePreparation(InstanceWorkflowState state) {
-    scheduleShareDeadline(state);
-    if (!shareWaitExpired(state)) requestShare(state, 1, true);
-  }
-
-  private void requestShare(InstanceWorkflowState state, int attempt, boolean submission) {
-    ShareRequirement required = state.spec().share();
-    shareRequestInFlight = true;
-    CompletionStage<ShareReply> request;
-    try {
-      request = submission
-          ? userResources.createShare(required.userId(), required.shareId(), state.shareSpec())
-          : userResources.getShare(required.userId(), required.spec().regionId());
-    } catch (RuntimeException error) {
-      request = CompletableFuture.failedFuture(error);
-    }
-    context.pipeToSelf(request, (reply, error) -> error == null
-        ? new ShareStatusSucceeded(state.pollingGeneration(), attempt, submission, reply)
-        : new ShareStatusQueryFailed(state.pollingGeneration(), attempt));
-  }
-
-  private void scheduleSharePoll(InstanceWorkflowState state, int attempt) {
-    timers.startSingleTimer(SHARE_POLL_TIMER,
-        new CheckShareStatus(state.pollingGeneration(), attempt), settings.pollDelay(attempt));
-  }
-
-  private void scheduleShareDeadline(InstanceWorkflowState state) {
-    Duration remaining = Duration.between(clock.instant(), state.sharePreparationDeadline());
-    timers.startSingleTimer(SHARE_DEADLINE_TIMER,
-        new SharePreparationTimedOut(state.sharePreparationDeadline()),
-        remaining.isNegative() || remaining.isZero() ? Duration.ofMillis(1) : remaining);
-  }
-
-  private void cancelShareTimers() {
-    timers.cancel(SHARE_POLL_TIMER);
-    timers.cancel(SHARE_DEADLINE_TIMER);
-    shareRequestInFlight = false;
-  }
-
-  private boolean shareWaitExpired(InstanceWorkflowState state) {
-    return !clock.instant().isBefore(state.sharePreparationDeadline());
-  }
-
-  private static boolean matchesShareRequest(InstanceWorkflowState state, long generation) {
-    return state.phase() == InstancePhase.PREPARING_SHARE && state.pollingGeneration() == generation;
   }
 
   private static boolean hasText(String value) {
@@ -1444,9 +1286,6 @@ public final class InstanceWorkflowActor
         .onEvent(ProjectPreparationStarted.class, (state, event) -> state.preparingProject(event.deadline()))
         .onEvent(ProjectStatusCheckStarted.class, (state, event) -> state.dependencyCheckStarted())
         .onEvent(ProjectPrepared.class, (state, event) -> state.projectPrepared(event.projectId()))
-        .onEvent(SharePreparationStarted.class, (state, event) -> state.preparingShare(event.deadline()))
-        .onEvent(ShareStatusCheckStarted.class, (state, event) -> state.dependencyCheckStarted())
-        .onEvent(SharePrepared.class, (state, event) -> state.sharePrepared(event.share()))
         .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline(),
             state.spec().network().userNetwork() == null
                 ? NetworkPreparation.Step.PARENT_PORT : NetworkPreparation.Step.USER_NETWORK))
@@ -1538,10 +1377,6 @@ public final class InstanceWorkflowActor
                 case PREPARING_FORWARDING -> {
                   scheduleForwardingDeadline(state);
                   context.getSelf().tell(new CheckForwardingStatus(state.pollingGeneration(), 1));
-                }
-                case PREPARING_SHARE -> {
-                  scheduleShareDeadline(state);
-                  context.getSelf().tell(new CheckShareStatus(state.pollingGeneration(), 1));
                 }
                 case SCHEDULING -> startScheduling(state);
                 case NOVA_CREATING ->

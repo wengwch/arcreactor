@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.openstack;
 
 import cn.veryai.arcreactor.actor.instance.model.NetworkPreparation;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
+import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
@@ -33,6 +34,7 @@ import org.openstack4j.model.network.SecurityGroup;
 import org.openstack4j.model.network.builder.NetworkBuilder;
 import org.openstack4j.model.network.builder.SubnetBuilder;
 import org.openstack4j.model.network.options.PortListOptions;
+import org.openstack4j.model.network.ext.NetQosPolicy;
 import org.openstack4j.model.network.ext.NetQosPolicyBandwidthLimitRule;
 import org.openstack4j.model.network.ext.PortForwarding;
 import org.openstack4j.openstack.OSFactory;
@@ -658,11 +660,108 @@ public class OpenStackClient {
   }
 
   public Port createPort(String region, String projectId, String netId, String subnetId) {
+    return createPort(region, projectId, netId, subnetId, PortBandwidthLimit.UNLIMITED);
+  }
+
+  public Port createPort(String region, String projectId, String netId, String subnetId,
+      PortBandwidthLimit bandwidthLimit) {
     OSClient.OSClientV3 client = getOsAdminClient(region, projectId);
-    return client
-        .networking()
-        .port()
-        .create(Builders.port().fixedIp(null, subnetId).networkId(netId).build());
+    return createPortWithQos(client, Builders.port().name("arcreactor-" + UUID.randomUUID())
+        .tenantId(projectId).fixedIp(null, subnetId).networkId(netId).build(), bandwidthLimit);
+  }
+
+  /** Creates the policy and both bandwidth rules, then binds them in the port create request. */
+  private Port createPortWithQos(OSClient.OSClientV3 client, Port request, PortBandwidthLimit bandwidthLimit) {
+    Objects.requireNonNull(bandwidthLimit, "bandwidthLimit");
+    requireServerText(request.getName(), "portName");
+    requireServerText(request.getTenantId(), "portProjectId");
+    List<NeutronNetQosPolicy> policies = findPortQosPolicies(client, request.getTenantId(), request.getName());
+    if (policies.size() > 1) {
+      throw new OpenStackOperationException("Duplicate port QoS policy marker", null);
+    }
+    NeutronNetQosPolicy policy = policies.isEmpty() ? null : policies.getFirst();
+    if (policy == null) {
+      String marker = portQosMarker(request.getName());
+      policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().create(
+          NeutronNetQosPolicy.builder().name(marker).description(marker)
+              .tenantId(request.getTenantId()).shared(false).isDefault(false).build());
+      if (policy == null) throw new IllegalStateException("Neutron returned no port QoS policy");
+    }
+    requireServerText(policy.getId(), "portQosPolicyId");
+    Port port;
+    try {
+      ensurePortBandwidthRules(client, policy.getId(), bandwidthLimit, true);
+      port = client.networking().port().create(request.toBuilder().qosPolicyId(policy.getId()).build());
+    } catch (ResponseException error) {
+      int status = error.getStatus();
+      if (status >= 400 && status < 500 && status != 408 && status != 429) {
+        try {
+          requireDeleteResponse(client.networking().netQosPolicy().delete(policy.getId()));
+        } catch (RuntimeException cleanupError) {
+          error.addSuppressed(cleanupError);
+        }
+      }
+      // An uncertain write may already have created a bound port; leave cleanup to reconciliation.
+      throw error;
+    }
+    if (port == null) throw new IllegalStateException("Neutron returned no port");
+    if (!policy.getId().equals(port.getQosPolicyId())) {
+      throw new OpenStackOperationException("Created port is not bound to its QoS policy", null);
+    }
+    return port;
+  }
+
+  /** Missing rules are created only during the recorded create attempt; recovery only verifies them. */
+  private void ensurePortBandwidthRules(OSClient.OSClientV3 client, String policyId,
+      PortBandwidthLimit bandwidthLimit, boolean allowCreate) {
+    var service = client.networking().netQosPolicyBandwidthLimitRule();
+    List<? extends NetQosPolicyBandwidthLimitRule> rules = service.list(policyId);
+    if (!bandwidthLimit.limited()) {
+      if (!rules.isEmpty()) {
+        throw new OpenStackOperationException("Unlimited port QoS policy contains bandwidth limit rules", null);
+      }
+      return;
+    }
+    for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
+      List<? extends NetQosPolicyBandwidthLimitRule> matches = rules.stream()
+          .filter(rule -> Objects.requireNonNullElse(rule.getDirection(),
+              NetQosPolicyBandwidthLimitRule.Direction.egress) == direction).toList();
+      if (matches.size() > 1) {
+        throw new OpenStackOperationException("Duplicate port bandwidth limit direction", null);
+      }
+      NetQosPolicyBandwidthLimitRule rule = matches.isEmpty() ? null : matches.getFirst();
+      if (rule == null) {
+        if (!allowCreate) {
+          throw new OpenStackOperationException("Port QoS policy is missing a bandwidth limit rule", null);
+        }
+        rule = service.create(policyId, NeutronNetQosPolicyBandwidthLimitRule.builder()
+            .direction(direction).maxKbps(bandwidthLimit.maxKbps())
+            .maxBurstKbps(bandwidthLimit.maxBurstKbits()).build());
+        if (rule == null) throw new IllegalStateException("Neutron returned no bandwidth limit rule");
+      }
+      requireServerText(rule.getId(), "bandwidthLimitRuleId");
+      if (!Objects.equals(rule.getMaxKbps(), bandwidthLimit.maxKbps())
+          || Objects.requireNonNullElse(rule.getMaxBurstKbps(), 0) != bandwidthLimit.maxBurstKbits()
+          || Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress) != direction) {
+        throw new OpenStackOperationException("Port bandwidth limit does not match the create command", null);
+      }
+    }
+  }
+
+  private List<NeutronNetQosPolicy> findPortQosPolicies(OSClient.OSClientV3 client,
+      String projectId, String portName) {
+    return client.networking().netQosPolicy().list().stream()
+        .filter(policy -> isPortQosPolicy(policy, projectId, portName))
+        .map(policy -> (NeutronNetQosPolicy) policy).toList();
+  }
+
+  private static boolean isPortQosPolicy(NetQosPolicy policy, String projectId, String portName) {
+    return policy != null && projectId.equals(policy.getTenantId())
+        && portQosMarker(portName).equals(policy.getDescription());
+  }
+
+  private static String portQosMarker(String portName) {
+    return portName + "-qos";
   }
 
   /** Lookup is always performed before creation; uncertain writes are subsequently lookup-only. */
@@ -718,6 +817,8 @@ public class OpenStackClient {
     boolean parent = step == NetworkPreparation.Step.PARENT_PORT;
     String networkId = parent ? requirement.parentNetworkId() : requirement.subNetworkId();
     String subnetId = parent ? requirement.parentSubnetId() : requirement.subSubnetId();
+    PortBandwidthLimit bandwidthLimit = parent
+        ? requirement.parentPortBandwidthLimit() : requirement.subPortBandwidthLimit();
     List<? extends Port> matches = client.networking().port().list(
         PortListOptions.create().tenantId(target.projectId()).name(marker)).stream()
         .filter(port -> marker.equals(port.getName()) && target.projectId().equals(port.getTenantId()))
@@ -728,8 +829,7 @@ public class OpenStackClient {
       var builder = Builders.port().name(marker).tenantId(target.projectId())
           .networkId(networkId).fixedIp(null, subnetId).adminState(true);
       if (!parent) builder.macAddress(prepared.parentMacAddress());
-      port = client.networking().port().create(builder.build());
-      if (port == null) throw new IllegalStateException("Neutron returned no port");
+      port = createPortWithQos(client, builder.build(), bandwidthLimit);
     }
     if (port == null) return null;
     if (!networkId.equals(port.getNetworkId()) || port.getFixedIps() == null
@@ -738,6 +838,12 @@ public class OpenStackClient {
     }
     requireServerText(port.getId(), "portId");
     requireServerText(port.getMacAddress(), "portMacAddress");
+    requireServerText(port.getQosPolicyId(), "portQosPolicyId");
+    if (!isPortQosPolicy(client.networking().netQosPolicy().get(port.getQosPolicyId()),
+        target.projectId(), marker)) {
+      throw new OpenStackOperationException("Instance port has a mismatched QoS policy", null);
+    }
+    ensurePortBandwidthRules(client, port.getQosPolicyId(), bandwidthLimit, false);
     String fixedIp = port.getFixedIps().stream().filter(ip -> subnetId.equals(ip.getSubnetId()))
         .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
         .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
@@ -769,6 +875,10 @@ public class OpenStackClient {
             requireDeleteResponse(client.networking().port().delete(port.getId()));
           }
         }
+        // Also finds orphan policies when creation stopped before the port response was received.
+        for (NeutronNetQosPolicy policy : findPortQosPolicies(client, target.projectId(), marker)) {
+          requireDeleteResponse(client.networking().netQosPolicy().delete(policy.getId()));
+        }
       }
     }, NETWORK_EXECUTOR);
   }
@@ -780,16 +890,14 @@ public class OpenStackClient {
 
   public Port createSubPort(
       String region, String projectId, String netId, String subnetId, String macAddress) {
+    return createSubPort(region, projectId, netId, subnetId, macAddress, PortBandwidthLimit.UNLIMITED);
+  }
+
+  public Port createSubPort(String region, String projectId, String netId, String subnetId,
+      String macAddress, PortBandwidthLimit bandwidthLimit) {
     OSClient.OSClientV3 client = getOsAdminClient(region, projectId);
-    return client
-        .networking()
-        .port()
-        .create(
-            Builders.port()
-                .fixedIp(null, subnetId)
-                .networkId(netId)
-                .macAddress(macAddress)
-                .build());
+    return createPortWithQos(client, Builders.port().name("arcreactor-" + UUID.randomUUID())
+        .tenantId(projectId).fixedIp(null, subnetId).networkId(netId).macAddress(macAddress).build(), bandwidthLimit);
   }
 
   public Trunk createTrunk(String region, String projectId, String name, String parentPortId) {

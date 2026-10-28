@@ -43,12 +43,36 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 | `network-dns` | `INSTANCE_NETWORK_DNS` | 空，使用网络服务默认值 |
 | `network-gateway` | `INSTANCE_NETWORK_GATEWAY` | 空，由 Neutron 分配 |
 | `segmentation-id` | `INSTANCE_SEGMENTATION_ID` | 100 |
+| `parent-port-bandwidth-limit.max-kbps` | `INSTANCE_PARENT_PORT_MAX_KBPS` | 0，不限速 |
+| `parent-port-bandwidth-limit.max-burst-kbits` | `INSTANCE_PARENT_PORT_MAX_BURST_KBITS` | 0 |
+| `sub-port-bandwidth-limit.max-kbps` | `INSTANCE_SUB_PORT_MAX_KBPS` | 0，不限速 |
+| `sub-port-bandwidth-limit.max-burst-kbits` | `INSTANCE_SUB_PORT_MAX_BURST_KBITS` | 0 |
 | `ssh-username` | `INSTANCE_SSH_USERNAME` | `clouduser` |
 | `host-routes` | 在 YAML 中配置目标网段到下一跳的映射 | 空对象 |
 
 每个用户在同一区域内复用同一个共享存储和私有网络。区域应预先配置好工作流所需的
 LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路由应匹配实际环境。
 当前接口提交的流程不包含可选的浮动 IP 端口转发。
+
+实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先创建
+QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
+创建 Command 的 `spec.network.parentPortBandwidthLimit` 和 `spec.network.subPortBandwidthLimit`
+分别携带父、子端口限速，随实例创建事件持久化；恢复时沿用提交时的值。
+HTTP 层从以上服务端配置组装这两个参数，直接调用 `InstanceLifecycle` 的调用方可以逐实例传入不同限速：
+
+```java
+NetworkRequirement network = new NetworkRequirement(segmentationId, userNetwork,
+    new PortBandwidthLimit(100_000, 10_000),   // 父端口：100 Mbps，突发 10,000 kbit
+    new PortBandwidthLimit(1_000_000, 100_000)); // 子端口：1 Gbps，突发 100,000 kbit
+// 将 network 传给 InstanceLifecycle.CreateRequest，最终进入 CreateInstance.spec.network。
+```
+
+每个端口的同一组参数分别创建 ingress 和 egress 两条规则。`maxKbps` 单位为 kbit/s，
+`maxBurstKbits` 单位为 kbit（对应 Neutron 的 `max_burst_kbps` 字段）。
+单位和方向遵循 [OpenStack 带宽限速规则 API](https://docs.openstack.org/api-ref/network/v2/index.html#create-bandwidth-limit-rule)。
+两个值均不得为负；`maxKbps = 0` 表示不创建限速规则，此时 `maxBurstKbits` 也必须为 0。
+已存在的规则会校验方向、带宽和突发值，避免重复创建或复用不匹配的限速配置。
+工作流按操作标记查找资源；创建失败的补偿会先删除端口，再清理对应 QoS，包括未绑定端口的残留 policy。
 
 ## 返回值
 
