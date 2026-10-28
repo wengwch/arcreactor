@@ -1,8 +1,8 @@
-CREATE TABLE IF NOT EXISTS user_region_project (
+CREATE TABLE IF NOT EXISTS user_cluster_project (
   user_id VARCHAR(255) NOT NULL,
-  region_id VARCHAR(255) NOT NULL,
+  cluster_id VARCHAR(255) NOT NULL,
   project_id VARCHAR(255) NOT NULL,
-  PRIMARY KEY (user_id, region_id)
+  PRIMARY KEY (user_id, cluster_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS hypervisor_resource (

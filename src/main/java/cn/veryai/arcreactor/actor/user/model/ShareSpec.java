@@ -4,7 +4,7 @@ import java.io.Serializable;
 import java.util.Objects;
 import org.openstack4j.model.manila.Share;
 
-/** osProjectId may be unresolved in an instance request; CreateShare requires a resolved ID. */
+/** osProjectId may be unresolved during API dependency preparation; CreateShare requires a resolved ID. */
 public record ShareSpec(
     String regionId,
     String osProjectId,

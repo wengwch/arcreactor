@@ -4,31 +4,18 @@ import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingStatusCheckStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
 import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
-import cn.veryai.arcreactor.actor.instance.event.NetworkCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.NetworkPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.NetworkResourcePrepared;
-import cn.veryai.arcreactor.actor.instance.event.NovaCreationRetried;
+import cn.veryai.arcreactor.actor.instance.event.NetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
-import cn.veryai.arcreactor.actor.instance.event.NovaCreationUnknown;
-import cn.veryai.arcreactor.actor.instance.event.NovaEnteredError;
 import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
-import cn.veryai.arcreactor.actor.instance.event.NovaStatusChanged;
-import cn.veryai.arcreactor.actor.instance.event.ProjectPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.ProjectPrepared;
-import cn.veryai.arcreactor.actor.instance.event.ProjectStatusCheckStarted;
-import cn.veryai.arcreactor.actor.instance.event.ProvisioningDeadlineReached;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
-import cn.veryai.arcreactor.actor.instance.event.ResourcesReservedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
-import cn.veryai.arcreactor.actor.instance.event.SharedNetworkPrepared;
-import cn.veryai.arcreactor.actor.instance.event.UserNetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -49,42 +36,24 @@ public final class InstanceProjectionHandler
         if (event instanceof InstanceCreationRequested created) {
             mapper.upsertCreated(instanceId, created.requestId(), "NEW", version,
                     Timestamp.from(created.requestedAt()), timestamp);
-        } else if (event instanceof ProjectPreparationStarted || event instanceof ProjectStatusCheckStarted
-                || event instanceof ProjectPrepared) {
-            mapper.updatePhase(instanceId, "PREPARING_PROJECT", version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
-        } else if (event instanceof NetworkPreparationStarted || event instanceof NetworkCreationRequested
-                || event instanceof NetworkResourcePrepared || event instanceof UserNetworkPrepared
-                || event instanceof SharedNetworkPrepared) {
+        } else if (event instanceof NetworkPreparationStarted || event instanceof NetworkPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_NETWORK", version, timestamp);
         } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected
-                || event instanceof ForwardingStatusCheckStarted
                 || event instanceof ForwardingPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
-            mapper.updateHypervisor(instanceId, "RESERVING", selected.hypervisorId(),
+            mapper.updateHypervisor(instanceId, "SCHEDULING", selected.hypervisorId(),
                     selected.reservationId(), version, timestamp);
-        } else if (event instanceof ResourcesReservedForInstance) {
-            mapper.updatePhase(instanceId, "RESERVED", version, timestamp);
         } else if (event instanceof NovaCreationStarted started) {
-            mapper.updateNovaOperation(instanceId, "NOVA_CREATING", started.operationId(), version, timestamp);
-        } else if (event instanceof NovaCreationRetried) {
-            mapper.updatePhase(instanceId, "NOVA_CREATING", version, timestamp);
-        } else if (event instanceof NovaCreationUnknown || event instanceof ProvisioningDeadlineReached) {
-            mapper.updatePhase(instanceId, "RECONCILING", version, timestamp);
+            mapper.updateNovaOperation(instanceId, "PROVISIONING", started.operationId(), version, timestamp);
         } else if (event instanceof NovaServerCreated created) {
-            mapper.updateNovaServer(instanceId, "BUILDING", created.serverId(),
+            mapper.updateNovaServer(instanceId, "PROVISIONING", created.serverId(),
                     created.status().name(), version, timestamp);
-        } else if (event instanceof NovaStatusChanged changed) {
-            mapper.updateNovaServer(instanceId, "BUILDING", changed.serverId(),
-                    changed.status().name(), version, timestamp);
         } else if (event instanceof NovaReachedActive active) {
             mapper.updateNovaServer(instanceId, "CONFIRMING", active.serverId(),
                     "ACTIVE", version, timestamp);
-        } else if (event instanceof NovaEnteredError error) {
-            mapper.updateNovaServer(instanceId, "BUILDING", error.serverId(),
-                    "ERROR", version, timestamp);
         } else if (event instanceof ReservationConfirmedForInstance) {
             mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
         } else if (event instanceof CompensationStarted compensation) {

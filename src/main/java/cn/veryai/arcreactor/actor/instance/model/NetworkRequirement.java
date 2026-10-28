@@ -24,17 +24,6 @@ public record NetworkRequirement(String parentNetworkId, String parentSubnetId,
     }
   }
 
-  public NetworkRequirement(String parentNetworkId, String parentSubnetId,
-      String subNetworkId, String subSubnetId, int segmentationId, NetworkSpec userNetwork) {
-    this(parentNetworkId, parentSubnetId, subNetworkId, subSubnetId, segmentationId, userNetwork,
-        PortBandwidthLimit.UNLIMITED, PortBandwidthLimit.UNLIMITED);
-  }
-
-  /** Network IDs are resolved by the instance workflow before creating either port. */
-  public NetworkRequirement(int segmentationId, NetworkSpec userNetwork) {
-    this(segmentationId, userNetwork, PortBandwidthLimit.UNLIMITED, PortBandwidthLimit.UNLIMITED);
-  }
-
   /** Both port limits travel with the create command and its persisted instance specification. */
   public NetworkRequirement(int segmentationId, NetworkSpec userNetwork,
       PortBandwidthLimit parentPortBandwidthLimit, PortBandwidthLimit subPortBandwidthLimit) {
@@ -42,24 +31,15 @@ public record NetworkRequirement(String parentNetworkId, String parentSubnetId,
         parentPortBandwidthLimit, subPortBandwidthLimit);
   }
 
-  /** Retained for callers supplying parent IDs; new workflows resolve the parent from the SHARED preset. */
-  public NetworkRequirement(String parentNetworkId, String parentSubnetId,
-      int segmentationId, NetworkSpec userNetwork) {
-    this(parentNetworkId, parentSubnetId, null, null, segmentationId,
-        Objects.requireNonNull(userNetwork, "userNetwork"));
-  }
-
-  /** Retained for replaying workflows that supplied subnet IDs before user network preparation. */
-  public NetworkRequirement(String parentNetworkId, String parentSubnetId,
-      String subNetworkId, String subSubnetId, int segmentationId) {
-    this(parentNetworkId, parentSubnetId, subNetworkId, subSubnetId, segmentationId, null);
-  }
-
   public NetworkRequirement withSubNetwork(String networkId, String subnetId) {
     requireText(networkId, "subNetworkId");
     requireText(subnetId, "subSubnetId");
     return new NetworkRequirement(parentNetworkId, parentSubnetId, networkId, subnetId, segmentationId, userNetwork,
         parentPortBandwidthLimit, subPortBandwidthLimit);
+  }
+
+  public boolean resolved() {
+    return parentNetworkId != null && parentSubnetId != null && subNetworkId != null && subSubnetId != null;
   }
 
   public NetworkRequirement withParentNetwork(String networkId, String subnetId) {

@@ -81,31 +81,31 @@ public final class UserResources {
         system.scheduler());
   }
 
-  public CompletionStage<ProjectReply> createProject(String userId, String regionId, String name) {
+  public CompletionStage<ProjectReply> createProject(String userId, String clusterId, String name) {
     return AskPattern.<UserCommand, ProjectReply>ask(
         entityRef(userId),
-        replyTo -> new CreateProject(regionId, name, replyTo),
+        replyTo -> new CreateProject(clusterId, name, replyTo),
         askTimeout,
         system.scheduler());
   }
 
-  public CompletionStage<ProjectReply> getProject(String userId, String regionId) {
+  public CompletionStage<ProjectReply> getProject(String userId, String clusterId) {
     return AskPattern.<UserCommand, ProjectReply>ask(
         entityRef(userId),
-        replyTo -> new GetProject(regionId, replyTo),
+        replyTo -> new GetProject(clusterId, replyTo),
         askTimeout,
         system.scheduler());
   }
 
   /**
-   * Requires a READY regional project and exactly one preset shared/external LOCAL network.
+   * Requires a READY cluster project and exactly one preset shared/external LOCAL network.
    * Each user has one managed network per region. Query getNetwork until READY; its state contains
    * the network, subnet, router and interface port IDs.
    */
-  public CompletionStage<NetworkReply> createNetwork(String userId, NetworkSpec spec) {
+  public CompletionStage<NetworkReply> createNetwork(String userId, String clusterId, NetworkSpec spec) {
     return AskPattern.<UserCommand, NetworkReply>ask(
         entityRef(userId),
-        replyTo -> new CreateNetwork(spec, replyTo),
+        replyTo -> new CreateNetwork(clusterId, spec, replyTo),
         askTimeout,
         system.scheduler());
   }

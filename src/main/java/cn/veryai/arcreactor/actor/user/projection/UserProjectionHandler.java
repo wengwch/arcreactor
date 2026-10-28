@@ -5,7 +5,7 @@ import cn.veryai.arcreactor.actor.user.event.ProjectUpdated;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
 import cn.veryai.arcreactor.actor.user.model.UserProjectState;
 import cn.veryai.arcreactor.actor.user.projection.mybatis.UserProjectionMapper;
-import cn.veryai.arcreactor.entity.UserRegionProjectEntity;
+import cn.veryai.arcreactor.entity.UserClusterProjectEntity;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
 import org.apache.pekko.projection.jdbc.javadsl.JdbcHandler;
 
@@ -21,14 +21,14 @@ public final class UserProjectionHandler
     }
 
     UserProjectState project = updated.project();
-    if (project.regionId() == null || project.regionId().isBlank()
+    if (project.clusterId() == null || project.clusterId().isBlank()
         || project.projectId() == null || project.projectId().isBlank()) {
-      throw new IllegalArgumentException("ready project must have region and project IDs");
+      throw new IllegalArgumentException("ready project must have cluster and project IDs");
     }
 
-    UserRegionProjectEntity entity = new UserRegionProjectEntity();
+    UserClusterProjectEntity entity = new UserClusterProjectEntity();
     entity.setUserId(entityId(envelope.persistenceId()));
-    entity.setRegionId(project.regionId());
+    entity.setClusterId(project.clusterId());
     entity.setProjectId(project.projectId());
     session.mapper(UserProjectionMapper.class).upsertProject(entity);
   }

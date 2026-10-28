@@ -4,7 +4,6 @@ import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.InstanceLifecycle;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
-import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
@@ -27,6 +26,8 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
@@ -51,9 +52,10 @@ public class InstanceService {
     private final InstanceCreationProperties creationProperties;
     private final CloudInitRenderer cloudInitRenderer;
     private final InstanceLifecycle instanceLifecycle;
+    private final InstanceDependencyPreparer dependencyPreparer;
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public CreateInstanceResult create(CreateInstanceParam param) {
+    public CompletionStage<CreateInstanceResult> create(CreateInstanceParam param) {
         RegionEntity region = regionRepo.findById(param.getRegionId());
         if (region == null) throw new BaseException(ErrorCode.REGION_NOT_FOUND);
         if (!region.isEnabled()) throw new BaseException(ErrorCode.INSTANCE_REGION_DISABLED);
@@ -71,27 +73,35 @@ public class InstanceService {
 
         String instanceId = UUID.randomUUID().toString();
         String requestId = UUID.randomUUID().toString();
-        InstanceLifecycle.CreateRequest request = toRequest(param, region, flavor, image, instanceId, requestId);
-        InstanceLifecycle.Submission submission;
-        try {
-            submission = instanceLifecycle.create(request).toCompletableFuture().get();
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new BaseException(ErrorCode.INSTANCE_CREATE_INTERRUPTED, exception);
-        } catch (ExecutionException exception) {
-            Throwable cause = exception.getCause();
-            ErrorCode errorCode = cause instanceof TimeoutException
-                    ? ErrorCode.INSTANCE_CREATE_TIMEOUT : ErrorCode.INSTANCE_CREATE_UNCONFIRMED;
-            throw new BaseException(errorCode, cause);
-        }
-        if (!submission.accepted()) {
-            log.warn("Instance creation rejected: instanceId={}, requestId={}, detail={}",
-                    instanceId, requestId, submission.detail());
-            throw new BaseException(ErrorCode.INSTANCE_CREATE_REJECTED);
-        }
-        CloudInitSpec credentials = request.cloudInit();
-        return new CreateInstanceResult(instanceId, requestId, credentials.username(),
-                credentials.password(), credentials.jupyterToken());
+        CreationDefaults defaults = creationDefaults(param, region);
+        return dependencyPreparer.prepare(param.getUserId(), region.getClusterId(), defaults.resourceId(),
+                        defaults.share(), defaults.network())
+                .thenCompose(dependencies -> submit(new InstanceLifecycle.CreateRequest(requestId, instanceId,
+                        region.getClusterId(), dependencies.projectId(), region.getId(), param.getName(),
+                        image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getGpus(),
+                        StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
+                        dependencies.share(), null, dependencies.network(), defaults.cloudInit(), param.getHypervisorType())));
+    }
+
+    private CompletionStage<CreateInstanceResult> submit(InstanceLifecycle.CreateRequest request) {
+        return instanceLifecycle.create(request).handle((submission, error) -> {
+            if (error != null) {
+                Throwable cause = error;
+                while ((cause instanceof CompletionException || cause instanceof ExecutionException) && cause.getCause() != null) {
+                    cause = cause.getCause();
+                }
+                throw new BaseException(cause instanceof TimeoutException
+                        ? ErrorCode.INSTANCE_CREATE_TIMEOUT : ErrorCode.INSTANCE_CREATE_UNCONFIRMED, cause);
+            }
+            if (!submission.accepted()) {
+                log.warn("Instance creation rejected: instanceId={}, requestId={}, detail={}",
+                        request.instanceId(), request.requestId(), submission.detail());
+                throw new BaseException(ErrorCode.INSTANCE_CREATE_REJECTED);
+            }
+            CloudInitSpec credentials = request.cloudInit();
+            return new CreateInstanceResult(request.instanceId(), request.requestId(), credentials.username(),
+                    credentials.password(), credentials.jupyterToken());
+        });
     }
 
     private void validateResources(RegionEntity region, FlavorEntity flavor, ImageEntity image,
@@ -115,20 +125,18 @@ public class InstanceService {
         }
     }
 
-    private InstanceLifecycle.CreateRequest toRequest(CreateInstanceParam param, RegionEntity region,
-            FlavorEntity flavor, ImageEntity image, String instanceId, String requestId) {
+    private CreationDefaults creationDefaults(CreateInstanceParam param, RegionEntity region) {
         // A user's instances reuse the same regional share and network specification.
         String resourceId = UUID.nameUUIDFromBytes((param.getUserId().length() + ":"
                 + param.getUserId() + ":" + region.getId()).getBytes(StandardCharsets.UTF_8)).toString();
-        ShareRequirement share;
+        ShareSpec share;
         NetworkRequirement network;
         CloudInitSpec cloudInit;
         try {
             cloudInitRenderer.validateConfiguration();
-            share = new ShareRequirement(param.getUserId(), resourceId,
-                    new ShareSpec(region.getId(), "share-" + resourceId, "Managed user share",
+            share = new ShareSpec(region.getId(), "share-" + resourceId, "Managed user share",
                             creationProperties.getShareSize(), Share.Protocol.CEPHFS,
-                            creationProperties.getShareType(), "user-" + resourceId));
+                            creationProperties.getShareType(), "user-" + resourceId);
             network = new NetworkRequirement(creationProperties.getSegmentationId(),
                     new NetworkSpec(region.getId(), "network-" + resourceId,
                             creationProperties.getNetworkCidr(), creationProperties.getNetworkDns(),
@@ -139,13 +147,10 @@ public class InstanceService {
         } catch (IllegalArgumentException | NullPointerException | CloudInitRenderer.RenderingException exception) {
             throw new BaseException(ErrorCode.INSTANCE_CREATION_CONFIG_INVALID, exception);
         }
-        Map<String, String> metadata = StringUtils.isBlank(param.getDescription())
-                ? Map.of() : Map.of("description", param.getDescription());
-        return new InstanceLifecycle.CreateRequest(requestId, instanceId, region.getClusterId(), null,
-                region.getId(), param.getName(), image.getOsImageId(), flavor.getOsFlavorId(),
-                flavor.getVcpus(), flavor.getRam(), flavor.getGpus(), metadata, share, null, network,
-                param.getUserId(), cloudInit, param.getHypervisorType());
+        return new CreationDefaults(resourceId, share, network, cloudInit);
     }
+
+    private record CreationDefaults(String resourceId, ShareSpec share, NetworkRequirement network, CloudInitSpec cloudInit) {}
 
     private static String secret(int byteCount) {
         byte[] value = new byte[byteCount];

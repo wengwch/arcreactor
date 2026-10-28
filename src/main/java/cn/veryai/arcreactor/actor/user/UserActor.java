@@ -64,7 +64,7 @@ import org.openstack4j.model.network.RouterInterface;
 import org.openstack4j.model.network.Subnet;
 import org.openstack4j.openstack.manila.domain.ManilaShareCreate;
 
-/** Owns the region projects, networks and shared storage of one user. */
+/** Owns one user's cluster projects, regional networks and shared storage. */
 public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent, UserState> {
   public static final String ENTITY_TYPE = "User";
   public static final EntityTypeKey<UserCommand> TYPE_KEY =
@@ -91,11 +91,11 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   public record StepCompleted(String regionId, long generation, UserShareState result,
       boolean definitiveFailure, String failure) implements UserCommand {}
   private record ShareTimerKey(String regionId) {}
-  public record ContinueProject(String regionId, long generation) implements UserCommand {}
-  public record ResumeProject(String regionId) implements UserCommand {}
-  public record ProjectStepCompleted(String regionId, long generation, UserProjectState result,
+  public record ContinueProject(String clusterId, long generation) implements UserCommand {}
+  public record ResumeProject(String clusterId) implements UserCommand {}
+  public record ProjectStepCompleted(String clusterId, long generation, UserProjectState result,
       boolean definitiveFailure, String failure) implements UserCommand {}
-  private record ProjectTimerKey(String regionId) {}
+  private record ProjectTimerKey(String clusterId) {}
   public record ContinueNetwork(String regionId, long generation) implements UserCommand {}
   public record ResumeNetwork(String regionId) implements UserCommand {}
   public record NetworkStepCompleted(String regionId, long generation, String resourceId,
@@ -169,10 +169,10 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
               "This user already has a network specification in this region"));
       return Effect().none();
     }
-    UserProjectState project = state.projects().get(command.spec().regionId());
+    UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.phase() != UserProjectState.Phase.READY) {
       command.replyTo().tell(new NetworkReply(NetworkReply.Status.REJECTED, userId,
-          command.spec().regionId(), null, "The user project must be READY before creating a network"));
+          command.spec().regionId(), null, "The user cluster project must be READY before creating a network"));
       return Effect().none();
     }
     UserNetworkState network = new UserNetworkState(command.spec(), project.projectId(), null,
@@ -406,14 +406,14 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onCreateProject(UserState state, CreateProject command) {
-    UserProjectState existing = state.projects().get(command.regionId());
+    UserProjectState existing = state.projects().get(command.clusterId());
     if (existing != null) {
       command.replyTo().tell(existing.name().equals(command.name()) ? ProjectReply.from(userId, existing)
-          : new ProjectReply(ProjectReply.Status.REJECTED, userId, command.regionId(), null,
-              "This user already has a project specification in this region"));
+          : new ProjectReply(ProjectReply.Status.REJECTED, userId, command.clusterId(), null,
+              "This user already has a project specification in this cluster"));
       return Effect().none();
     }
-    UserProjectState project = UserProjectState.requested(command.regionId(), command.name());
+    UserProjectState project = UserProjectState.requested(command.clusterId(), command.name());
     return Effect().persist(new ProjectUpdated(project)).thenRun(next -> {
       command.replyTo().tell(ProjectReply.from(userId, project));
       continueProject(project);
@@ -421,17 +421,17 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onGetProject(UserState state, GetProject command) {
-    UserProjectState project = state.projects().get(command.regionId());
+    UserProjectState project = state.projects().get(command.clusterId());
     command.replyTo().tell(project == null
-        ? new ProjectReply(ProjectReply.Status.NOT_FOUND, userId, command.regionId(), null, "project not found")
+        ? new ProjectReply(ProjectReply.Status.NOT_FOUND, userId, command.clusterId(), null, "project not found")
         : ProjectReply.from(userId, project));
     return Effect().none();
   }
 
   private Effect<UserEvent, UserState> onContinueProject(UserState state, ContinueProject command) {
-    UserProjectState project = state.projects().get(command.regionId());
+    UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()
-        || projectsInFlight.contains(project.regionId())) return Effect().none();
+        || projectsInFlight.contains(project.clusterId())) return Effect().none();
     if (project.attempts() >= projectSettings.maxAttempts()) {
       String detail = project.phase() == UserProjectState.Phase.RECONCILING
           ? "Project creation outcome remains unknown; reconciliation required"
@@ -443,8 +443,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onResumeProject(UserState state, ResumeProject command) {
-    UserProjectState project = state.projects().get(command.regionId());
-    if (project == null || project.terminal() || projectsInFlight.contains(project.regionId())) return Effect().none();
+    UserProjectState project = state.projects().get(command.clusterId());
+    if (project == null || project.terminal() || projectsInFlight.contains(project.clusterId())) return Effect().none();
     if (project.phase() == UserProjectState.Phase.CREATING && project.attempts() > 0) {
       UserProjectState reconciling = project.reconciling();
       return Effect().persist(new ProjectUpdated(reconciling)).thenRun(next -> continueProject(reconciling));
@@ -454,9 +454,9 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onProjectStepCompleted(UserState state, ProjectStepCompleted command) {
-    UserProjectState project = state.projects().get(command.regionId());
+    UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
-    projectsInFlight.remove(project.regionId());
+    projectsInFlight.remove(project.clusterId());
     if (command.failure() != null) {
       if (command.definitiveFailure()) {
         return Effect().persist(new ProjectUpdated(project.failed(command.failure())));
@@ -479,23 +479,23 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private void executeProject(UserProjectState project) {
-    projectsInFlight.add(project.regionId());
+    projectsInFlight.add(project.clusterId());
     CompletionStage<UserProjectState> operation;
     try {
-      String operationId = operationId("project:" + project.regionId());
+      String operationId = operationId("project:" + project.clusterId());
       operation = switch (project.phase()) {
-        case CREATING -> client.createProject(project.regionId(), project.name(), operationId)
+        case CREATING -> client.createProject(project.clusterId(), project.name(), operationId)
             .thenApply(created -> projectCreated(project, created));
-        case RECONCILING -> client.findProjectByOperationId(project.regionId(), project.name(), operationId)
+        case RECONCILING -> client.findProjectByOperationId(project.clusterId(), project.name(), operationId)
             .thenApply(found -> found == null ? project : projectCreated(project, found));
-        case GRANTING_ADMIN_ROLE -> client.grantProjectAdminRole(project.regionId(), project.projectId())
+        case GRANTING_ADMIN_ROLE -> client.grantProjectAdminRole(project.clusterId(), project.projectId())
             .thenApply(ignored -> project.ready());
         case READY, FAILED -> CompletableFuture.completedFuture(project);
       };
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation.toCompletableFuture().orTimeout(
         projectSettings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
-      if (error == null) return new ProjectStepCompleted(project.regionId(), project.generation(), result, false, null);
+      if (error == null) return new ProjectStepCompleted(project.clusterId(), project.generation(), result, false, null);
       Throwable cause = rootCause(error);
       ResponseException response = responseCause(cause);
       boolean definitive = cause instanceof OpenStackOperationException && cause.getCause() == null;
@@ -507,7 +507,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       String detail = cause instanceof OpenStackOperationException && cause.getCause() == null
           ? cause.getMessage() : "Project operation failed: " + cause.getClass().getSimpleName()
               + (response == null ? "" : " (HTTP " + response.getStatus() + ")");
-      return new ProjectStepCompleted(project.regionId(), project.generation(), null, definitive, detail);
+      return new ProjectStepCompleted(project.clusterId(), project.generation(), null, definitive, detail);
     });
   }
 
@@ -516,11 +516,11 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return state.created(project.getId());
   }
   private void continueProject(UserProjectState project) {
-    context.getSelf().tell(new ContinueProject(project.regionId(), project.generation()));
+    context.getSelf().tell(new ContinueProject(project.clusterId(), project.generation()));
   }
   private void scheduleProject(UserProjectState project) {
-    timers.startSingleTimer(new ProjectTimerKey(project.regionId()),
-        new ContinueProject(project.regionId(), project.generation()), projectSettings.retryDelay());
+    timers.startSingleTimer(new ProjectTimerKey(project.clusterId()),
+        new ContinueProject(project.clusterId(), project.generation()), projectSettings.retryDelay());
   }
 
   private Effect<UserEvent, UserState> onCreateShare(UserState state, CreateShare command) {
@@ -758,7 +758,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       state.shares().values().stream().filter(share -> !share.terminal())
           .forEach(share -> context.getSelf().tell(new ResumeShare(share.regionId())));
       state.projects().values().stream().filter(project -> !project.terminal())
-          .forEach(project -> context.getSelf().tell(new ResumeProject(project.regionId())));
+          .forEach(project -> context.getSelf().tell(new ResumeProject(project.clusterId())));
       state.networks().values().stream().filter(network -> !network.terminal())
           .forEach(network -> context.getSelf().tell(new ResumeNetwork(network.regionId())));
     }).build();

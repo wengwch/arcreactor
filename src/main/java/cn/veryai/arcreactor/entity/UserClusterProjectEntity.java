@@ -5,8 +5,8 @@ import lombok.experimental.FieldNameConstants;
 
 @FieldNameConstants(innerTypeName = "F")
 @Data
-public class UserRegionProjectEntity {
+public class UserClusterProjectEntity {
   private String userId;
-  private String regionId;
+  private String clusterId;
   private String projectId;
 }

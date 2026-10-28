@@ -2,20 +2,12 @@ package cn.veryai.arcreactor.actor.instance.model;
 
 public enum InstancePhase {
     NEW,
-    PREPARING_PROJECT,
-    PREPARING_SHARE,
-    PREPARING_FORWARDING,
     PREPARING_NETWORK,
+    PREPARING_FORWARDING,
     SCHEDULING,
-    RESERVING,
-    RESERVED,
-    NOVA_CREATING,
-    BUILDING,
-    RECONCILING,
+    PROVISIONING,
     CONFIRMING,
     ACTIVE,
     COMPENSATING,
-    FAILED,
-    DELETING,
-    DELETED
+    FAILED
 }

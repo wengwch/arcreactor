@@ -8,11 +8,9 @@ import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
 import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
-import cn.veryai.arcreactor.actor.user.UserResources;
 import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
-import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import com.typesafe.config.Config;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
@@ -35,8 +33,6 @@ public final class PekkoRuntime {
   public PekkoRuntime(
       ActorSystem<Void> actorSystem,
       OpenStackClient openStackClient,
-      UserResources userResources,
-      SysNetworkRepo sysNetworkRepo,
       CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
       DataSource dataSource,
@@ -52,9 +48,7 @@ public final class PekkoRuntime {
             duration(config, "cloud.instance.provisioning-timeout"),
             duration(config, "cloud.instance.poll.initial-delay"),
             duration(config, "cloud.instance.poll.max-delay"),
-            duration(config, "cloud.instance.share-preparation-timeout"),
-            duration(config, "cloud.instance.forwarding-preparation-timeout"),
-            duration(config, "cloud.instance.project-preparation-timeout"));
+            duration(config, "cloud.instance.forwarding-preparation-timeout"));
 
     try {
       sharding = ClusterSharding.get(actorSystem);
@@ -66,8 +60,7 @@ public final class PekkoRuntime {
               InstanceWorkflowActor.TYPE_KEY,
               context ->
                   InstanceWorkflowActor.create(
-                      context.getEntityId(), hypervisorPlacement, openStackClient, userResources,
-                      sysNetworkRepo, cloudInitRenderer, floatingIpForwardings, settings)));
+                      context.getEntityId(), hypervisorPlacement, openStackClient, cloudInitRenderer, floatingIpForwardings, settings)));
       if (actorSystem.settings().config().getBoolean("cloud.projection.enabled")) {
         HypervisorProjection.init(
             actorSystem,

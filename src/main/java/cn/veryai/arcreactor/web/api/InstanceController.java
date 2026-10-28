@@ -4,6 +4,7 @@ import cn.veryai.arcreactor.service.InstanceService;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
 import jakarta.validation.Valid;
+import java.util.concurrent.CompletionStage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -20,7 +21,7 @@ public class InstanceController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public CreateInstanceResult createInstance(@Valid @RequestBody CreateInstanceParam param) {
+    public CompletionStage<CreateInstanceResult> createInstance(@Valid @RequestBody CreateInstanceParam param) {
         return instanceService.create(param);
     }
 }

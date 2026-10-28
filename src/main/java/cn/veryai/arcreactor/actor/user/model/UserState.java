@@ -5,7 +5,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/** Resource maps are indexed by regionId within this user. */
+/** Projects are indexed by OpenStack clusterId; shares and networks are indexed by regionId. */
 public record UserState(Map<String, UserShareState> shares,
     Map<String, UserProjectState> projects,
     Map<String, UserNetworkState> networks) implements Serializable {
@@ -42,7 +42,7 @@ public record UserState(Map<String, UserShareState> shares,
 
   public UserState updated(UserProjectState project) {
     Map<String, UserProjectState> next = new HashMap<>(projects);
-    next.put(project.regionId(), project);
+    next.put(project.clusterId(), project);
     return new UserState(shares, next, networks);
   }
 

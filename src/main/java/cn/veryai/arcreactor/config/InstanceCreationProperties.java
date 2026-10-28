@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.config;
 
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.Data;
@@ -12,6 +13,8 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "instance.creation")
 public class InstanceCreationProperties {
+    private Duration dependencyPreparationTimeout = Duration.ofMinutes(10);
+    private Duration dependencyPollInterval = Duration.ofSeconds(2);
     private String shareType;
     /** Shared storage capacity, in GB. */
     private int shareSize = 100;

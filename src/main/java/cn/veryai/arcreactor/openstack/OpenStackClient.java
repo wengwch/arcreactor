@@ -1,6 +1,5 @@
 package cn.veryai.arcreactor.openstack;
 
-import cn.veryai.arcreactor.actor.instance.model.NetworkPreparation;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
@@ -134,7 +133,7 @@ public class OpenStackClient {
           .expireAfterWrite(Duration.ofMinutes(30))
           .build();
 
-  private record AdminClientKey(String region, String projectId) {}
+  private record AdminClientKey(String clusterId, String projectId) {}
 
   @Autowired private OpenstackClusterRepo clusterRepo;
 
@@ -143,11 +142,15 @@ public class OpenStackClient {
   @Autowired private HypervisorHostRepo hypervisorHostRepo;
 
   public OSClient.OSClientV3 getOsAdminClient(String region, String projectId) {
+    return getOsClusterAdminClient(getOpenstackCluster(region), projectId).useRegion(region);
+  }
+
+  private OSClient.OSClientV3 getOsClusterAdminClient(OpenstackClusterEntity cluster, String projectId) {
     Token token =
         adminTokenCache
             .asMap()
             .compute(
-                new AdminClientKey(region, projectId),
+                new AdminClientKey(cluster.getId(), projectId),
                 (key, cachedToken) -> {
                   if (cachedToken != null
                       && cachedToken.getExpires() != null
@@ -155,20 +158,19 @@ public class OpenStackClient {
                           > System.currentTimeMillis() + TOKEN_REFRESH_MARGIN_MILLIS) {
                     return cachedToken;
                   }
-                  return authenticateAdmin(key.region(), key.projectId());
+                  return authenticateAdmin(cluster, key.projectId());
                 });
     // Sessions have mutable headers/perspective and thread-local state; only share the token.
-    return OSFactory.clientFromToken(token).useRegion(region);
+    return OSFactory.clientFromToken(token).useRegion(cluster.getAdminDefaultRegion());
   }
 
-  private Token authenticateAdmin(String region, String projectId) {
-    OpenstackClusterEntity openstackClusterEntity = getOpenstackCluster(region);
+  private Token authenticateAdmin(OpenstackClusterEntity cluster, String projectId) {
     return OSFactory.builderV3()
-        .endpoint(openstackClusterEntity.getAuthEndpoint())
+        .endpoint(cluster.getAuthEndpoint())
         .credentials(
-            openstackClusterEntity.getAdminUsername(),
-            openstackClusterEntity.getAdminPassword(),
-            Identifier.byId(openstackClusterEntity.getAdminDefaultDomainId()))
+            cluster.getAdminUsername(),
+            cluster.getAdminPassword(),
+            Identifier.byId(cluster.getAdminDefaultDomainId()))
         .scopeToProject(Identifier.byId(projectId))
         .authenticate()
         .getToken();
@@ -204,12 +206,12 @@ public class OpenStackClient {
     return osClient;
   }
 
-  public CompletionStage<Void> grantProjectAdminRole(String region, String projectId) {
+  public CompletionStage<Void> grantProjectAdminRole(String clusterId, String projectId) {
     return CompletableFuture.runAsync(() -> {
-      OpenstackClusterEntity cluster = getOpenstackCluster(region);
+      OpenstackClusterEntity cluster = clusterRepo.findById(clusterId);
       requireServerText(cluster.getAdminRoleId(), "adminRoleId");
       // Authenticate in the existing admin project before granting access to the new project.
-      OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+      OSClient.OSClientV3 osClient = getOsClusterAdminClient(cluster, cluster.getAdminDefaultProjectId());
       ActionResponse response = osClient.identity().roles().grantProjectUserRole(
           projectId, osClient.getToken().getUser().getId(), cluster.getAdminRoleId());
       if (response == null || !response.isSuccess()) {
@@ -218,25 +220,25 @@ public class OpenStackClient {
     }, PROJECT_EXECUTOR);
   }
 
-  public CompletionStage<Project> createProject(String region, String name) {
-    return createProject(region, name, null);
+  public CompletionStage<Project> createProject(String clusterId, String name) {
+    return createProject(clusterId, name, null);
   }
 
-  public CompletionStage<Project> createProject(String region, String name, String operationId) {
+  public CompletionStage<Project> createProject(String clusterId, String name, String operationId) {
     return CompletableFuture.supplyAsync(() -> {
-      OpenstackClusterEntity cluster = getOpenstackCluster(region);
-      OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+      OpenstackClusterEntity cluster = clusterRepo.findById(clusterId);
+      OSClient.OSClientV3 osClient = getOsClusterAdminClient(cluster, cluster.getAdminDefaultProjectId());
       return osClient.identity().projects().create(Builders.project()
           .domainId(cluster.getAdminDefaultDomainId()).name(name).enabled(true)
           .description(operationId == null ? null : projectOperationMarker(operationId)).build());
     }, PROJECT_EXECUTOR);
   }
 
-  public CompletionStage<Project> findProjectByOperationId(String region, String name, String operationId) {
+  public CompletionStage<Project> findProjectByOperationId(String clusterId, String name, String operationId) {
     return CompletableFuture.supplyAsync(() -> {
       requireServerText(operationId, "operationId");
-      OpenstackClusterEntity cluster = getOpenstackCluster(region);
-      OSClient.OSClientV3 osClient = getOsAdminClient(region, cluster.getAdminDefaultProjectId());
+      OpenstackClusterEntity cluster = clusterRepo.findById(clusterId);
+      OSClient.OSClientV3 osClient = getOsClusterAdminClient(cluster, cluster.getAdminDefaultProjectId());
       Project project = osClient.identity().projects().getByName(name, cluster.getAdminDefaultDomainId());
       if (project == null) return null;
       if (!name.equals(project.getName()) || !cluster.getAdminDefaultDomainId().equals(project.getDomainId())
@@ -764,14 +766,21 @@ public class OpenStackClient {
     return portName + "-qos";
   }
 
-  /** Lookup is always performed before creation; uncertain writes are subsequently lookup-only. */
-  public CompletionStage<PreparedNetwork> ensureInstanceNetworkStep(ServerTarget target,
-      String operationId, NetworkRequirement requirement, NetworkPreparation.Step step,
-      PreparedNetwork prepared, boolean allowCreate) {
+  private enum InstanceNetworkStep { PARENT_PORT, SUB_PORT, TRUNK }
+
+  /** One instance operation. Recovery passes allowCreate=false and only discovers completed resources. */
+  public CompletionStage<PreparedNetwork> prepareInstanceNetwork(ServerTarget target,
+      String operationId, NetworkRequirement requirement, boolean allowCreate) {
+    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
     return CompletableFuture.supplyAsync(() -> {
       try {
-        return ensureInstanceNetworkStep(target, operationId, requirement, step, prepared, allowCreate,
-            getOsAdminClient(resolveServerRegion(target), target.projectId()));
+        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
+        PreparedNetwork prepared = PreparedNetwork.empty();
+        for (InstanceNetworkStep step : InstanceNetworkStep.values()) {
+          prepared = ensureInstanceNetworkStep(target, operationId, requirement, step, prepared, allowCreate, client);
+          if (prepared == null) return null;
+        }
+        return prepared;
       } catch (ResponseException error) {
         int status = error.getStatus();
         if (status >= 400 && status < 500 && status != 408 && status != 429) {
@@ -783,10 +792,10 @@ public class OpenStackClient {
   }
 
   private PreparedNetwork ensureInstanceNetworkStep(ServerTarget target, String operationId,
-      NetworkRequirement requirement, NetworkPreparation.Step step, PreparedNetwork prepared,
+      NetworkRequirement requirement, InstanceNetworkStep step, PreparedNetwork prepared,
       boolean allowCreate, OSClient.OSClientV3 client) {
     String marker = instanceNetworkMarker(operationId, step);
-    if (step == NetworkPreparation.Step.TRUNK) {
+    if (step == InstanceNetworkStep.TRUNK) {
       List<? extends Trunk> matches = client.networking().trunk().list().stream()
           .filter(trunk -> marker.equals(trunk.getDescription())
               && target.projectId().equals(trunk.getTenantId())).toList();
@@ -813,8 +822,7 @@ public class OpenStackClient {
       return new PreparedNetwork(prepared.parentPortId(), prepared.parentMacAddress(),
           prepared.parentFixedIp(), prepared.subPortId(), prepared.subFixedIp(), trunk.getId());
     }
-    if (step == NetworkPreparation.Step.COMPLETE) return prepared;
-    boolean parent = step == NetworkPreparation.Step.PARENT_PORT;
+    boolean parent = step == InstanceNetworkStep.PARENT_PORT;
     String networkId = parent ? requirement.parentNetworkId() : requirement.subNetworkId();
     String subnetId = parent ? requirement.parentSubnetId() : requirement.subSubnetId();
     PortBandwidthLimit bandwidthLimit = parent
@@ -857,7 +865,7 @@ public class OpenStackClient {
   public CompletionStage<Void> deleteInstanceNetwork(ServerTarget target, String operationId) {
     return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
-      String trunkMarker = instanceNetworkMarker(operationId, NetworkPreparation.Step.TRUNK);
+      String trunkMarker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
       for (Trunk trunk : client.networking().trunk().list()) {
         if (!trunkMarker.equals(trunk.getDescription()) || !target.projectId().equals(trunk.getTenantId())) continue;
         if (trunk.getTrunkSubports() != null) {
@@ -867,7 +875,7 @@ public class OpenStackClient {
         }
         requireDeleteResponse(client.networking().trunk().delete(trunk.getId()));
       }
-      for (NetworkPreparation.Step step : List.of(NetworkPreparation.Step.SUB_PORT, NetworkPreparation.Step.PARENT_PORT)) {
+      for (InstanceNetworkStep step : List.of(InstanceNetworkStep.SUB_PORT, InstanceNetworkStep.PARENT_PORT)) {
         String marker = instanceNetworkMarker(operationId, step);
         for (Port port : client.networking().port().list(
             PortListOptions.create().tenantId(target.projectId()).name(marker))) {
@@ -883,7 +891,7 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
-  private static String instanceNetworkMarker(String operationId, NetworkPreparation.Step step) {
+  private static String instanceNetworkMarker(String operationId, InstanceNetworkStep step) {
     return "arcreactor-" + UUID.nameUUIDFromBytes(operationId.getBytes(java.nio.charset.StandardCharsets.UTF_8))
         + "-" + step.name().toLowerCase(Locale.ROOT);
   }
@@ -1137,9 +1145,15 @@ public class OpenStackClient {
   }
 
   public CompletionStage<NovaServer> getServer(ServerTarget target, String serverId) {
-    return CompletableFuture.supplyAsync(
-        () -> toNovaServer(getServer(resolveServerRegion(target), target.projectId(), serverId)),
-        NOVA_EXECUTOR);
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        Server server = getServer(resolveServerRegion(target), target.projectId(), serverId);
+        return server == null ? null : toNovaServer(server);
+      } catch (ResponseException error) {
+        if (error.getStatus() == 404) return null;
+        throw error;
+      }
+    }, NOVA_EXECUTOR);
   }
 
   public CompletionStage<ServerLookupResult> findServerByOperationId(

@@ -4,6 +4,9 @@ spring:
   main:
     web-application-type: servlet
     keep-alive: true
+  mvc:
+    async:
+      request-timeout: "${INSTANCE_CREATE_REQUEST_TIMEOUT:11m}"
   web:
     locale: zh-CN
     locale-resolver: accept-header
@@ -34,6 +37,8 @@ mybatis:
 
 instance:
   creation:
+    dependency-preparation-timeout: "${INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT:10m}"
+    dependency-poll-interval: "${INSTANCE_DEPENDENCY_POLL_INTERVAL:2s}"
     share-type: "${INSTANCE_SHARE_TYPE:}"
     share-size: "${INSTANCE_SHARE_SIZE:100}"
     network-cidr: "${INSTANCE_NETWORK_CIDR:10.0.0.0/16}"
