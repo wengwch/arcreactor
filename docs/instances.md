@@ -85,6 +85,7 @@ NetworkRequirement network = new NetworkRequirement(sharedNetworkId, sharedSubne
 UserActor 调用 `createProjectWithAdminRole()` 依次创建项目、授予管理员角色，全部成功后才标记 `READY`。
 项目操作超时或 Actor 恢复时，按操作标记查找已有项目并补齐授权，不重复提交创建请求。
 项目投影写入 `user_cluster_project`，主键为 `(user_id, cluster_id)`，建表定义见 `sql/read-model.sql`。
+Share、用户网络和路由的投影见下方“用户资源读模型”。
 接口失败或单个实例失败不会删除这些共享资源。
 只有依赖全部就绪后才向 InstanceActor 发送 Command，包含已解析的 `projectId`、
 带访问数据的 `ShareRequirement`、已解析父子网络和子网 ID 的 `NetworkRequirement`。
@@ -131,3 +132,50 @@ Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补
 
 密码和 token 使用 `SecureRandom` 独立生成，返回时并不表示实例已处于 ACTIVE 状态。
 参数校验和业务错误通过现有国际化异常处理器返回；创建请求确认超时表示受理结果未确定。
+
+## 用户资源读模型
+
+`UserProjection` 同时处理项目、Share 和网络事件。用户从事件持久化 ID `User|<userId>`
+解析；Share、网络和路由按 `(user_id, region_id)` 唯一保存，支持同一用户跨区域使用资源。
+
+| 表 | 事件 | 保存内容 |
+| --- | --- | --- |
+| `user_cluster_project` | READY 的 `ProjectUpdated` | 用户与集群项目的对应关系 |
+| `user_region_share` | 全部 `ShareUpdated` | Share 规格、Manila ID、导出路径、授权规则 ID、阶段和失败原因 |
+| `user_region_network` | 全部 `NetworkUpdated` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID |
+| `user_region_router` | 全部 `NetworkUpdated` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的阶段 |
+
+router 由用户网络流程创建，没有单独的路由事件。每个 `NetworkUpdated` 在同一个 JDBC
+事务内更新网络和路由两条记录，并随投影偏移量一起提交。资源尚未创建时对应的 OpenStack
+ID 为空；router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路由运行状态。
+网络表的网关和 DNS 来自请求规格；若网关由 Neutron 自动分配，投影中的 `gateway` 保持为空。
+
+三个区域资源表使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。
+`created_at` 取已投影事件的最早时间，`updated_at` 取最新版本事件时间；它们不是远端资源的
+创建和更新时间。`share_id` 是用户范围内的逻辑 Share ID，`os_share_id` 才是 Manila ID，
+`size_gib` 的单位为 GiB。投影不保存 Share 的 `accessKey`，访问凭据仍由用户 Actor 管理。
+
+新库执行 `sql/read-model.sql`；已有库先执行 `sql/migrations/add-user-resource-projections.sql`，
+再部署应用。投影名称由 `user-region-project` 改为 `user-resources`，首次启动会从保留的
+User 事件回放，以补齐旧版投影已经跳过的 Share 和网络事件。原项目记录及旧偏移量保留，
+回放只更新读模型，不重新调用 OpenStack 创建资源。历史事件已被删除的资源无法仅通过此次
+回放补齐。查询结果在回放追上日志后完整可见。
+
+## 实例读模型
+
+`InstanceProjection` 将实例事件写入 `instance_view`。新库执行 `sql/read-model.sql`；
+已使用原表结构的库，在部署新版应用前执行一次 `sql/migrations/expand-instance-view.sql`。
+脚本保留原有记录和投影偏移量，不自动回填历史事件中的新增字段。
+已有实例若需要补齐这些信息，应通过实例投影的事件回放重建读模型。
+
+创建事件写入名称、描述、用户、集群、区域、资源规格、共享存储及父子网络配置；
+网络和端口转发就绪事件分别补齐端口、IP、Trunk 和浮动 IP 转发记录。
+`os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
+来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。
+`memory_gb` 单位为 GB，`external_port` 是浮动 IP 的外部转发端口。
+密码、Jupyter token 和共享存储访问凭据不写入此表。
+
+每次状态更新以日志序号 `workflow_version` 判断新旧，忽略相同或更早的事件，
+避免重放时覆盖较新的状态和资源信息。进入 `ACTIVE` 时清除失败信息。
+新增字段允许为空，以兼容迁移前的记录；只有创建事件和相应资源就绪事件投影后才有值。
+读模型与事件投影进度一致，HTTP `202` 返回时记录及最终状态可能尚未可见。

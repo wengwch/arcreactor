@@ -17,7 +17,7 @@ public class InstanceCreationProperties {
     private Duration dependencyPollInterval = Duration.ofSeconds(2);
     private String shareType;
     /** Shared storage capacity, in GB. */
-    private int shareSize = 100;
+    private int shareSize = 1;
     private String networkCidr = "10.0.0.0/16";
     private String networkDns = "";
     private String networkGateway;

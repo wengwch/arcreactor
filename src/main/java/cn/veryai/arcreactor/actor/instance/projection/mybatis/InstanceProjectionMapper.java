@@ -1,5 +1,8 @@
 package cn.veryai.arcreactor.actor.instance.projection.mybatis;
 
+import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
+import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
+import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import java.sql.Timestamp;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -9,6 +12,7 @@ public interface InstanceProjectionMapper {
     int upsertCreated(
             @Param("instanceId") String instanceId,
             @Param("requestId") String requestId,
+            @Param("spec") InstanceSpec spec,
             @Param("phase") String phase,
             @Param("version") long version,
             @Param("createdAt") Timestamp createdAt,
@@ -25,6 +29,20 @@ public interface InstanceProjectionMapper {
             @Param("phase") String phase,
             @Param("hypervisorId") String hypervisorId,
             @Param("reservationId") String reservationId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateNetwork(
+            @Param("instanceId") String instanceId,
+            @Param("phase") String phase,
+            @Param("network") PreparedNetwork network,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateForwarding(
+            @Param("instanceId") String instanceId,
+            @Param("phase") String phase,
+            @Param("forwarding") PreparedForwarding forwarding,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

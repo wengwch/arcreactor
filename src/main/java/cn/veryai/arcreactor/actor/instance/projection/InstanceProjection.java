@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.actor.instance.projection;
 
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
+import cn.veryai.arcreactor.actor.projection.EventLoadingSourceProvider;
 import java.util.List;
 import javax.sql.DataSource;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -30,7 +31,7 @@ public final class InstanceProjection {
                         InstanceWorkflowActor.ENTITY_TYPE, minSlice, maxSlice);
         return JdbcProjection.exactlyOnce(
                 ProjectionId.of(PROJECTION_NAME, minSlice + "-" + maxSlice),
-                source,
+                new EventLoadingSourceProvider<>(source),
                 () -> new JdbcProjectionSession(dataSource, sqlSessionFactory),
                 InstanceProjectionHandler::new,
                 system);

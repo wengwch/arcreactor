@@ -20,7 +20,8 @@ import org.apache.pekko.projection.javadsl.SourceProvider;
 import org.apache.pekko.projection.jdbc.javadsl.JdbcProjection;
 
 public final class UserProjection {
-  public static final String PROJECTION_NAME = "user-region-project";
+  // Use a new offset namespace to backfill resource events ignored by user-region-project.
+  public static final String PROJECTION_NAME = "user-resources";
 
   private UserProjection() {}
 
@@ -42,7 +43,7 @@ public final class UserProjection {
         system, R2dbcReadJournal.Identifier(), numberOfSliceRanges);
     ShardedDaemonProcess.get(system).init(
         ProjectionBehavior.Command.class,
-        "user-region-project-projection",
+        "user-resources-projection",
         ranges.size(),
         index -> {
           Pair<Integer, Integer> range = ranges.get(index);

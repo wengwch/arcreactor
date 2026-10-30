@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper">
+
+    <!-- Equal or older journal sequence numbers must not overwrite newer projection state. -->
+    <sql id="newerWorkflow">
+        WHERE instance_id = #{instanceId} AND workflow_version &lt; #{version}
+    </sql>
+
+    <insert id="upsertCreated">
+        INSERT INTO instance_view (
+          instance_id,
+          request_id,
+          name,
+          description,
+          user_id,
+          cluster_id,
+          region_id,
+          os_project_id,
+          os_image_id,
+          os_flavor_id,
+          hypervisor_type,
+          vcpus,
+          memory_gb,
+          gpu_count,
+          share_id,
+          parent_network_id,
+          parent_subnet_id,
+          sub_network_id,
+          sub_subnet_id,
+          segmentation_id,
+          phase,
+          workflow_version,
+          created_at,
+          updated_at)
+        VALUES (
+          #{instanceId},
+          #{requestId},
+          #{spec.name,jdbcType=VARCHAR},
+          #{spec.metadata.description,jdbcType=LONGVARCHAR},
+          #{spec.share.userId,jdbcType=VARCHAR},
+          #{spec.clusterId,jdbcType=VARCHAR},
+          #{spec.region,jdbcType=VARCHAR},
+          #{spec.projectId,jdbcType=VARCHAR},
+          #{spec.imageId,jdbcType=VARCHAR},
+          #{spec.flavorId,jdbcType=VARCHAR},
+          #{spec.hypervisorType,jdbcType=VARCHAR},
+          #{spec.vcpus,jdbcType=INTEGER},
+          #{spec.memoryGb,jdbcType=BIGINT},
+          #{spec.gpuCount,jdbcType=INTEGER},
+          #{spec.share.shareId,jdbcType=VARCHAR},
+          #{spec.network.parentNetworkId,jdbcType=VARCHAR},
+          #{spec.network.parentSubnetId,jdbcType=VARCHAR},
+          #{spec.network.subNetworkId,jdbcType=VARCHAR},
+          #{spec.network.subSubnetId,jdbcType=VARCHAR},
+          #{spec.network.segmentationId,jdbcType=INTEGER},
+          #{phase},
+          #{version},
+          #{createdAt},
+          #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+          request_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(request_id), request_id),
+          name = IF(workflow_version &lt; VALUES(workflow_version), VALUES(name), name),
+          description = IF(workflow_version &lt; VALUES(workflow_version), VALUES(description), description),
+          user_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(user_id), user_id),
+          cluster_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(cluster_id), cluster_id),
+          region_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(region_id), region_id),
+          os_project_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(os_project_id), os_project_id),
+          os_image_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(os_image_id), os_image_id),
+          os_flavor_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(os_flavor_id), os_flavor_id),
+          hypervisor_type = IF(workflow_version &lt; VALUES(workflow_version), VALUES(hypervisor_type), hypervisor_type),
+          vcpus = IF(workflow_version &lt; VALUES(workflow_version), VALUES(vcpus), vcpus),
+          memory_gb = IF(workflow_version &lt; VALUES(workflow_version), VALUES(memory_gb), memory_gb),
+          gpu_count = IF(workflow_version &lt; VALUES(workflow_version), VALUES(gpu_count), gpu_count),
+          share_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(share_id), share_id),
+          parent_network_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(parent_network_id), parent_network_id),
+          parent_subnet_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(parent_subnet_id), parent_subnet_id),
+          sub_network_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(sub_network_id), sub_network_id),
+          sub_subnet_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(sub_subnet_id), sub_subnet_id),
+          segmentation_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(segmentation_id), segmentation_id),
+          phase = IF(workflow_version &lt; VALUES(workflow_version), VALUES(phase), phase),
+          created_at = IF(workflow_version &lt; VALUES(workflow_version), VALUES(created_at), created_at),
+          updated_at = IF(workflow_version &lt; VALUES(workflow_version), VALUES(updated_at), updated_at),
+          workflow_version = GREATEST(workflow_version, VALUES(workflow_version))
+    </insert>
+
+    <update id="updatePhase">
+        UPDATE instance_view SET
+          phase = #{phase},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateHypervisor">
+        UPDATE instance_view SET
+          phase = #{phase},
+          hypervisor_id = #{hypervisorId,jdbcType=VARCHAR},
+          reservation_id = #{reservationId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateNetwork">
+        UPDATE instance_view SET
+          phase = #{phase},
+          parent_port_id = #{network.parentPortId,jdbcType=VARCHAR},
+          parent_mac_address = #{network.parentMacAddress,jdbcType=VARCHAR},
+          parent_fixed_ip = #{network.parentFixedIp,jdbcType=VARCHAR},
+          sub_port_id = #{network.subPortId,jdbcType=VARCHAR},
+          sub_fixed_ip = #{network.subFixedIp,jdbcType=VARCHAR},
+          trunk_id = #{network.trunkId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateForwarding">
+        UPDATE instance_view SET
+          phase = #{phase},
+          forwarding_claim_id = #{forwarding.claimId,jdbcType=VARCHAR},
+          floating_ip_id = #{forwarding.floatingIpId,jdbcType=VARCHAR},
+          floating_ip = #{forwarding.floatingIp,jdbcType=VARCHAR},
+          external_port = #{forwarding.externalPort,jdbcType=INTEGER},
+          tcp_forwarding_id = #{forwarding.tcpForwardingId,jdbcType=VARCHAR},
+          udp_forwarding_id = #{forwarding.udpForwardingId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateNovaOperation">
+        UPDATE instance_view SET
+          phase = #{phase},
+          nova_operation_id = #{operationId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateNovaServer">
+        UPDATE instance_view SET
+          phase = #{phase},
+          nova_server_id = #{serverId,jdbcType=VARCHAR},
+          nova_status = #{novaStatus,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateFailure">
+        UPDATE instance_view SET
+          phase = #{phase},
+          failure_code = #{failureCode,jdbcType=VARCHAR},
+          failure_message = #{failureMessage,jdbcType=LONGVARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+</mapper>

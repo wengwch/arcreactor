@@ -1,0 +1,38 @@
+-- Run once on databases with the original instance_view table, before deploying the new mapper.
+-- New installations use sql/read-model.sql instead.
+-- Added columns remain nullable so existing workflow records are preserved without fabricated values.
+-- Existing projection offsets are unchanged. Historical detail requires replaying the instance projection.
+ALTER TABLE instance_view
+  ADD COLUMN name VARCHAR(255),
+  ADD COLUMN description TEXT,
+  ADD COLUMN user_id VARCHAR(255),
+  ADD COLUMN cluster_id VARCHAR(255),
+  ADD COLUMN region_id VARCHAR(255),
+  ADD COLUMN os_project_id VARCHAR(255),
+  ADD COLUMN os_image_id VARCHAR(255),
+  ADD COLUMN os_flavor_id VARCHAR(255),
+  ADD COLUMN hypervisor_type VARCHAR(255),
+  ADD COLUMN vcpus INT,
+  ADD COLUMN memory_gb BIGINT COMMENT 'GB',
+  ADD COLUMN gpu_count INT,
+  ADD COLUMN share_id VARCHAR(255),
+  ADD COLUMN parent_network_id VARCHAR(255),
+  ADD COLUMN parent_subnet_id VARCHAR(255),
+  ADD COLUMN sub_network_id VARCHAR(255),
+  ADD COLUMN sub_subnet_id VARCHAR(255),
+  ADD COLUMN segmentation_id INT,
+  ADD COLUMN parent_port_id VARCHAR(255),
+  ADD COLUMN parent_mac_address VARCHAR(17),
+  ADD COLUMN parent_fixed_ip VARCHAR(45),
+  ADD COLUMN sub_port_id VARCHAR(255),
+  ADD COLUMN sub_fixed_ip VARCHAR(45),
+  ADD COLUMN trunk_id VARCHAR(255),
+  ADD COLUMN forwarding_claim_id VARCHAR(255),
+  ADD COLUMN floating_ip_id VARCHAR(255),
+  ADD COLUMN floating_ip VARCHAR(45),
+  ADD COLUMN external_port INT,
+  ADD COLUMN tcp_forwarding_id VARCHAR(255),
+  ADD COLUMN udp_forwarding_id VARCHAR(255),
+  ADD INDEX idx_instance_user_region_created (user_id, region_id, created_at),
+  ADD INDEX idx_instance_region_phase_created (region_id, phase, created_at),
+  ADD INDEX idx_instance_request (request_id);

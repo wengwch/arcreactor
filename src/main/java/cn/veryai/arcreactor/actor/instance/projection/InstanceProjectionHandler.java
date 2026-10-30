@@ -34,15 +34,18 @@ public final class InstanceProjectionHandler
         String instanceId = entityId(envelope.persistenceId());
 
         if (event instanceof InstanceCreationRequested created) {
-            mapper.upsertCreated(instanceId, created.requestId(), "NEW", version,
+            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), "NEW", version,
                     Timestamp.from(created.requestedAt()), timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
-        } else if (event instanceof NetworkPreparationStarted || event instanceof NetworkPrepared) {
+        } else if (event instanceof NetworkPreparationStarted) {
             mapper.updatePhase(instanceId, "PREPARING_NETWORK", version, timestamp);
-        } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected
-                || event instanceof ForwardingPrepared) {
+        } else if (event instanceof NetworkPrepared prepared) {
+            mapper.updateNetwork(instanceId, "PREPARING_NETWORK", prepared.resources(), version, timestamp);
+        } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
+        } else if (event instanceof ForwardingPrepared prepared) {
+            mapper.updateForwarding(instanceId, "PREPARING_FORWARDING", prepared.forwarding(), version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
             mapper.updateHypervisor(instanceId, "SCHEDULING", selected.hypervisorId(),
                     selected.reservationId(), version, timestamp);

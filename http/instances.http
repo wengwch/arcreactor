@@ -1,0 +1,55 @@
+# 创建实例接口测试数据。先查询资源，填写下方 3 个资源 ID，再单独执行创建请求。
+# regionId 沿用已有网络数据的 Test-SH-01；userId 使用待测试的应用用户 ID。
+# flavorId、imageId、hypervisorType 均为本地数据库业务 ID，不是 OpenStack ID 或类型名称。
+# 规格、镜像须属于同一区域且已启用；规格的 hypervisorType 必须与请求一致，类型须启用。
+# sql/init-data.sql 中的 demo 镜像和规格默认禁用、属于 demo-region，不能直接用于本请求。
+# 区域及其集群须配置有效，且区域已启用；需有同区域、同类型、资源充足的 ACTIVE 宿主机。
+# Test-SH-01 应已登记 LOCAL 网络，以及唯一的 SHARED 网络和对应 OpenStack 网络/子网。
+# 服务端需配置 INSTANCE_SHARE_TYPE、MANILA_FS_NAME 及有效的 OpenStack 连接和管理员角色。
+# 存储、网络、SSH 用户等使用服务端 instance.creation 配置，无需增加请求字段。
+# 创建接口没有 initOpenstack 或 dry-run 参数，执行 POST 会实际提交资源创建。
+# 首次请求可能等待用户项目、共享存储和网络就绪，HTTP 客户端超时需覆盖服务端等待时间
+# （服务端 INSTANCE_CREATE_REQUEST_TIMEOUT 默认 11 分钟）。超时后先核实结果再重试。
+@baseUrl = http://localhost:8080
+@regionId = Test-SH-01
+@userId = test-user-001
+@flavorId = demo-flavor-medium
+@imageId = demo-image-debian
+@hypervisorType = demo-hv-t4
+@instanceName = test-instance-001
+
+### 1. 查询区域内的规格，从 result 中选择 enabled=true 的记录
+# 记录 id 和 hypervisorType，分别填写 flavorId 和 hypervisorType。
+# osFlavorId 必须是有效 Nova 规格 ID；vcpus、ram 必须大于 0，gpus 不得为负。
+GET {{baseUrl}}/api/v1/flavors?regionId={{regionId}}
+Accept: application/json
+
+### 2. 查询同区域的镜像，从 result 中选择 enabled=true 且 osImageId 有效的记录
+# 使用记录的 id 填写 imageId。
+GET {{baseUrl}}/api/v1/images?regionId={{regionId}}
+Accept: application/json
+
+### 3. 查询宿主机类型，确认规格引用的类型存在且 enabled=true
+GET {{baseUrl}}/api/v1/hypervisor-types
+Accept: application/json
+
+### 4. 创建测试实例
+# @name createTestInstance
+# 成功返回 HTTP 202 Accepted，响应包装为 {"code":200,"result":{...}}。
+# result 包含 instanceId、requestId、username、password、jupyterToken。
+# HTTP 202 表示工作流已持久化受理，后续网络和 Nova 创建异步继续，不代表实例已 ACTIVE。
+# 相同参数重复提交会生成新的 instanceId/requestId，不具备 HTTP 请求幂等性。
+# 同一用户在同一区域复用用户级存储和网络；当前接口不配置浮动 IP 转发。
+POST {{baseUrl}}/api/v1/instances
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "{{instanceName}}",
+  "description": "Test-SH-01 创建实例接口测试",
+  "flavorId": "{{flavorId}}",
+  "imageId": "{{imageId}}",
+  "hypervisorType": "{{hypervisorType}}",
+  "regionId": "{{regionId}}",
+  "userId": "{{userId}}"
+}

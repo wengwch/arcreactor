@@ -38,9 +38,9 @@ mybatis:
 instance:
   creation:
     dependency-preparation-timeout: "${INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT:10m}"
-    dependency-poll-interval: "${INSTANCE_DEPENDENCY_POLL_INTERVAL:2s}"
-    share-type: "${INSTANCE_SHARE_TYPE:}"
-    share-size: "${INSTANCE_SHARE_SIZE:100}"
+    dependency-poll-interval: "${INSTANCE_DEPENDENCY_POLL_INTERVAL:1s}"
+    share-type: "${INSTANCE_SHARE_TYPE:cephfs-native}"
+    share-size: "${INSTANCE_SHARE_SIZE:1}"
     network-cidr: "${INSTANCE_NETWORK_CIDR:10.0.0.0/16}"
     network-dns: "${INSTANCE_NETWORK_DNS:}"
     network-gateway: "${INSTANCE_NETWORK_GATEWAY:}"
@@ -55,7 +55,7 @@ instance:
     host-routes: {}
 
 openstack:
-  manila-fs-name: "${MANILA_FS_NAME:}"
+  manila-fs-name: "${MANILA_FS_NAME:cephfs}"
   enabled: "${OPENSTACK_ENABLED:false}"
   default-cluster: "${OPENSTACK_DEFAULT_CLUSTER:default}"
   token-refresh-before-expiry: "${OPENSTACK_TOKEN_REFRESH_BEFORE_EXPIRY:PT10M}"
