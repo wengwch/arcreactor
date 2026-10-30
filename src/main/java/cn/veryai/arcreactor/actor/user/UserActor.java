@@ -484,12 +484,10 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     try {
       String operationId = operationId("project:" + project.clusterId());
       operation = switch (project.phase()) {
-        case CREATING -> client.createProject(project.clusterId(), project.name(), operationId)
-            .thenApply(created -> projectCreated(project, created));
-        case RECONCILING -> client.findProjectByOperationId(project.clusterId(), project.name(), operationId)
-            .thenApply(found -> found == null ? project : projectCreated(project, found));
-        case GRANTING_ADMIN_ROLE -> client.grantProjectAdminRole(project.clusterId(), project.projectId())
-            .thenApply(ignored -> project.ready());
+        case CREATING, RECONCILING -> client.createProjectWithAdminRole(
+                project.clusterId(), project.name(), operationId,
+                project.phase() == UserProjectState.Phase.CREATING)
+            .thenApply(prepared -> prepared == null ? project : project.ready(prepared.getId()));
         case READY, FAILED -> CompletableFuture.completedFuture(project);
       };
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
@@ -511,10 +509,6 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     });
   }
 
-  private static UserProjectState projectCreated(UserProjectState state, org.openstack4j.model.identity.v3.Project project) {
-    if (project == null || !hasText(project.getId())) throw new IllegalStateException("Keystone returned no project ID");
-    return state.created(project.getId());
-  }
   private void continueProject(UserProjectState project) {
     context.getSelf().tell(new ContinueProject(project.clusterId(), project.generation()));
   }

@@ -32,7 +32,7 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class InstanceDependencyPreparer {
     private static final Executor EXECUTOR = task -> Thread.ofVirtual().name("instance-dependencies").start(task);
-    private final UserResources users;
+    private final UserResources userResources;
     private final OpenStackClient openStackClient;
     private final SysNetworkRepo sysNetworkRepo;
     private final InstanceCreationProperties properties;
@@ -47,8 +47,8 @@ public class InstanceDependencyPreparer {
             long deadline = System.nanoTime() + properties.getDependencyPreparationTimeout().toNanos();
             try {
                 String region = shareSpec.regionId();
-                var project = awaitReady(() -> users.getProject(userId, clusterId),
-                        () -> users.createProject(userId, clusterId, userId), reply -> reply.status().name(),
+                var project = awaitReady(() -> userResources.getProject(userId, clusterId),
+                        () -> userResources.createProject(userId, clusterId, userId), reply -> reply.status().name(),
                         deadline, ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
                 if (!userId.equals(project.userId()) || !clusterId.equals(project.clusterId()) || !hasText(project.projectId())) {
                     throw new BaseException(ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
@@ -56,8 +56,8 @@ public class InstanceDependencyPreparer {
                 String projectId = project.projectId();
                 NetworkRequirement resolved = resolveSharedNetwork(region, projectId, network);
                 ShareSpec resolvedShare = shareSpec.withProjectId(projectId);
-                var shareReply = awaitReady(() -> users.getShare(userId, region),
-                        () -> users.createShare(userId, shareId, resolvedShare), reply -> reply.status().name(),
+                var shareReply = awaitReady(() -> userResources.getShare(userId, region),
+                        () -> userResources.createShare(userId, shareId, resolvedShare), reply -> reply.status().name(),
                         deadline, ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED);
                 var share = shareReply.share();
                 if (share == null || !resolvedShare.equals(share.spec()) || !hasText(share.shareId())) {
@@ -69,8 +69,8 @@ public class InstanceDependencyPreparer {
                 } catch (IllegalArgumentException exception) {
                     throw new BaseException(ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED, exception);
                 }
-                var networkReply = awaitReady(() -> users.getNetwork(userId, region),
-                        () -> users.createNetwork(userId, clusterId, network.userNetwork()), reply -> reply.status().name(),
+                var networkReply = awaitReady(() -> userResources.getNetwork(userId, region),
+                        () -> userResources.createNetwork(userId, clusterId, network.userNetwork()), reply -> reply.status().name(),
                         deadline, ErrorCode.INSTANCE_USER_NETWORK_PREPARATION_FAILED);
                 UserNetworkState readyNetwork = networkReply.network();
                 if (!userId.equals(networkReply.userId()) || !region.equals(networkReply.regionId())

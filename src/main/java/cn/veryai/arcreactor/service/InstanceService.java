@@ -127,8 +127,7 @@ public class InstanceService {
 
     private CreationDefaults creationDefaults(CreateInstanceParam param, RegionEntity region) {
         // A user's instances reuse the same regional share and network specification.
-        String resourceId = UUID.nameUUIDFromBytes((param.getUserId().length() + ":"
-                + param.getUserId() + ":" + region.getId()).getBytes(StandardCharsets.UTF_8)).toString();
+        String resourceId = param.getUserId();
         ShareSpec share;
         NetworkRequirement network;
         CloudInitSpec cloudInit;

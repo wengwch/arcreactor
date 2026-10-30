@@ -82,6 +82,8 @@ NetworkRequirement network = new NetworkRequirement(sharedNetworkId, sharedSubne
 接口服务先准备用户项目，检查区域 SHARED 网络，再等待 Share 和用户网络就绪。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
+UserActor 调用 `createProjectWithAdminRole()` 依次创建项目、授予管理员角色，全部成功后才标记 `READY`。
+项目操作超时或 Actor 恢复时，按操作标记查找已有项目并补齐授权，不重复提交创建请求。
 项目投影写入 `user_cluster_project`，主键为 `(user_id, cluster_id)`，建表定义见 `sql/read-model.sql`。
 接口失败或单个实例失败不会删除这些共享资源。
 只有依赖全部就绪后才向 InstanceActor 发送 Command，包含已解析的 `projectId`、
