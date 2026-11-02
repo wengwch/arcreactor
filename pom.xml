@@ -37,7 +37,7 @@
         <pekko.projection.version>1.1.0</pekko.projection.version>
         <archunit.version>1.4.2</archunit.version>
         <mybatis-spring-boot.version>4.0.0</mybatis-spring-boot.version>
-        <openstack4j.version>3.13-SNAPSHOT</openstack4j.version>
+        <openstack4j.version>3.13-ENQ-SNAPSHOT</openstack4j.version>
         <r2dbc-mysql.version>1.4.1</r2dbc-mysql.version>
     </properties>
 

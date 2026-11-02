@@ -13,6 +13,8 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "instance.creation")
 public class InstanceCreationProperties {
+    /** Keep failed instance resources for diagnosis unless cleanup is explicitly enabled. */
+    private boolean cleanupOnFailure = false;
     private Duration dependencyPreparationTimeout = Duration.ofMinutes(10);
     private Duration dependencyPollInterval = Duration.ofSeconds(2);
     private String shareType;
@@ -22,8 +24,8 @@ public class InstanceCreationProperties {
     private String networkDns = "";
     private String networkGateway;
     private int segmentationId = 100;
-    private PortBandwidthLimit parentPortBandwidthLimit = PortBandwidthLimit.UNLIMITED;
-    private PortBandwidthLimit subPortBandwidthLimit = PortBandwidthLimit.UNLIMITED;
-    private String sshUsername = "clouduser";
+    private PortBandwidthLimit parentPortBandwidthLimit = new PortBandwidthLimit(1024*100, 1024*10);
+    private PortBandwidthLimit subPortBandwidthLimit = new PortBandwidthLimit(1024*100, 1024*10);
+    private String sshUsername = "ubuntu";
     private Map<String, String> hostRoutes = new HashMap<>();
 }

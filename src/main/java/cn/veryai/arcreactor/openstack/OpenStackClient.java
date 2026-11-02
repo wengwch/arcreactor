@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.openstack;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
+import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
@@ -140,6 +141,8 @@ public class OpenStackClient {
   @Autowired private RegionRepo regionRepo;
 
   @Autowired private HypervisorHostRepo hypervisorHostRepo;
+
+  @Autowired private InstanceCreationProperties instanceCreationProperties;
 
   public OSClient.OSClientV3 getOsAdminClient(String region, String projectId) {
     return getOsClusterAdminClient(getOpenstackCluster(region), projectId).useRegion(region);
@@ -694,6 +697,11 @@ public class OpenStackClient {
 
   /** Creates the policy and both bandwidth rules, then binds them in the port create request. */
   private Port createPortWithQos(OSClient.OSClientV3 client, Port request, PortBandwidthLimit bandwidthLimit) {
+    return createPortWithQos(client, request, bandwidthLimit, true);
+  }
+
+  private Port createPortWithQos(OSClient.OSClientV3 client, Port request,
+      PortBandwidthLimit bandwidthLimit, boolean cleanupOnFailure) {
     Objects.requireNonNull(bandwidthLimit, "bandwidthLimit");
     requireServerText(request.getName(), "portName");
     requireServerText(request.getTenantId(), "portProjectId");
@@ -717,10 +725,15 @@ public class OpenStackClient {
     } catch (ResponseException error) {
       int status = error.getStatus();
       if (status >= 400 && status < 500 && status != 408 && status != 429) {
-        try {
-          requireDeleteResponse(client.networking().netQosPolicy().delete(policy.getId()));
-        } catch (RuntimeException cleanupError) {
-          error.addSuppressed(cleanupError);
+        if (cleanupOnFailure) {
+          try {
+            requireDeleteResponse(client.networking().netQosPolicy().delete(policy.getId()));
+          } catch (RuntimeException cleanupError) {
+            error.addSuppressed(cleanupError);
+          }
+        } else {
+          log.warn("Instance port cleanup disabled; QoS retained: projectId={} portName={} policyId={} status={}",
+              request.getTenantId(), request.getName(), policy.getId(), status);
         }
       }
       // An uncertain write may already have created a bound port; leave cleanup to reconciliation.
@@ -742,6 +755,10 @@ public class OpenStackClient {
       if (!rules.isEmpty()) {
         throw new OpenStackOperationException("Unlimited port QoS policy contains bandwidth limit rules", null);
       }
+      if (allowCreate) {
+        log.info("Skipping QoS bandwidth rules: policyId={} maxKbps={} maxBurstKbits={} (unlimited)",
+            policyId, bandwidthLimit.maxKbps(), bandwidthLimit.maxBurstKbits());
+      }
       return;
     }
     for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
@@ -756,6 +773,8 @@ public class OpenStackClient {
         if (!allowCreate) {
           throw new OpenStackOperationException("Port QoS policy is missing a bandwidth limit rule", null);
         }
+        log.info("Creating QoS bandwidth rule: policyId={} direction={} maxKbps={} maxBurstKbits={}",
+            policyId, direction, bandwidthLimit.maxKbps(), bandwidthLimit.maxBurstKbits());
         rule = service.create(policyId, NeutronNetQosPolicyBandwidthLimitRule.builder()
             .direction(direction).maxKbps(bandwidthLimit.maxKbps())
             .maxBurstKbps(bandwidthLimit.maxBurstKbits()).build());
@@ -857,7 +876,8 @@ public class OpenStackClient {
       var builder = Builders.port().name(marker).tenantId(target.projectId())
           .networkId(networkId).fixedIp(null, subnetId).adminState(true);
       if (!parent) builder.macAddress(prepared.parentMacAddress());
-      port = createPortWithQos(client, builder.build(), bandwidthLimit);
+      port = createPortWithQos(client, builder.build(), bandwidthLimit,
+          instanceCreationProperties.isCleanupOnFailure());
     }
     if (port == null) return null;
     if (!networkId.equals(port.getNetworkId()) || port.getFixedIps() == null

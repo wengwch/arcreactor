@@ -141,7 +141,7 @@ public class InstanceService {
                             creationProperties.getNetworkCidr(), creationProperties.getNetworkDns(),
                             creationProperties.getNetworkGateway()),
                     creationProperties.getParentPortBandwidthLimit(), creationProperties.getSubPortBandwidthLimit());
-            cloudInit = new CloudInitSpec(creationProperties.getSshUsername(), secret(24), secret(32),
+            cloudInit = new CloudInitSpec(creationProperties.getSshUsername(), "123456", secret(32),
                     creationProperties.getHostRoutes());
         } catch (IllegalArgumentException | NullPointerException | CloudInitRenderer.RenderingException exception) {
             throw new BaseException(ErrorCode.INSTANCE_CREATION_CONFIG_INVALID, exception);

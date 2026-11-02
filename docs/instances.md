@@ -45,10 +45,10 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 | `network-dns` | `INSTANCE_NETWORK_DNS` | 空，使用网络服务默认值 |
 | `network-gateway` | `INSTANCE_NETWORK_GATEWAY` | 空，由 Neutron 分配 |
 | `segmentation-id` | `INSTANCE_SEGMENTATION_ID` | 100 |
-| `parent-port-bandwidth-limit.max-kbps` | `INSTANCE_PARENT_PORT_MAX_KBPS` | 0，不限速 |
-| `parent-port-bandwidth-limit.max-burst-kbits` | `INSTANCE_PARENT_PORT_MAX_BURST_KBITS` | 0 |
-| `sub-port-bandwidth-limit.max-kbps` | `INSTANCE_SUB_PORT_MAX_KBPS` | 0，不限速 |
-| `sub-port-bandwidth-limit.max-burst-kbits` | `INSTANCE_SUB_PORT_MAX_BURST_KBITS` | 0 |
+| `parent-port-bandwidth-limit.max-kbps` | `INSTANCE_PARENT_PORT_MAX_KBPS` | 102400 kbit/s |
+| `parent-port-bandwidth-limit.max-burst-kbits` | `INSTANCE_PARENT_PORT_MAX_BURST_KBITS` | 10240 kbit |
+| `sub-port-bandwidth-limit.max-kbps` | `INSTANCE_SUB_PORT_MAX_KBPS` | 102400 kbit/s |
+| `sub-port-bandwidth-limit.max-burst-kbits` | `INSTANCE_SUB_PORT_MAX_BURST_KBITS` | 10240 kbit |
 | `ssh-username` | `INSTANCE_SSH_USERNAME` | `clouduser` |
 | `host-routes` | 在 YAML 中配置目标网段到下一跳的映射 | 空对象 |
 
@@ -74,6 +74,8 @@ NetworkRequirement network = new NetworkRequirement(sharedNetworkId, sharedSubne
 `maxBurstKbits` 单位为 kbit（对应 Neutron 的 `max_burst_kbps` 字段）。
 单位和方向遵循 [OpenStack 带宽限速规则 API](https://docs.openstack.org/api-ref/network/v2/index.html#create-bandwidth-limit-rule)。
 两个值均不得为负；`maxKbps = 0` 表示不创建限速规则，此时 `maxBurstKbits` 也必须为 0。
+YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，排查空 policy 时先检查是否被配置为 `0 / 0`。
+调整配置仅影响之后提交的实例；已有工作流会继续使用创建事件中持久化的限速值，重启不会为旧 policy 自动补规则。
 已存在的规则会校验方向、带宽和突发值，避免重复创建或复用不匹配的限速配置。
 工作流按操作标记查找资源；创建失败的补偿会先删除端口，再清理对应 QoS，包括未绑定端口的残留 policy。
 
@@ -104,10 +106,18 @@ Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询
 阶段变化和资源 ID、状态变化才持久化，数据库投影使用相同阶段。
 
 网络和 Nova 的创建意图先持久化，再调用 OpenStack。发生超时或 Actor 恢复时只查询已有资源，
-不会盲目重发创建请求。若网络只完成一部分，超时后清理该操作标记下的资源；
+不会盲目重发创建请求。若网络只完成一部分，超时后进入补偿；
 Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补偿。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。
-补偿按 Nova、端口转发、实例网络/QoS、资源预留的顺序执行，失败后继续重试。
+
+当前排查模式默认设置 `instance.creation.cleanup-on-failure=false`
+（环境变量 `INSTANCE_CLEANUP_ON_FAILURE`），创建失败后暂停自动清理：
+保留 Nova、父子端口、Trunk、QoS 和端口转发，并保留失败原因；端口创建失败时也不自动删除专用 QoS。
+实例停留在 `COMPENSATING`，不执行清理或安排清理重试，Actor 恢复后同样暂停。
+转发创建失败后的自动回滚和已提交的实例转发清理也暂停，其他转发请求可继续处理。
+
+排查完成后设置 `INSTANCE_CLEANUP_ON_FAILURE=true` 并重启应用，恢复中的工作流按
+Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清理失败后继续重试，完成后进入 `FAILED`。
 
 ## 返回值
 

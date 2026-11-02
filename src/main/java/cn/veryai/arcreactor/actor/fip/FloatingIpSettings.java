@@ -3,7 +3,8 @@ package cn.veryai.arcreactor.actor.fip;
 import java.time.Duration;
 import java.util.Objects;
 
-public record FloatingIpSettings(Duration retryDelay, Duration operationTimeout, int maxAttempts) {
+public record FloatingIpSettings(Duration retryDelay, Duration operationTimeout, int maxAttempts,
+    boolean cleanupOnFailure) {
   public static final int FIRST_PORT = 10000;
   public static final int LAST_PORT = 40000;
 

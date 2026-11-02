@@ -37,6 +37,7 @@ mybatis:
 
 instance:
   creation:
+    cleanup-on-failure: "${INSTANCE_CLEANUP_ON_FAILURE:false}"
     dependency-preparation-timeout: "${INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT:10m}"
     dependency-poll-interval: "${INSTANCE_DEPENDENCY_POLL_INTERVAL:1s}"
     share-type: "${INSTANCE_SHARE_TYPE:cephfs-native}"
@@ -46,12 +47,12 @@ instance:
     network-gateway: "${INSTANCE_NETWORK_GATEWAY:}"
     segmentation-id: "${INSTANCE_SEGMENTATION_ID:100}"
     parent-port-bandwidth-limit:
-      max-kbps: "${INSTANCE_PARENT_PORT_MAX_KBPS:0}"
-      max-burst-kbits: "${INSTANCE_PARENT_PORT_MAX_BURST_KBITS:0}"
+      max-kbps: "${INSTANCE_PARENT_PORT_MAX_KBPS:102400}"
+      max-burst-kbits: "${INSTANCE_PARENT_PORT_MAX_BURST_KBITS:10240}"
     sub-port-bandwidth-limit:
-      max-kbps: "${INSTANCE_SUB_PORT_MAX_KBPS:0}"
-      max-burst-kbits: "${INSTANCE_SUB_PORT_MAX_BURST_KBITS:0}"
-    ssh-username: "${INSTANCE_SSH_USERNAME:clouduser}"
+      max-kbps: "${INSTANCE_SUB_PORT_MAX_KBPS:102400}"
+      max-burst-kbits: "${INSTANCE_SUB_PORT_MAX_BURST_KBITS:10240}"
+    ssh-username: "${INSTANCE_SSH_USERNAME:ubuntu}"
     host-routes: {}
 
 openstack:

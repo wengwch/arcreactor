@@ -4,6 +4,7 @@ import cn.veryai.arcreactor.actor.fip.command.*;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
 import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
+import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -30,12 +31,14 @@ public final class FloatingIpForwardings {
   private final Duration askTimeout;
   private final Cache<String, FloatingIpIdentity> identities = Caffeine.newBuilder().maximumSize(10000).build();
 
-  public FloatingIpForwardings(ActorSystem<?> system, OpenStackClient client) {
+  public FloatingIpForwardings(ActorSystem<?> system, OpenStackClient client,
+      InstanceCreationProperties creationProperties) {
     this.system = system; this.sharding = ClusterSharding.get(system); this.client = client;
     Config config = system.settings().config().getConfig("cloud.fip");
     askTimeout = config.getDuration("ask-timeout");
     FloatingIpSettings settings = new FloatingIpSettings(config.getDuration("retry-delay"),
-        config.getDuration("operation-timeout"), config.getInt("max-attempts"));
+        config.getDuration("operation-timeout"), config.getInt("max-attempts"),
+        creationProperties.isCleanupOnFailure());
     sharding.init(Entity.of(FloatingIpActor.TYPE_KEY,
         context -> FloatingIpActor.awaitingIdentity(context.getEntityId(), client, settings)));
   }

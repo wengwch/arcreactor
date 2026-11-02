@@ -213,6 +213,7 @@ public final class FloatingIpActor
     if (activeClaim != null) return;
     ForwardingClaim claim = state.claims().values().stream()
         .filter(c -> !c.terminal() && !c.paused() && !delayed.contains(c.claimId()))
+        .filter(c -> !failureCleanupDisabled(state, c))
         .min(Comparator.comparingLong(ForwardingClaim::order)).orElse(null);
     if (claim == null) return;
     // Intent is persisted in a command handler before any remote operation is started.
@@ -225,6 +226,7 @@ public final class FloatingIpActor
     ForwardingClaim claim = state.claims().get(command.claimId());
     if (activeClaim != null || claim == null || claim.terminal() || claim.paused()
         || claim.generation() != command.generation() || delayed.contains(claim.claimId())) return Effect().none();
+    if (failureCleanupDisabled(state, claim)) return Effect().none();
     if (claim.attempts() >= settings.maxAttempts()) {
       return Effect().persist(new ForwardingUpdated(pause(claim, "Operation requires reconciliation")))
           .thenRun(this::drive);
@@ -366,8 +368,20 @@ public final class FloatingIpActor
     return copy(claim, phase, resources, claim.deleteRequested(), false, false, 0,
         phase == Phase.READY ? null : claim.failure());
   }
-  private static ForwardingClaim cleanup(ForwardingClaim claim, String detail) {
+  private ForwardingClaim cleanup(ForwardingClaim claim, String detail) {
+    if (!settings.cleanupOnFailure() && !claim.deleteRequested()) {
+      context.getLog().warn(
+          "Forwarding failure cleanup disabled; resources retained: instanceId={} claimId={} failure={}",
+          claim.spec().instanceId(), claim.claimId(), detail);
+    }
     return copy(claim, Phase.DELETING_TCP, claim.resources(), claim.deleteRequested(), false, false, 0, detail);
+  }
+
+  private boolean failureCleanupDisabled(FloatingIpState state, ForwardingClaim claim) {
+    // Instance compensation may already have requested deletion before this actor recovered.
+    // Standalone claim deletions remain available; instance-wide cleanup stays suspended.
+    return !settings.cleanupOnFailure() && claim.deleting()
+        && (!claim.deleteRequested() || state.cancelledInstances().contains(claim.spec().instanceId()));
   }
   private static ForwardingClaim requestDelete(ForwardingClaim claim) {
     Phase phase = claim.writing() && claim.writeStarted() ? claim.phase()

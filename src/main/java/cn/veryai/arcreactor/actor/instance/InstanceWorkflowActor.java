@@ -341,6 +341,10 @@ public final class InstanceWorkflowActor
         yield Effect().none();
       }
       case IN_PROGRESS, NEEDS_RECONCILIATION -> {
+        if (!settings.cleanupOnFailure() && reply.claim() != null
+            && reply.claim().deleting() && reply.claim().failure() != null) {
+          yield beginCompensation("FORWARDING_PREPARATION_FAILED", reply.detail());
+        }
         scheduleForwardingPoll(state, command.attempt() + 1); yield Effect().none();
       }
     };
@@ -653,6 +657,7 @@ public final class InstanceWorkflowActor
   }
 
   private void startCompensation(InstanceWorkflowState state) {
+    if (pauseCompensationIfDisabled(state)) return;
     CompletionStage<Boolean> delete =
         state.novaServerId() == null
             ? (state.novaOperationId() == null ? CompletableFuture.completedFuture(true)
@@ -708,10 +713,21 @@ public final class InstanceWorkflowActor
   }
 
   private void scheduleCompensationRetry(InstanceWorkflowState state) {
+    if (pauseCompensationIfDisabled(state)) return;
     timers.startSingleTimer(
         COMPENSATION_TIMER,
         new RetryCompensation(state.pollingGeneration()),
         settings.pollMaxDelay());
+  }
+
+  private boolean pauseCompensationIfDisabled(InstanceWorkflowState state) {
+    if (settings.cleanupOnFailure()) return false;
+    timers.cancel(COMPENSATION_TIMER);
+    context.getLog().warn(
+        "Instance cleanup disabled; resources retained: instanceId={} requestId={} failureCode={} failureMessage={}",
+        instanceId, state.requestId(), state.failureCode(), state.failureMessage());
+    // Keep COMPENSATING so cleanup can resume after configuration is enabled and the actor recovers.
+    return true;
   }
 
   private OpenStackClient.ServerTarget target(InstanceWorkflowState state) {
