@@ -3,12 +3,16 @@ package cn.veryai.arcreactor.openstack;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
+import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
+import cn.veryai.arcreactor.entity.SysNetworkEntity;
+import cn.veryai.arcreactor.enums.SysNetworkType;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
+import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +23,7 @@ import org.openstack4j.api.exceptions.ResponseException;
 import org.openstack4j.api.types.Facing;
 import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.common.Identifier;
+import org.openstack4j.model.common.Resource;
 import org.openstack4j.model.compute.*;
 import org.openstack4j.model.compute.actions.RebuildOptions;
 import org.openstack4j.model.compute.ext.Hypervisor;
@@ -141,6 +146,8 @@ public class OpenStackClient {
   @Autowired private RegionRepo regionRepo;
 
   @Autowired private HypervisorHostRepo hypervisorHostRepo;
+
+  @Autowired private SysNetworkRepo sysNetworkRepo;
 
   @Autowired private InstanceCreationProperties instanceCreationProperties;
 
@@ -576,6 +583,110 @@ public class OpenStackClient {
     } catch (Exception e) {
       log.error("Failed to delete trunk: " + trunkId, e);
     }
+  }
+
+  public CompletionStage<String> resolveUserLocalNetwork(String regionId, String projectId) {
+    return CompletableFuture.supplyAsync(() -> {
+      List<SysNetworkEntity> localNetworks = sysNetworkRepo.findByRegionId(regionId).stream()
+          .filter(network -> network.getSysNetworkType() == SysNetworkType.LOCAL).toList();
+      if (localNetworks.size() != 1) {
+        throw new OpenStackOperationException("Exactly one preset LOCAL network is required in this region", null);
+      }
+      SysNetworkEntity local = localNetworks.getFirst();
+      if (!local.isRouterExternally() || !local.isShared()
+          || local.getOsNetId() == null || local.getOsNetId().isBlank()) {
+        throw new OpenStackOperationException("Preset LOCAL network must be shared and external with an OpenStack ID", null);
+      }
+      Network network = getNetwork(regionId, projectId, local.getOsNetId());
+      if (network == null || !network.isRouterExternal() || !network.isShared()) {
+        throw new OpenStackOperationException("Preset LOCAL network is not a shared external Neutron network", null);
+      }
+      return networkResourceId(network.getId());
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** During reconciliation, allowCreate=false only looks up the resource from the recorded attempt. */
+  public CompletionStage<String> ensureUserNetwork(String regionId, String projectId,
+      String name, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      Network network = uniqueUserNetworkResource(listNetworks(regionId, projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId()) && name.equals(item.getName())).toList());
+      if (network == null && allowCreate) {
+        network = createNetwork(regionId, projectId, name);
+        if (network == null) throw new IllegalStateException("Neutron returned no network");
+      }
+      if (network == null) return null;
+      if (!projectId.equals(network.getTenantId()) || network.isRouterExternal() || network.isShared()) {
+        throw new OpenStackOperationException("User network has mismatched ownership or visibility", null);
+      }
+      return networkResourceId(network.getId());
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<String> ensureUserSubnet(NetworkSpec spec, String projectId,
+      String networkId, String name, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      Subnet subnet = uniqueUserNetworkResource(listSubnets(spec.regionId(), projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId()) && name.equals(item.getName())).toList());
+      if (subnet == null && allowCreate) {
+        subnet = createSubnet(spec.regionId(), projectId, networkId, name,
+            spec.ipv4CIDR(), spec.dns(), spec.gateway(), Map.of());
+        if (subnet == null) throw new IllegalStateException("Neutron returned no subnet");
+      }
+      if (subnet == null) return null;
+      if (!projectId.equals(subnet.getTenantId()) || !networkId.equals(subnet.getNetworkId())
+          || !spec.ipv4CIDR().equals(subnet.getCidr())
+          || (spec.gateway() != null && !spec.gateway().equals(subnet.getGateway()))) {
+        throw new OpenStackOperationException("User subnet has mismatched ownership, network, CIDR or gateway", null);
+      }
+      return networkResourceId(subnet.getId());
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<String> ensureUserRouter(String regionId, String projectId,
+      String name, String localNetworkId, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      Router router = uniqueUserNetworkResource(listRouters(regionId, projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId()) && name.equals(item.getName())).toList());
+      if (router == null && allowCreate) {
+        router = createRouter(regionId, projectId, name, localNetworkId);
+        if (router == null) throw new IllegalStateException("Neutron returned no router");
+      }
+      if (router == null) return null;
+      if (!projectId.equals(router.getTenantId()) || router.getExternalGatewayInfo() == null
+          || !localNetworkId.equals(router.getExternalGatewayInfo().getNetworkId())) {
+        throw new OpenStackOperationException("User router has mismatched ownership or LOCAL network gateway", null);
+      }
+      return networkResourceId(router.getId());
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<String> ensureUserRouterInterface(String regionId, String projectId,
+      String networkId, String routerId, String subnetId, boolean allowCreate) {
+    return CompletableFuture.supplyAsync(() -> {
+      Port port = uniqueUserNetworkResource(listPorts(regionId, projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId())
+              && routerId.equals(item.getDeviceId()) && networkId.equals(item.getNetworkId())
+              && item.getFixedIps() != null
+              && item.getFixedIps().stream().anyMatch(ip -> subnetId.equals(ip.getSubnetId()))).toList());
+      if (port != null) return networkResourceId(port.getId());
+      if (!allowCreate) return null;
+      RouterInterface attached = attachRouterInterface(regionId, projectId, routerId, subnetId);
+      if (attached == null || !subnetId.equals(attached.getSubnetId()) || !routerId.equals(attached.getId())) {
+        throw new IllegalStateException("Neutron did not confirm the user router interface");
+      }
+      return networkResourceId(attached.getPortId());
+    }, NETWORK_EXECUTOR);
+  }
+
+  private static <T extends Resource> T uniqueUserNetworkResource(List<? extends T> matches) {
+    if (matches.size() > 1) throw new OpenStackOperationException("Duplicate user network resource operation marker", null);
+    return matches.isEmpty() ? null : matches.getFirst();
+  }
+
+  private static String networkResourceId(String id) {
+    if (id == null || id.isBlank()) throw new IllegalStateException("Missing network resource ID");
+    return id;
   }
 
   public Router createRouter(String regionId, String projectId, String name, String extNetId) {

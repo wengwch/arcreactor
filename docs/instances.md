@@ -158,6 +158,8 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 router 由用户网络流程创建，没有单独的路由事件。每个 `NetworkUpdated` 在同一个 JDBC
 事务内更新网络和路由两条记录，并随投影偏移量一起提交。资源尚未创建时对应的 OpenStack
 ID 为空；router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路由运行状态。
+网络流程仅有 `CREATING`、`RECONCILING`、`READY`、`FAILED` 四个阶段，已确认的资源 ID
+决定下一项操作；`RECONCILING` 只查询当前结果未确认的资源，确认后继续创建剩余资源。
 网络表的网关和 DNS 来自请求规格；若网关由 Neutron 自动分配，投影中的 `gateway` 保持为空。
 
 三个区域资源表使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。

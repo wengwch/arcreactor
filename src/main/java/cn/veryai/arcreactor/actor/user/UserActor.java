@@ -20,11 +20,8 @@ import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
-import cn.veryai.arcreactor.entity.SysNetworkEntity;
-import cn.veryai.arcreactor.enums.SysNetworkType;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
-import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -36,7 +33,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
@@ -52,16 +48,10 @@ import org.apache.pekko.persistence.typed.javadsl.EventSourcedBehavior;
 import org.apache.pekko.persistence.typed.javadsl.RetentionCriteria;
 import org.apache.pekko.persistence.typed.javadsl.SignalHandler;
 import org.openstack4j.api.exceptions.ResponseException;
-import org.openstack4j.model.common.Resource;
 import org.openstack4j.model.manila.Access;
 import org.openstack4j.model.manila.Share;
 import org.openstack4j.model.manila.ShareExportLocation;
 import org.openstack4j.model.manila.actions.AccessOptions;
-import org.openstack4j.model.network.Network;
-import org.openstack4j.model.network.Port;
-import org.openstack4j.model.network.Router;
-import org.openstack4j.model.network.RouterInterface;
-import org.openstack4j.model.network.Subnet;
 import org.openstack4j.openstack.manila.domain.ManilaShareCreate;
 
 /** Owns one user's cluster projects, regional networks and shared storage. */
@@ -71,14 +61,11 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       EntityTypeKey.create(UserCommand.class, ENTITY_TYPE);
 
   private static final String OPERATION_METADATA = "arcreactor_share_operation_id";
-  private static final Executor NETWORK_EXECUTOR =
-      task -> Thread.ofVirtual().name("user-network").start(task);
 
   private final String userId;
   private final ActorContext<UserCommand> context;
   private final TimerScheduler<UserCommand> timers;
   private final OpenStackClient client;
-  private final SysNetworkRepo sysNetworkRepo;
   private final UserShareSettings settings;
   private final UserProjectSettings projectSettings;
   private final UserNetworkSettings networkSettings;
@@ -98,30 +85,30 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private record ProjectTimerKey(String clusterId) {}
   public record ContinueNetwork(String regionId, long generation) implements UserCommand {}
   public record ResumeNetwork(String regionId) implements UserCommand {}
-  public record NetworkStepCompleted(String regionId, long generation, String resourceId,
+  public record NetworkStepCompleted(String regionId, long generation, UserNetworkState result,
       boolean definitiveFailure, String failure) implements UserCommand {}
   private record NetworkTimerKey(String regionId) {}
 
   public static Behavior<UserCommand> create(String userId, OpenStackClient client,
-      SysNetworkRepo sysNetworkRepo, UserShareSettings settings) {
-    return create(userId, client, sysNetworkRepo, settings, UserProjectSettings.defaults());
+      UserShareSettings settings) {
+    return create(userId, client, settings, UserProjectSettings.defaults());
   }
 
   public static Behavior<UserCommand> create(String userId, OpenStackClient client,
-      SysNetworkRepo sysNetworkRepo, UserShareSettings settings, UserProjectSettings projectSettings) {
-    return create(userId, client, sysNetworkRepo, settings, projectSettings, UserNetworkSettings.defaults());
+      UserShareSettings settings, UserProjectSettings projectSettings) {
+    return create(userId, client, settings, projectSettings, UserNetworkSettings.defaults());
   }
 
   public static Behavior<UserCommand> create(String userId, OpenStackClient client,
-      SysNetworkRepo sysNetworkRepo, UserShareSettings settings, UserProjectSettings projectSettings,
+      UserShareSettings settings, UserProjectSettings projectSettings,
       UserNetworkSettings networkSettings) {
     return Behaviors.setup(context -> Behaviors.withTimers(
-        timers -> new UserActor(userId, context, timers, client, sysNetworkRepo, settings,
+        timers -> new UserActor(userId, context, timers, client, settings,
             projectSettings, networkSettings)));
   }
 
   private UserActor(String userId, ActorContext<UserCommand> context,
-      TimerScheduler<UserCommand> timers, OpenStackClient client, SysNetworkRepo sysNetworkRepo,
+      TimerScheduler<UserCommand> timers, OpenStackClient client,
       UserShareSettings settings, UserProjectSettings projectSettings, UserNetworkSettings networkSettings) {
     super(PersistenceId.of(ENTITY_TYPE, userId));
     if (!hasText(userId)) throw new IllegalArgumentException("userId is required");
@@ -129,7 +116,6 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     this.context = context;
     this.timers = timers;
     this.client = Objects.requireNonNull(client, "client");
-    this.sysNetworkRepo = Objects.requireNonNull(sysNetworkRepo, "sysNetworkRepo");
     this.settings = Objects.requireNonNull(settings, "settings");
     this.projectSettings = Objects.requireNonNull(projectSettings, "projectSettings");
     this.networkSettings = Objects.requireNonNull(networkSettings, "networkSettings");
@@ -175,8 +161,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
           command.spec().regionId(), null, "The user cluster project must be READY before creating a network"));
       return Effect().none();
     }
-    UserNetworkState network = new UserNetworkState(command.spec(), project.projectId(), null,
-        null, null, null, null, UserNetworkState.Phase.RESOLVING_LOCAL_NETWORK, false, 0, 0, null);
+    UserNetworkState network = UserNetworkState.requested(command.spec(), project.projectId());
     return Effect().persist(new NetworkUpdated(network)).thenRun(next -> {
       command.replyTo().tell(NetworkReply.from(userId, network));
       continueNetwork(network);
@@ -196,23 +181,20 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     if (network == null || network.terminal() || network.generation() != command.generation()
         || networksInFlight.contains(network.regionId())) return Effect().none();
     if (network.attempts() >= networkSettings.maxAttempts()) {
-      String detail = network.reconciling()
-          ? "Network operation outcome remains unknown at " + network.phase() + "; reconciliation required"
-          : "Network operation retry limit reached at " + network.phase();
-      return Effect().persist(new NetworkUpdated(networkFailed(network, detail)));
+      String detail = network.phase() == UserNetworkState.Phase.RECONCILING
+          ? "Network creation outcome remains unknown; reconciliation required"
+          : "Network operation retry limit reached";
+      return Effect().persist(new NetworkUpdated(network.failed(detail)));
     }
-    UserNetworkState attempted = new UserNetworkState(network.spec(), network.projectId(),
-        network.localNetworkId(), network.networkId(), network.subnetId(), network.routerId(),
-        network.routerPortId(), network.phase(), network.reconciling(), network.attempts() + 1,
-        network.generation() + 1, network.failureMessage());
+    UserNetworkState attempted = network.attempted();
     return Effect().persist(new NetworkUpdated(attempted)).thenRun(next -> executeNetwork(attempted));
   }
 
   private Effect<UserEvent, UserState> onResumeNetwork(UserState state, ResumeNetwork command) {
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || networksInFlight.contains(network.regionId())) return Effect().none();
-    if (network.writesResource() && network.attempts() > 0 && !network.reconciling()) {
-      UserNetworkState reconciling = reconcileNetwork(network);
+    if (network.phase() == UserNetworkState.Phase.CREATING && network.attempts() > 0) {
+      UserNetworkState reconciling = network.reconciling();
       return Effect().persist(new NetworkUpdated(reconciling)).thenRun(next -> continueNetwork(reconciling));
     }
     continueNetwork(network);
@@ -225,20 +207,20 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     networksInFlight.remove(network.regionId());
     if (command.failure() != null) {
       if (command.definitiveFailure()) {
-        return Effect().persist(new NetworkUpdated(networkFailed(network, command.failure())));
+        return Effect().persist(new NetworkUpdated(network.failed(command.failure())));
       }
-      if (network.writesResource() && !network.reconciling()) {
-        UserNetworkState reconciling = reconcileNetwork(network);
+      if (network.phase() == UserNetworkState.Phase.CREATING) {
+        UserNetworkState reconciling = network.reconciling();
         return Effect().persist(new NetworkUpdated(reconciling)).thenRun(next -> scheduleNetwork(reconciling));
       }
       scheduleNetwork(network);
       return Effect().none();
     }
-    if (!hasText(command.resourceId())) {
+    UserNetworkState result = command.result();
+    if (network.equals(result)) {
       scheduleNetwork(network);
       return Effect().none();
     }
-    UserNetworkState result = completeNetworkStep(network, command.resourceId());
     return Effect().persist(new NetworkUpdated(result)).thenRun(next -> {
       if (!result.terminal()) continueNetwork(result);
     });
@@ -246,10 +228,33 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private void executeNetwork(UserNetworkState network) {
     networksInFlight.add(network.regionId());
-    // Blocking repository and SDK calls run off the mailbox; only the completion command advances state.
-    CompletableFuture<String> operation =
-        CompletableFuture.supplyAsync(() -> performNetworkStep(network), NETWORK_EXECUTOR);
-    context.pipeToSelf(operation.orTimeout(
+    CompletionStage<UserNetworkState> operation;
+    try {
+      String regionId = network.regionId();
+      String projectId = network.projectId();
+      boolean allowCreate = network.phase() == UserNetworkState.Phase.CREATING;
+      // Stable names and tenant ownership identify resources after a lost create response.
+      String name = network.spec().name().substring(0, Math.min(network.spec().name().length(), 180))
+          + "-" + operationId("network:" + regionId);
+      // Confirm one resource at a time; persisted IDs determine what remains to be prepared.
+      CompletionStage<String> step;
+      if (network.localNetworkId() == null) {
+        step = client.resolveUserLocalNetwork(regionId, projectId);
+      } else if (network.networkId() == null) {
+        step = client.ensureUserNetwork(regionId, projectId, name, allowCreate);
+      } else if (network.subnetId() == null) {
+        step = client.ensureUserSubnet(network.spec(), projectId,
+            network.networkId(), name + "-subnet", allowCreate);
+      } else if (network.routerId() == null) {
+        step = client.ensureUserRouter(regionId, projectId,
+            name + "-router", network.localNetworkId(), allowCreate);
+      } else {
+        step = client.ensureUserRouterInterface(regionId, projectId,
+            network.networkId(), network.routerId(), network.subnetId(), allowCreate);
+      }
+      operation = step.thenApply(id -> id == null ? network : network.completed(id));
+    } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(operation.toCompletableFuture().orTimeout(
         networkSettings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
       if (error == null) return new NetworkStepCompleted(network.regionId(), network.generation(), result, false, null);
       Throwable cause = rootCause(error);
@@ -265,135 +270,6 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
               + (response == null ? "" : " (HTTP " + response.getStatus() + ")");
       return new NetworkStepCompleted(network.regionId(), network.generation(), null, definitive, detail);
     });
-  }
-
-  private String performNetworkStep(UserNetworkState state) {
-    String regionId = state.regionId();
-    String projectId = state.projectId();
-    boolean allowCreate = !state.reconciling();
-    // Stable names plus explicit tenant ownership identify resources after a lost create response.
-    String name = state.spec().name().substring(0, Math.min(state.spec().name().length(), 180))
-        + "-" + operationId("network:" + regionId);
-    return switch (state.phase()) {
-      case RESOLVING_LOCAL_NETWORK -> {
-        List<SysNetworkEntity> localNetworks = sysNetworkRepo.findByRegionId(regionId).stream()
-            .filter(network -> network.getSysNetworkType() == SysNetworkType.LOCAL).toList();
-        if (localNetworks.size() != 1) {
-          throw new OpenStackOperationException("Exactly one preset LOCAL network is required in this region", null);
-        }
-        SysNetworkEntity local = localNetworks.getFirst();
-        if (!local.isRouterExternally() || !local.isShared() || !hasText(local.getOsNetId())) {
-          throw new OpenStackOperationException("Preset LOCAL network must be shared and external with an OpenStack ID", null);
-        }
-        Network network = client.getNetwork(regionId, projectId, local.getOsNetId());
-        if (network == null || !network.isRouterExternal() || !network.isShared()) {
-          throw new OpenStackOperationException("Preset LOCAL network is not a shared external Neutron network", null);
-        }
-        yield networkResourceId(network.getId());
-      }
-      case CREATING_NETWORK -> {
-        Network network = uniqueUserNetworkResource(client.listNetworks(regionId, projectId).stream()
-            .filter(item -> projectId.equals(item.getTenantId()) && name.equals(item.getName())).toList());
-        if (network == null && allowCreate) {
-          network = client.createNetwork(regionId, projectId, name);
-          if (network == null) throw new IllegalStateException("Neutron returned no network");
-        }
-        if (network == null) yield null;
-        if (!projectId.equals(network.getTenantId()) || network.isRouterExternal() || network.isShared()) {
-          throw new OpenStackOperationException("User network has mismatched ownership or visibility", null);
-        }
-        yield networkResourceId(network.getId());
-      }
-      case CREATING_SUBNET -> {
-        String subnetName = name + "-subnet";
-        Subnet subnet = uniqueUserNetworkResource(client.listSubnets(regionId, projectId).stream()
-            .filter(item -> projectId.equals(item.getTenantId()) && subnetName.equals(item.getName())).toList());
-        if (subnet == null && allowCreate) {
-          subnet = client.createSubnet(regionId, projectId, state.networkId(), subnetName,
-              state.spec().ipv4CIDR(), state.spec().dns(), state.spec().gateway(), Map.of());
-          if (subnet == null) throw new IllegalStateException("Neutron returned no subnet");
-        }
-        if (subnet == null) yield null;
-        if (!projectId.equals(subnet.getTenantId()) || !state.networkId().equals(subnet.getNetworkId())
-            || !state.spec().ipv4CIDR().equals(subnet.getCidr())
-            || (state.spec().gateway() != null && !state.spec().gateway().equals(subnet.getGateway()))) {
-          throw new OpenStackOperationException("User subnet has mismatched ownership, network, CIDR or gateway", null);
-        }
-        yield networkResourceId(subnet.getId());
-      }
-      case CREATING_ROUTER -> {
-        String routerName = name + "-router";
-        Router router = uniqueUserNetworkResource(client.listRouters(regionId, projectId).stream()
-            .filter(item -> projectId.equals(item.getTenantId()) && routerName.equals(item.getName())).toList());
-        if (router == null && allowCreate) {
-          router = client.createRouter(regionId, projectId, routerName, state.localNetworkId());
-          if (router == null) throw new IllegalStateException("Neutron returned no router");
-        }
-        if (router == null) yield null;
-        if (!projectId.equals(router.getTenantId()) || router.getExternalGatewayInfo() == null
-            || !state.localNetworkId().equals(router.getExternalGatewayInfo().getNetworkId())) {
-          throw new OpenStackOperationException("User router has mismatched ownership or LOCAL network gateway", null);
-        }
-        yield networkResourceId(router.getId());
-      }
-      case ATTACHING_INTERFACE -> {
-        Port port = uniqueUserNetworkResource(client.listPorts(regionId, projectId).stream()
-            .filter(item -> projectId.equals(item.getTenantId())
-                && state.routerId().equals(item.getDeviceId()) && state.networkId().equals(item.getNetworkId())
-                && item.getFixedIps() != null
-                && item.getFixedIps().stream().anyMatch(ip -> state.subnetId().equals(ip.getSubnetId()))).toList());
-        if (port != null) yield networkResourceId(port.getId());
-        if (!allowCreate) yield null;
-        RouterInterface attached = client.attachRouterInterface(regionId, projectId, state.routerId(), state.subnetId());
-        if (attached == null || !state.subnetId().equals(attached.getSubnetId())
-            || !state.routerId().equals(attached.getId())) {
-          throw new IllegalStateException("Neutron did not confirm the user router interface");
-        }
-        yield networkResourceId(attached.getPortId());
-      }
-      case READY, FAILED -> throw new IllegalStateException("Network workflow has finished");
-    };
-  }
-
-  private static <T extends Resource> T uniqueUserNetworkResource(List<? extends T> matches) {
-    if (matches.size() > 1) throw new OpenStackOperationException("Duplicate user network resource operation marker", null);
-    return matches.isEmpty() ? null : matches.getFirst();
-  }
-
-  private static String networkResourceId(String id) {
-    if (!hasText(id)) throw new IllegalStateException("Missing network resource ID");
-    return id;
-  }
-
-  private static UserNetworkState reconcileNetwork(UserNetworkState network) {
-    return new UserNetworkState(network.spec(), network.projectId(), network.localNetworkId(),
-        network.networkId(), network.subnetId(), network.routerId(), network.routerPortId(),
-        network.phase(), true, 0, network.generation() + 1, null);
-  }
-
-  private static UserNetworkState networkFailed(UserNetworkState network, String detail) {
-    return new UserNetworkState(network.spec(), network.projectId(), network.localNetworkId(),
-        network.networkId(), network.subnetId(), network.routerId(), network.routerPortId(),
-        UserNetworkState.Phase.FAILED, network.reconciling(), network.attempts(), network.generation() + 1, detail);
-  }
-
-  private static UserNetworkState completeNetworkStep(UserNetworkState network, String id) {
-    UserNetworkState.Phase phase = network.phase();
-    UserNetworkState.Phase next = switch (phase) {
-      case RESOLVING_LOCAL_NETWORK -> UserNetworkState.Phase.CREATING_NETWORK;
-      case CREATING_NETWORK -> UserNetworkState.Phase.CREATING_SUBNET;
-      case CREATING_SUBNET -> UserNetworkState.Phase.CREATING_ROUTER;
-      case CREATING_ROUTER -> UserNetworkState.Phase.ATTACHING_INTERFACE;
-      case ATTACHING_INTERFACE -> UserNetworkState.Phase.READY;
-      case READY, FAILED -> throw new IllegalStateException("Network workflow has finished");
-    };
-    return new UserNetworkState(network.spec(), network.projectId(),
-        phase == UserNetworkState.Phase.RESOLVING_LOCAL_NETWORK ? id : network.localNetworkId(),
-        phase == UserNetworkState.Phase.CREATING_NETWORK ? id : network.networkId(),
-        phase == UserNetworkState.Phase.CREATING_SUBNET ? id : network.subnetId(),
-        phase == UserNetworkState.Phase.CREATING_ROUTER ? id : network.routerId(),
-        phase == UserNetworkState.Phase.ATTACHING_INTERFACE ? id : network.routerPortId(),
-        next, false, 0, network.generation() + 1, null);
   }
 
   private void continueNetwork(UserNetworkState network) {

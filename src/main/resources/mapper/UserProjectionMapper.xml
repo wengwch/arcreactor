@@ -74,6 +74,7 @@
     </insert>
 
     <insert id="upsertNetwork">
+        <bind name="reconciling" value="network.phase.name() == 'RECONCILING'"/>
         INSERT INTO user_region_network (
           user_id,
           region_id,
@@ -104,7 +105,7 @@
           #{network.networkId,jdbcType=VARCHAR},
           #{network.subnetId,jdbcType=VARCHAR},
           #{network.phase,jdbcType=VARCHAR},
-          #{network.reconciling,jdbcType=BOOLEAN},
+          #{reconciling,jdbcType=BOOLEAN},
           #{network.attempts,jdbcType=INTEGER},
           #{network.failureMessage,jdbcType=LONGVARCHAR},
           #{version,jdbcType=BIGINT},
@@ -129,6 +130,7 @@
     </insert>
 
     <insert id="upsertRouter">
+        <bind name="reconciling" value="network.phase.name() == 'RECONCILING'"/>
         INSERT INTO user_region_router (
           user_id,
           region_id,
@@ -155,7 +157,7 @@
           #{network.routerId,jdbcType=VARCHAR},
           #{network.routerPortId,jdbcType=VARCHAR},
           #{network.phase,jdbcType=VARCHAR},
-          #{network.reconciling,jdbcType=BOOLEAN},
+          #{reconciling,jdbcType=BOOLEAN},
           #{network.attempts,jdbcType=INTEGER},
           #{network.failureMessage,jdbcType=LONGVARCHAR},
           #{version,jdbcType=BIGINT},

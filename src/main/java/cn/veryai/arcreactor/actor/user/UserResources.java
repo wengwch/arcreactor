@@ -13,7 +13,6 @@ import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
-import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import com.typesafe.config.Config;
 import java.time.Duration;
 import java.util.concurrent.CompletionStage;
@@ -38,7 +37,7 @@ public final class UserResources {
   private final ClusterSharding sharding;
   private final Duration askTimeout;
 
-  public UserResources(ActorSystem<?> system, OpenStackClient client, SysNetworkRepo sysNetworkRepo) {
+  public UserResources(ActorSystem<?> system, OpenStackClient client) {
     this.system = system;
     this.sharding = ClusterSharding.get(system);
     Config config = system.settings().config().getConfig("cloud.user");
@@ -61,7 +60,7 @@ public final class UserResources {
     sharding.init(
         Entity.of(
             UserActor.TYPE_KEY,
-            context -> UserActor.create(context.getEntityId(), client, sysNetworkRepo, settings,
+            context -> UserActor.create(context.getEntityId(), client, settings,
                 projectSettings, networkSettings)));
   }
 
