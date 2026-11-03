@@ -32,7 +32,7 @@ public final class DefaultHypervisorPlacement implements HypervisorPlacement {
         Resources resources = request.resources();
         SchedulingRequest schedulingRequest = new SchedulingRequest(
                 request.requestId(), request.reservationId(), request.instanceId(),
-                new ResourceRequest(resources.vcpus(), resources.memoryGb(),
+                new ResourceRequest(resources.vcpus(), resources.memoryGb(), resources.diskGb(),
                         resources.gpuCount()),
                 request.reservationTtl(),
                 new PlacementConstraints(request.availabilityZone(), request.regionId(), request.hypervisorType()));

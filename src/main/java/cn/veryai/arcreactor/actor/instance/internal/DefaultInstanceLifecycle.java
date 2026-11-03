@@ -26,7 +26,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
     public CompletionStage<Submission> create(CreateRequest request) {
         InstanceSpec spec = new InstanceSpec(request.clusterId(), request.region(),
                 request.name(), request.imageId(), request.flavorId(), request.vcpus(), request.memoryGb(),
-                request.gpuCount(), request.metadata(), request.share(), request.forwarding(), request.network(),
+                request.diskGb(), request.gpuCount(), request.metadata(), request.share(), request.forwarding(), request.network(),
                 request.cloudInit(), request.hypervisorType());
         return AskPattern.<WorkflowCommand, InstanceReply>ask(
                         entityRef(request.instanceId()),

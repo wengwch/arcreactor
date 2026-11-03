@@ -635,7 +635,7 @@ public final class InstanceWorkflowActor
   private void startScheduling(InstanceWorkflowState state) {
     InstanceSpec spec = state.spec();
     HypervisorPlacement.Resources resources =
-        new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.gpuCount());
+        new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount());
     var request =
         new HypervisorPlacement.ScheduleRequest(
             state.requestId(),

@@ -4,7 +4,7 @@ import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
 
-/** Immutable creation requirements, before dependencies are prepared. Memory is measured in GB. */
+/** Immutable creation requirements, before dependencies are prepared. Memory and disk are measured in GB. */
 public record InstanceSpec(
         String clusterId,
         String region,
@@ -13,6 +13,7 @@ public record InstanceSpec(
         String flavorId,
         int vcpus,
         long memoryGb,
+        long diskGb,
         int gpuCount,
         Map<String, String> metadata,
         ShareRequirement share,
@@ -27,7 +28,7 @@ public record InstanceSpec(
         requireText(imageId, "imageId");
         requireText(flavorId, "flavorId");
         requireText(hypervisorType, "hypervisorType");
-        if (vcpus <= 0 || memoryGb <= 0 || gpuCount < 0) {
+        if (vcpus <= 0 || memoryGb <= 0 || diskGb < 0 || gpuCount < 0) {
             throw new IllegalArgumentException("invalid instance resources");
         }
         metadata = Map.copyOf(Objects.requireNonNullElse(metadata, Map.of()));

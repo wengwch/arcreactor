@@ -125,7 +125,7 @@ public final class HypervisorActor
         var assigned = state.assignResources(command.resources());
         if (assigned.isEmpty()) {
             command.replyTo().tell(rejected(command, ReserveRejected.Reason.INSUFFICIENT_RESOURCE,
-                    "insufficient CPU, memory, or matching GPU"));
+                    "insufficient CPU, memory, disk, or matching GPU"));
             return Effect().none();
         }
         Instant expiresAt = clock.instant().plus(command.ttl());
@@ -325,9 +325,7 @@ public final class HypervisorActor
     private static boolean sameReservation(Reservation existing, ReserveResources command) {
         return existing.requestId().equals(command.requestId())
                 && existing.instanceId().equals(command.instanceId())
-                && existing.resources().vcpus() == command.resources().vcpus()
-                && existing.resources().memoryGb() == command.resources().memoryGb()
-                && existing.resources().gpuRequest() == command.resources().gpuRequest();
+                && existing.resources().equals(command.resources());
     }
 
     private static ReserveRejected rejected(ReserveResources command, ReserveRejected.Reason reason, String detail) {

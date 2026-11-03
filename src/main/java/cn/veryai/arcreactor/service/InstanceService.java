@@ -76,7 +76,7 @@ public class InstanceService {
         CreationDefaults defaults = creationDefaults(param, region);
         return submit(new InstanceLifecycle.CreateRequest(requestId, instanceId,
                 region.getClusterId(), region.getId(), param.getName(),
-                image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getGpus(),
+                image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getDisk(), flavor.getGpus(),
                 StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
                 new ShareRequirement(param.getUserId(), defaults.resourceId(), defaults.share()),
                 null, defaults.network(), defaults.cloudInit(), param.getHypervisorType()));
@@ -116,7 +116,7 @@ public class InstanceService {
             throw new BaseException(ErrorCode.INSTANCE_HYPERVISOR_TYPE_DISABLED);
         }
         if (!flavor.isEnabled() || StringUtils.isBlank(flavor.getOsFlavorId())
-                || flavor.getVcpus() <= 0 || flavor.getRam() <= 0 || flavor.getGpus() < 0) {
+                || flavor.getVcpus() <= 0 || flavor.getRam() <= 0 || flavor.getDisk() < 0 || flavor.getGpus() < 0) {
             throw new BaseException(ErrorCode.INSTANCE_FLAVOR_UNAVAILABLE);
         }
         if (!image.isEnabled() || StringUtils.isBlank(image.getOsImageId())) {

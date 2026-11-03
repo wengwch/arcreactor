@@ -136,7 +136,7 @@ public class HypervisorHostService {
     }
     ResourceCapacity capacity;
     try {
-      capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getGpus());
+      capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getDisk(), host.getGpus());
     } catch (IllegalArgumentException exception) {
       throw new BaseException(ErrorCode.HYPERVISOR_CAPACITY_INVALID, exception);
     }

@@ -64,6 +64,14 @@ public record HypervisorState(
     return allocations.values().stream().mapToLong(a -> a.resources().memoryGb()).sum();
   }
 
+  public long reservedDiskGb() {
+    return reservations.values().stream().mapToLong(r -> r.resources().diskGb()).sum();
+  }
+
+  public long allocatedDiskGb() {
+    return allocations.values().stream().mapToLong(a -> a.resources().diskGb()).sum();
+  }
+
   public int reservedGpus() {
     return reservations.values().stream().mapToInt(r -> r.resources().gpuRequest()).sum();
   }
@@ -80,6 +88,10 @@ public record HypervisorState(
     return capacity.totalMemoryGb() - reservedMemoryGb() - allocatedMemoryGb();
   }
 
+  public long availableDiskGb() {
+    return capacity.totalDiskGb() - reservedDiskGb() - allocatedDiskGb();
+  }
+
   public int availableGpus() {
     return capacity.gpus() - reservedGpus() - allocatedGpus();
   }
@@ -92,6 +104,7 @@ public record HypervisorState(
     Objects.requireNonNull(request, "request");
     if (request.vcpus() > availableVcpus()
         || request.memoryGb() > availableMemoryGb()
+        || request.diskGb() > availableDiskGb()
         || request.gpuRequest() > availableGpus()) return Optional.empty();
     return Optional.of(request);
   }
@@ -238,6 +251,11 @@ public record HypervisorState(
       throw new IllegalStateException("reserved + allocated CPU exceeds capacity");
     if (memory > capacity.totalMemoryGb())
       throw new IllegalStateException("reserved + allocated memory exceeds capacity");
+    long disk =
+        reservations.values().stream().mapToLong(r -> r.resources().diskGb()).sum()
+            + allocations.values().stream().mapToLong(a -> a.resources().diskGb()).sum();
+    if (disk > capacity.totalDiskGb())
+      throw new IllegalStateException("reserved + allocated disk exceeds capacity");
     int gpus =
         reservations.values().stream().mapToInt(r -> r.resources().gpuRequest()).sum()
             + allocations.values().stream().mapToInt(a -> a.resources().gpuRequest()).sum();

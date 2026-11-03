@@ -1,19 +1,18 @@
 package cn.veryai.arcreactor.actor.hypervisor.projection;
 
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.Objects;
+import javax.sql.DataSource;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.ibatis.session.defaults.DefaultSqlSession;
 import org.apache.ibatis.transaction.jdbc.JdbcTransaction;
 import org.apache.pekko.japi.function.Function;
 import org.apache.pekko.projection.jdbc.JdbcSession;
-import org.springframework.stereotype.Component;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.util.Objects;
-
-public final class JdbcProjectionSession implements JdbcSession {
+/** Transaction shared by hypervisor projection writes and the projection offset update. */
+public final class JdbcProjectionSession implements JdbcSession, AutoCloseable {
     private final Connection connection;
     private final SqlSession sqlSession;
 
@@ -28,7 +27,7 @@ public final class JdbcProjectionSession implements JdbcSession {
                     configuration, configuration.newExecutor(new JdbcTransaction(connection)), false);
         } catch (SQLException | RuntimeException exception) {
             closeQuietly(openedConnection);
-            throw new IllegalStateException("cannot open projection JDBC session", exception);
+            throw new IllegalStateException("cannot open hypervisor projection JDBC session", exception);
         }
     }
 

@@ -16,7 +16,7 @@ public interface InstanceLifecycle {
 
     CompletionStage<View> get(String instanceId);
 
-    /** Submit dependency requirements; the workflow prepares them after acceptance. Memory is in GB. */
+    /** Submit dependency requirements; the workflow prepares them after acceptance. Memory and disk are in GB. */
     record CreateRequest(
             String requestId,
             String instanceId,
@@ -27,6 +27,7 @@ public interface InstanceLifecycle {
             String flavorId,
             int vcpus,
             long memoryGb,
+            long diskGb,
             int gpuCount,
             Map<String, String> metadata,
             ShareRequirement share,

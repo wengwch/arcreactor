@@ -13,11 +13,11 @@ public interface HypervisorPlacement {
 
     CompletionStage<ReservationResult> cancel(String hypervisorId, String reservationId);
 
-    /** Memory is measured in GB. */
-    record Resources(int vcpus, long memoryGb, int gpuCount)
+    /** Memory and disk are measured in GB. */
+    record Resources(int vcpus, long memoryGb, long diskGb, int gpuCount)
             implements Serializable {
         public Resources {
-            if (vcpus < 0 || memoryGb < 0 || gpuCount < 0) {
+            if (vcpus < 0 || memoryGb < 0 || diskGb < 0 || gpuCount < 0) {
                 throw new IllegalArgumentException("resource values must not be negative");
             }
         }

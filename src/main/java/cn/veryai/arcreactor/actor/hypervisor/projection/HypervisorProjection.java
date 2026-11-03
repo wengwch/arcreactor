@@ -2,8 +2,9 @@ package cn.veryai.arcreactor.actor.hypervisor.projection;
 
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorActor;
 import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorEvent;
-import cn.veryai.arcreactor.actor.hypervisor.projection.repository.JdbcHypervisorReadRepository;
 import cn.veryai.arcreactor.actor.projection.EventLoadingSourceProvider;
+import java.util.List;
+import javax.sql.DataSource;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.cluster.sharding.typed.javadsl.ShardedDaemonProcess;
@@ -18,9 +19,6 @@ import org.apache.pekko.projection.eventsourced.javadsl.EventSourcedProvider;
 import org.apache.pekko.projection.javadsl.SourceProvider;
 import org.apache.pekko.projection.jdbc.javadsl.JdbcProjection;
 
-import javax.sql.DataSource;
-import java.util.List;
-
 public final class HypervisorProjection {
     public static final String PROJECTION_NAME = "hypervisor-resource";
 
@@ -34,7 +32,7 @@ public final class HypervisorProjection {
                 ProjectionId.of(PROJECTION_NAME, minSlice + "-" + maxSlice),
                 new EventLoadingSourceProvider<>(source),
                 () -> new JdbcProjectionSession(dataSource, sqlSessionFactory),
-                () -> new HypervisorProjectionHandler(new JdbcHypervisorReadRepository()),
+                HypervisorProjectionHandler::new,
                 system);
     }
 

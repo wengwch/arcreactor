@@ -28,6 +28,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
         return CompletableFuture.supplyAsync(() -> repo.findCandidates(
                         request.resources().vcpus(),
                         request.resources().memoryGb(),
+                        request.resources().diskGb(),
                         request.constraints().availabilityZone(),
                         request.resources().gpuRequest(),
                         request.constraints().regionId(),
@@ -42,6 +43,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
                 row.availabilityZone(),
                 row.totalVcpu(), row.reservedVcpu(), row.allocatedVcpu(),
                 row.totalMemoryGb(), row.reservedMemoryGb(), row.allocatedMemoryGb(),
+                row.totalDiskGb(), row.reservedDiskGb(), row.allocatedDiskGb(),
                 row.totalGpu(), row.reservedGpu(), row.allocatedGpu(),
                 row.resourceVersion());
     }

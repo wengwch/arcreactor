@@ -7,6 +7,7 @@ import java.util.Objects;
 public record HypervisorCandidate(String hypervisorId, HypervisorStatus status, String availabilityZone,
         int totalVcpus, int reservedVcpus, int allocatedVcpus,
         long totalMemoryGb, long reservedMemoryGb, long allocatedMemoryGb,
+        long totalDiskGb, long reservedDiskGb, long allocatedDiskGb,
         int totalGpus, int reservedGpus, int allocatedGpus,
         long resourceVersion) implements Serializable {
     public HypervisorCandidate {
@@ -16,5 +17,6 @@ public record HypervisorCandidate(String hypervisorId, HypervisorStatus status, 
     }
     public int availableVcpus() { return totalVcpus - reservedVcpus - allocatedVcpus; }
     public long availableMemoryGb() { return totalMemoryGb - reservedMemoryGb - allocatedMemoryGb; }
+    public long availableDiskGb() { return totalDiskGb - reservedDiskGb - allocatedDiskGb; }
     public int availableGpuCount() { return totalGpus - reservedGpus - allocatedGpus; }
 }

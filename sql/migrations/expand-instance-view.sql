@@ -14,6 +14,7 @@ ALTER TABLE instance_view
   ADD COLUMN hypervisor_type VARCHAR(255),
   ADD COLUMN vcpus INT,
   ADD COLUMN memory_gb BIGINT COMMENT 'GB',
+  ADD COLUMN disk_gb BIGINT COMMENT 'GB',
   ADD COLUMN gpu_count INT,
   ADD COLUMN share_id VARCHAR(255),
   ADD COLUMN parent_network_id VARCHAR(255),

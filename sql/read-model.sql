@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource (
   allocated_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
   available_memory_gb BIGINT GENERATED ALWAYS AS
     (total_memory_gb - reserved_memory_gb - allocated_memory_gb) STORED,
+  total_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  reserved_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  allocated_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  available_disk_gb BIGINT GENERATED ALWAYS AS
+    (total_disk_gb - reserved_disk_gb - allocated_disk_gb) STORED,
   total_gpu INT NOT NULL DEFAULT 0,
   reserved_gpu INT NOT NULL DEFAULT 0,
   allocated_gpu INT NOT NULL DEFAULT 0,
@@ -100,7 +105,7 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource (
   resource_version BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   INDEX idx_hypervisor_candidate (
-    status, availability_zone, available_vcpu, available_memory_gb, available_gpu)
+    status, availability_zone, available_vcpu, available_memory_gb, available_disk_gb, available_gpu)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS instance_allocation (
@@ -109,6 +114,7 @@ CREATE TABLE IF NOT EXISTS instance_allocation (
   reservation_id VARCHAR(255) NOT NULL,
   vcpus INT NOT NULL,
   memory_gb BIGINT NOT NULL COMMENT 'GB',
+  disk_gb BIGINT NOT NULL COMMENT 'GB',
   gpu_count INT NOT NULL,
   allocation_status VARCHAR(32) NOT NULL,
   resource_version BIGINT NOT NULL,
@@ -130,6 +136,7 @@ CREATE TABLE IF NOT EXISTS instance_view (
   hypervisor_type VARCHAR(255),
   vcpus INT,
   memory_gb BIGINT COMMENT 'GB',
+  disk_gb BIGINT COMMENT 'GB',
   gpu_count INT,
   share_id VARCHAR(255),
   parent_network_id VARCHAR(255),

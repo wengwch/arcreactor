@@ -19,9 +19,12 @@
 镜像和规格必须属于所选区域，规格的宿主机类型必须与请求一致。
 示例中的 ID 需要替换为已配置并启用的实际资源。
 
-服务端从规格读取 vCPU、内存（GB）和 GPU 数量，使用镜像和规格对应的 OpenStack ID
+服务端从规格读取 vCPU、内存（GB）、磁盘（GB）和 GPU 数量，使用镜像和规格对应的 OpenStack ID
 提交 Actor 创建流程。调度候选宿主机限定在所选区域和宿主机类型内，
 并且必须处于 ACTIVE 状态且有足够资源。
+磁盘需求取规格的 `disk`，以 `diskGb` 随创建请求和调度请求传递；宿主机启用时将
+`disk` 写入 `ResourceCapacity.totalDiskGb`。候选查询和 Actor 最终预留都会检查剩余磁盘，
+预留、确认、取消、过期和释放均同步更新磁盘占用；容量不能缩减到已预留与已分配磁盘总量以下。
 `description` 保存在实例工作流的 metadata 中，并作为 Nova metadata 提交。
 
 ## 服务端默认配置
@@ -238,7 +241,9 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 网络和端口转发就绪事件分别补齐端口、IP、Trunk 和浮动 IP 转发记录。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。
-`memory_gb` 单位为 GB，`external_port` 是浮动 IP 的外部转发端口。
+`memory_gb` 和 `disk_gb` 单位为 GB，`external_port` 是浮动 IP 的外部转发端口。
+宿主机资源投影保存 `total_disk_gb`、`reserved_disk_gb`、`allocated_disk_gb`，
+`available_disk_gb` 由总量减去预留和已分配容量计算；实例分配记录同时保存 `disk_gb`。
 密码、Jupyter token 和共享存储访问凭据不写入此表。
 
 每次状态更新以日志序号 `workflow_version` 判断新旧，忽略相同或更早的事件，
