@@ -16,9 +16,6 @@ import cn.veryai.arcreactor.openstack.OpenStackClient;
 import com.typesafe.config.Config;
 import java.time.Duration;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ExecutionException;
-
-import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.javadsl.AskPattern;
@@ -28,7 +25,7 @@ import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
 import org.springframework.stereotype.Service;
 
 /**
- * Waits for project and network creation results; query shares until READY before using them.
+ * Waits for persisted creation results for projects, networks and shares.
  */
 @Slf4j
 @Service
@@ -38,6 +35,7 @@ public final class UserResources {
   private final Duration askTimeout;
   private final Duration projectCreateTimeout;
   private final Duration networkCreateTimeout;
+  private final Duration shareCreateTimeout;
 
   public UserResources(ActorSystem<?> system, OpenStackClient client) {
     this.system = system;
@@ -47,8 +45,9 @@ public final class UserResources {
     UserShareSettings settings =
         new UserShareSettings(
             config.getDuration("share.poll-interval"),
-            config.getInt("share.max-poll-attempts"),
-            config.getDuration("share.operation-timeout"));
+            config.getDuration("share.operation-timeout"),
+            config.getDuration("share.creation-timeout"));
+    this.shareCreateTimeout = settings.creationTimeout().plus(askTimeout);
     UserProjectSettings projectSettings = new UserProjectSettings(config.getDuration("project.operation-timeout"));
     // Allow one operation plus persistence and reply overhead.
     this.projectCreateTimeout = projectSettings.operationTimeout().plus(askTimeout);
@@ -61,11 +60,12 @@ public final class UserResources {
                 projectSettings, networkSettings)));
   }
 
+  /** Waits until the export location and access key are ready, or creation has failed. */
   public CompletionStage<ShareReply> createShare(String userId, String shareId, ShareSpec spec) {
     return AskPattern.<UserCommand, ShareReply>ask(
         entityRef(userId),
         replyTo -> new CreateShare(shareId, spec, replyTo),
-        askTimeout,
+        shareCreateTimeout,
         system.scheduler());
   }
 

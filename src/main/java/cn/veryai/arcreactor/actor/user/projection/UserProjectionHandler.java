@@ -7,10 +7,16 @@ import cn.veryai.arcreactor.actor.user.event.NetworkCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.ProjectBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ProjectCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.ProjectCreationRequested;
-import cn.veryai.arcreactor.actor.user.event.ShareUpdated;
+import cn.veryai.arcreactor.actor.user.event.ShareCreationRequested;
+import cn.veryai.arcreactor.actor.user.event.ShareCreated;
+import cn.veryai.arcreactor.actor.user.event.ShareExportBecameReady;
+import cn.veryai.arcreactor.actor.user.event.ShareAccessCreated;
+import cn.veryai.arcreactor.actor.user.event.ShareBecameReady;
+import cn.veryai.arcreactor.actor.user.event.ShareCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.model.UserProjectState;
+import cn.veryai.arcreactor.actor.user.model.UserShareState;
 import cn.veryai.arcreactor.actor.user.projection.mybatis.UserProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -42,8 +48,26 @@ public final class UserProjectionHandler
     } else if (event instanceof ProjectCreationFailed(String clusterId, String name, String failure)) {
       mapper.upsertProject(userId, UserProjectState.requested(clusterId, name).failed(failure),
           version, timestamp);
-    } else if (event instanceof ShareUpdated updated) {
-      mapper.upsertShare(userId, updated.share(), version, timestamp);
+    } else if (event instanceof ShareCreationRequested requested) {
+      mapper.upsertShare(userId, UserShareState.requested(requested.shareId(), requested.spec()), version, timestamp);
+    } else if (event instanceof ShareCreated created) {
+      mapper.upsertShare(userId, UserShareState.requested(created.shareId(), created.spec()).created(created.osShareId()),
+          version, timestamp);
+    } else if (event instanceof ShareExportBecameReady ready) {
+      mapper.upsertShare(userId, UserShareState.requested(ready.shareId(), ready.spec()).created(ready.osShareId())
+          .exportReady(ready.osExportLocationId(), ready.exportLocationPath()), version, timestamp);
+    } else if (event instanceof ShareAccessCreated created) {
+      mapper.upsertShare(userId, UserShareState.requested(created.shareId(), created.spec()).created(created.osShareId())
+          .exportReady(created.osExportLocationId(), created.exportLocationPath()).accessCreated(created.osGrantAccessId()),
+          version, timestamp);
+    } else if (event instanceof ShareBecameReady ready) {
+      mapper.upsertShare(userId, UserShareState.requested(ready.shareId(), ready.spec()).created(ready.osShareId())
+          .exportReady(ready.osExportLocationId(), ready.exportLocationPath()).accessCreated(ready.osGrantAccessId())
+          .ready(ready.accessKey()), version, timestamp);
+    } else if (event instanceof ShareCreationFailed failed) {
+      mapper.upsertShare(userId, new UserShareState(failed.shareId(), failed.spec(), UserShareState.Phase.FAILED,
+          failed.osShareId(), failed.osExportLocationId(), failed.exportLocationPath(), failed.osGrantAccessId(),
+          null, 0, failed.failure()), version, timestamp);
     } else if (event instanceof NetworkCreationRequested requested) {
       upsertNetwork(mapper, userId, UserNetworkState.requested(requested.spec(), requested.projectId()),
           version, timestamp);

@@ -40,7 +40,6 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 | --- | --- | --- |
 | `share-size` | `INSTANCE_SHARE_SIZE` | 100 GB |
 | `dependency-preparation-timeout` | `INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT` | 10 分钟，项目、Share、用户网络共用 |
-| `dependency-poll-interval` | `INSTANCE_DEPENDENCY_POLL_INTERVAL` | 2 秒 |
 | `network-cidr` | `INSTANCE_NETWORK_CIDR` | `10.0.0.0/16` |
 | `network-dns` | `INSTANCE_NETWORK_DNS` | 空，使用网络服务默认值 |
 | `network-gateway` | `INSTANCE_NETWORK_GATEWAY` | 空，由 Neutron 分配 |
@@ -82,6 +81,9 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 ## 创建流程与恢复
 
 接口服务先准备用户项目，检查区域 SHARED 网络，再等待 Share 和用户网络就绪。
+`InstanceDependencyPreparer.prepare()` 依次调用 `createProject()`、`createShare()`、`createNetwork()`，
+直接校验各自 ask 返回的最终结果；仅 `READY` 才继续下一步，其他状态或 ask 异常直接结束准备。
+准备过程共用 `dependency-preparation-timeout`，不查询轮询，也不自动重新提交创建命令。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
 UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Domain 中按名称查询项目，
@@ -104,6 +106,28 @@ Actor 重启后，未完成的项目也记录 `FAILED`。超时和重启中断�
 未完成的网络标记为 `FAILED`。失败可能留下部分远端资源，流程不自动回滚；超时或恢复中断
 也不代表 OpenStack 已停止创建。整套创建操作使用 `network.operation-timeout`，
 请求等待时限为 `network.operation-timeout + ask-timeout`。
+
+Share 的创建和访问授权都由 Manila 异步完成，状态依次为：
+
+```text
+CREATING → WAITING_EXPORT → GRANTING_ACCESS → WAITING_ACCESS → READY
+                            任一步失败或超时 → FAILED
+```
+
+`CreateShare` 持久化 `ShareCreationRequested` 后提交一次创建请求；返回 Share ID 时持久化
+`ShareCreated`，进入 `WAITING_EXPORT`。定时查询 Share，待状态为 `AVAILABLE` 且存在非管理员
+专用、包含 ID 和路径的 export location 后，持久化 `ShareExportBecameReady`，再提交一次
+CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`，进入 `WAITING_ACCESS`；
+访问规则变为 `ACTIVE` 且 access key 非空时，持久化 `ShareBecameReady` 并回复调用方。
+错误、操作超时或整体超时产生 `ShareCreationFailed`，保留已确认的资源 ID 并回复失败。
+
+等待阶段每隔 `share.poll-interval`（默认 2 秒）查询一次；资源尚未就绪或暂不可见（404）时
+继续等待，其他调用错误直接失败。创建和授权请求都不重试，不执行自动回滚；Actor 恢复时
+未完成的 Share 记录为 `FAILED`，详情说明远端结果尚未确认。每次查询或写入受
+`share.operation-timeout`（默认 30 秒）限制，整个流程受 `share.creation-timeout`
+（默认 5 分钟）限制。同规格并发请求共用一次流程；`createShare()` 等待最终 `READY` 或
+`FAILED`，等待时限为 `share.creation-timeout + ask-timeout`，`getShare()` 可查询中间状态。
+
 Share、用户网络和路由的投影见下方“用户资源读模型”。
 接口失败或单个实例失败不会删除这些共享资源。
 只有依赖全部就绪后才向 InstanceActor 发送 Command，包含已解析的 `projectId`、
@@ -168,13 +192,15 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 | 表 | 事件 | 保存内容 |
 | --- | --- | --- |
 | `user_cluster_project` | `ProjectCreationRequested`、`ProjectBecameReady`、`ProjectCreationFailed` | 项目名称、OpenStack 项目 ID、状态和失败原因 |
-| `user_region_share` | 全部 `ShareUpdated` | Share 规格、Manila ID、导出路径、授权规则 ID、阶段和失败原因 |
+| `user_region_share` | `ShareCreationRequested`、`ShareCreated`、`ShareExportBecameReady`、`ShareAccessCreated`、`ShareBecameReady`、`ShareCreationFailed` | Share 规格、Manila ID、导出路径、授权规则 ID、access key、阶段和失败原因 |
 | `user_region_network` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID、状态和失败原因 |
 | `user_region_router` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的状态和失败原因 |
 
 项目和网络都投影 `CREATING`、`READY`、`FAILED` 三种状态。项目创建时保存名称，
 就绪时保存 OpenStack 项目 ID，失败时保存失败原因；使用项目映射时应筛选 `phase = 'READY'`。
 项目和网络的终态事件携带原始名称或网络规格、项目 ID 等投影所需的数据，可以独立写入读模型。
+Share 每次状态转换也使用独立事件，携带请求规格和当前已确认的资源 ID，能够独立 upsert。
+等待查询没有改变状态时不写事件；查询次数不作为持久化状态或投影字段。
 
 router 由用户网络流程创建，没有单独的路由事件。每个网络事件在同一个 JDBC 事务内
 更新网络和路由两条记录，并随投影偏移量一起提交。创建事件写入请求规格和 `CREATING`
@@ -184,11 +210,12 @@ router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路�
 网络表的网关和 DNS 来自请求规格；若网关由 Neutron 自动分配，投影中的 `gateway` 保持为空。
 
 项目和三个区域资源表均使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。
-Project 和网络的三类事件都通过 upsert 写入完整资源状态；即使就绪或失败事件先于创建事件
+Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状态；即使就绪或失败事件先于创建事件
 到达，也能插入完整记录，后到的创建事件不会清空资源 ID 或回退状态。
 `created_at` 取已投影事件的最早时间，`updated_at` 取最新版本事件时间；它们不是远端资源的
 创建和更新时间。`share_id` 是用户范围内的逻辑 Share ID，`os_share_id` 才是 Manila ID，
-`size_gib` 的单位为 GiB。投影不保存 Share 的 `accessKey`，访问凭据仍由用户 Actor 管理。
+`size_gib` 的单位为 GiB。`ShareBecameReady` 将访问凭据写入 `access_key`，其余阶段该字段为 NULL；
+该字段同样受 `resource_version` 保护，旧事件不会清空已就绪的 access key。
 
 执行 `sql/read-model.sql` 初始化读模型表。`user-resources` 投影消费 User 事件更新读模型，
 查询结果在投影追上事件日志后完整可见。
