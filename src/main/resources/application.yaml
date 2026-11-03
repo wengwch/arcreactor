@@ -6,7 +6,7 @@ spring:
     keep-alive: true
   mvc:
     async:
-      request-timeout: "${INSTANCE_CREATE_REQUEST_TIMEOUT:11m}"
+      request-timeout: "${INSTANCE_CREATE_REQUEST_TIMEOUT:30s}"
   web:
     locale: zh-CN
     locale-resolver: accept-header

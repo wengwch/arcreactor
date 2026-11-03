@@ -24,7 +24,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
 
     @Override
     public CompletionStage<Submission> create(CreateRequest request) {
-        InstanceSpec spec = new InstanceSpec(request.clusterId(), request.projectId(), request.region(),
+        InstanceSpec spec = new InstanceSpec(request.clusterId(), request.region(),
                 request.name(), request.imageId(), request.flavorId(), request.vcpus(), request.memoryGb(),
                 request.gpuCount(), request.metadata(), request.share(), request.forwarding(), request.network(),
                 request.cloudInit(), request.hypervisorType());
@@ -56,7 +56,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
                 state.novaStatus() == null ? null : state.novaStatus().name(), state.failureCode(),
                 state.failureMessage(), state.version(),
                 state.spec() == null || state.spec().share() == null ? null : state.spec().share().userId(),
-                state.spec() == null || state.spec().share() == null ? null : state.spec().share().shareId(),
+                state.shareId(),
                 state.preparedShare() == null ? null : state.preparedShare().osShareId(),
                 state.preparedForwarding() == null ? null : state.preparedForwarding().floatingIp(),
                 state.preparedForwarding() == null ? 0 : state.preparedForwarding().externalPort(),

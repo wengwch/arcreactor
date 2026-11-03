@@ -18,7 +18,6 @@
           user_id,
           cluster_id,
           region_id,
-          os_project_id,
           os_image_id,
           os_flavor_id,
           hypervisor_type,
@@ -26,10 +25,6 @@
           memory_gb,
           gpu_count,
           share_id,
-          parent_network_id,
-          parent_subnet_id,
-          sub_network_id,
-          sub_subnet_id,
           segmentation_id,
           phase,
           workflow_version,
@@ -43,7 +38,6 @@
           #{spec.share.userId,jdbcType=VARCHAR},
           #{spec.clusterId,jdbcType=VARCHAR},
           #{spec.region,jdbcType=VARCHAR},
-          #{spec.projectId,jdbcType=VARCHAR},
           #{spec.imageId,jdbcType=VARCHAR},
           #{spec.flavorId,jdbcType=VARCHAR},
           #{spec.hypervisorType,jdbcType=VARCHAR},
@@ -51,10 +45,6 @@
           #{spec.memoryGb,jdbcType=BIGINT},
           #{spec.gpuCount,jdbcType=INTEGER},
           #{spec.share.shareId,jdbcType=VARCHAR},
-          #{spec.network.parentNetworkId,jdbcType=VARCHAR},
-          #{spec.network.parentSubnetId,jdbcType=VARCHAR},
-          #{spec.network.subNetworkId,jdbcType=VARCHAR},
-          #{spec.network.subSubnetId,jdbcType=VARCHAR},
           #{spec.network.segmentationId,jdbcType=INTEGER},
           #{phase},
           #{version},
@@ -67,7 +57,6 @@
           user_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(user_id), user_id),
           cluster_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(cluster_id), cluster_id),
           region_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(region_id), region_id),
-          os_project_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(os_project_id), os_project_id),
           os_image_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(os_image_id), os_image_id),
           os_flavor_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(os_flavor_id), os_flavor_id),
           hypervisor_type = IF(workflow_version &lt; VALUES(workflow_version), VALUES(hypervisor_type), hypervisor_type),
@@ -75,10 +64,6 @@
           memory_gb = IF(workflow_version &lt; VALUES(workflow_version), VALUES(memory_gb), memory_gb),
           gpu_count = IF(workflow_version &lt; VALUES(workflow_version), VALUES(gpu_count), gpu_count),
           share_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(share_id), share_id),
-          parent_network_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(parent_network_id), parent_network_id),
-          parent_subnet_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(parent_subnet_id), parent_subnet_id),
-          sub_network_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(sub_network_id), sub_network_id),
-          sub_subnet_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(sub_subnet_id), sub_subnet_id),
           segmentation_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(segmentation_id), segmentation_id),
           phase = IF(workflow_version &lt; VALUES(workflow_version), VALUES(phase), phase),
           created_at = IF(workflow_version &lt; VALUES(workflow_version), VALUES(created_at), created_at),
@@ -99,6 +84,20 @@
           phase = #{phase},
           hypervisor_id = #{hypervisorId,jdbcType=VARCHAR},
           reservation_id = #{reservationId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateDependencies">
+        UPDATE instance_view SET
+          phase = #{phase},
+          os_project_id = #{dependencies.projectId,jdbcType=VARCHAR},
+          share_id = #{dependencies.share.shareId,jdbcType=VARCHAR},
+          parent_network_id = #{dependencies.network.parentNetworkId,jdbcType=VARCHAR},
+          parent_subnet_id = #{dependencies.network.parentSubnetId,jdbcType=VARCHAR},
+          sub_network_id = #{dependencies.network.subNetworkId,jdbcType=VARCHAR},
+          sub_subnet_id = #{dependencies.network.subSubnetId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

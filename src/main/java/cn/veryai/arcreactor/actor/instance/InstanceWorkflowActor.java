@@ -13,6 +13,8 @@ import cn.veryai.arcreactor.actor.instance.command.ConfirmRejected;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmUnknown;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
+import cn.veryai.arcreactor.actor.instance.command.DependenciesFailed;
+import cn.veryai.arcreactor.actor.instance.command.DependenciesReady;
 import cn.veryai.arcreactor.actor.instance.command.ForwardingPreparationTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.ForwardingStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
@@ -24,6 +26,7 @@ import cn.veryai.arcreactor.actor.instance.command.SchedulingFailed;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
+import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
@@ -42,12 +45,16 @@ import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
+import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
 import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
+import cn.veryai.arcreactor.exceptions.BaseException;
+import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
+import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -98,9 +105,11 @@ public final class InstanceWorkflowActor
   private final OpenStackClient openStackClient;
   private final CloudInitRenderer cloudInitRenderer;
   private final FloatingIpForwardings floatingIpForwardings;
+  private final InstanceDependencyPreparer dependencyPreparer;
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
+  private String dependencyRequestToken;
   private String forwardingRequestToken;
   private String networkRequestToken;
   private String novaRequestToken;
@@ -111,9 +120,10 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
+      InstanceDependencyPreparer dependencyPreparer,
       InstanceWorkflowSettings settings) {
     return create(instanceId, placement, openStackClient, cloudInitRenderer,
-        floatingIpForwardings, settings, Clock.systemUTC());
+        floatingIpForwardings, dependencyPreparer, settings, Clock.systemUTC());
   }
 
   static Behavior<WorkflowCommand> create(
@@ -122,6 +132,7 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
+      InstanceDependencyPreparer dependencyPreparer,
       InstanceWorkflowSettings settings,
       Clock clock) {
     return Behaviors.setup(
@@ -130,7 +141,7 @@ public final class InstanceWorkflowActor
                 timers ->
                     new InstanceWorkflowActor(
                         instanceId, context, timers, placement, openStackClient,
-                        cloudInitRenderer, floatingIpForwardings, settings, clock)));
+                        cloudInitRenderer, floatingIpForwardings, dependencyPreparer, settings, clock)));
   }
 
   private InstanceWorkflowActor(
@@ -141,6 +152,7 @@ public final class InstanceWorkflowActor
       OpenStackClient openStackClient,
       CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
+      InstanceDependencyPreparer dependencyPreparer,
       InstanceWorkflowSettings settings,
       Clock clock) {
     super(PersistenceId.of(ENTITY_TYPE, instanceId));
@@ -151,6 +163,7 @@ public final class InstanceWorkflowActor
     this.openStackClient = Objects.requireNonNull(openStackClient);
     this.cloudInitRenderer = Objects.requireNonNull(cloudInitRenderer);
     this.floatingIpForwardings = Objects.requireNonNull(floatingIpForwardings);
+    this.dependencyPreparer = Objects.requireNonNull(dependencyPreparer);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
   }
@@ -166,6 +179,8 @@ public final class InstanceWorkflowActor
     return newCommandHandlerBuilder()
         .forAnyState()
         .onCommand(CreateInstance.class, this::onCreate)
+        .onCommand(DependenciesReady.class, this::onDependenciesReady)
+        .onCommand(DependenciesFailed.class, this::onDependenciesFailed)
         .onCommand(GetInstanceState.class, this::onGetState)
         .onCommand(CheckNetwork.class, this::onCheckNetwork)
         .onCommand(NetworkPreparationCompleted.class, this::onNetworkPreparationCompleted)
@@ -205,16 +220,63 @@ public final class InstanceWorkflowActor
     }
     Instant now = clock.instant();
     return Effect()
-        .persist(
-            List.of(
-                new InstanceCreationRequested(instanceId, command.requestId(), command.spec(), now),
-                new NetworkPreparationStarted(instanceId, now.plus(settings.provisioningTimeout()))))
+        .persist(new InstanceCreationRequested(instanceId, command.requestId(), command.spec(), now))
         .thenRun(
             next -> {
               metrics.workflowStarted();
               command.replyTo().tell(InstanceReply.accepted(false));
-              requestNetwork(next, true);
+              requestDependencies(next);
             });
+  }
+
+  private void requestDependencies(InstanceWorkflowState state) {
+    String token = UUID.randomUUID().toString();
+    dependencyRequestToken = token;
+    var share = state.spec().share();
+    CompletionStage<PreparedDependencies> request;
+    try {
+      request = dependencyPreparer.prepare(share.userId(), state.spec().clusterId(), share.shareId(),
+          share.spec(), state.spec().network());
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (dependencies, error) -> {
+      if (error == null) return new DependenciesReady(token, dependencies);
+      Throwable cause = rootCause(error);
+      String code = cause instanceof BaseException business
+          ? Integer.toString(business.getCode()) : "DEPENDENCY_PREPARATION_FAILED";
+      return new DependenciesFailed(token, code,
+          "Dependency preparation failed: " + code + " (" + cause.getClass().getSimpleName() + ")");
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDependenciesReady(
+      InstanceWorkflowState state, DependenciesReady command) {
+    if (!matchesDependencies(state, command.requestToken())) return Effect().none();
+    return Effect().persist(List.of(
+            new DependenciesPrepared(instanceId, command.dependencies()),
+            new NetworkPreparationStarted(instanceId, clock.instant().plus(settings.provisioningTimeout()))))
+        .thenRun(next -> {
+          dependencyRequestToken = null;
+          requestNetwork(next, true);
+        });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDependenciesFailed(
+      InstanceWorkflowState state, DependenciesFailed command) {
+    if (!matchesDependencies(state, command.requestToken())) return Effect().none();
+    // Only user-owned resources may exist here; no instance cleanup or reservation release is needed.
+    return Effect().persist(new InstanceProvisioningFailed(
+            instanceId, command.failureCode(), command.detail(), clock.instant()))
+        .thenRun(next -> {
+          dependencyRequestToken = null;
+          metrics.workflowFailed();
+        });
+  }
+
+  private boolean matchesDependencies(InstanceWorkflowState state, String token) {
+    return state.phase() == InstancePhase.PREPARING_DEPENDENCIES
+        && dependencyRequestToken != null && dependencyRequestToken.equals(token);
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onGetState(
@@ -249,7 +311,7 @@ public final class InstanceWorkflowActor
     networkRequestToken = token;
     CompletionStage<PreparedNetwork> request;
     try {
-      request = openStackClient.prepareInstanceNetwork(target(state), networkOperationId(state), state.spec().network(), allowCreate);
+      request = openStackClient.prepareInstanceNetwork(target(state), networkOperationId(state), state.dependencies().network(), allowCreate);
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
@@ -754,6 +816,7 @@ public final class InstanceWorkflowActor
         .onEvent(
             InstanceCreationRequested.class,
             (state, event) -> state.created(event.requestId(), event.spec()))
+        .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline()))
         .onEvent(NetworkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding(event.deadline()))
@@ -790,6 +853,7 @@ public final class InstanceWorkflowActor
         .onSignal(
             RecoveryCompleted.class,
             (state, signal) -> {
+              dependencyRequestToken = null;
               networkRequestToken = null;
               novaRequestToken = null;
               forwardingRequestToken = null;
@@ -807,6 +871,12 @@ public final class InstanceWorkflowActor
                       state.novaOperationId(),
                       state.novaServerId());
               switch (state.phase()) {
+                case PREPARING_DEPENDENCIES -> {
+                  dependencyRequestToken = UUID.randomUUID().toString();
+                  context.getSelf().tell(new DependenciesFailed(dependencyRequestToken,
+                      Integer.toString(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_INTERRUPTED.getCode()),
+                      "Instance workflow recovered before dependency preparation completed; remote outcomes are unconfirmed"));
+                }
                 case PREPARING_NETWORK -> requestNetwork(state, false);
                 case PREPARING_FORWARDING -> {
                   scheduleForwardingDeadline(state);

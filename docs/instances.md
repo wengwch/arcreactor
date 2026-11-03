@@ -62,8 +62,7 @@ QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑�
 HTTP 层从以上服务端配置组装这两个参数，直接调用 `InstanceLifecycle` 的调用方可以逐实例传入不同限速：
 
 ```java
-NetworkRequirement network = new NetworkRequirement(sharedNetworkId, sharedSubnetId,
-    userNetworkId, userSubnetId, segmentationId, userNetworkSpec,
+NetworkRequirement network = new NetworkRequirement(segmentationId, userNetworkSpec,
     new PortBandwidthLimit(100_000, 10_000),   // 父端口：100 Mbps，突发 10,000 kbit
     new PortBandwidthLimit(1_000_000, 100_000)); // 子端口：1 Gbps，突发 100,000 kbit
 // 将 network 传给 InstanceLifecycle.CreateRequest，最终进入 CreateInstance.spec.network。
@@ -80,10 +79,17 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 
 ## 创建流程与恢复
 
-接口服务先准备用户项目，检查区域 SHARED 网络，再等待 Share 和用户网络就绪。
-`InstanceDependencyPreparer.prepare()` 依次调用 `createProject()`、`createShare()`、`createNetwork()`，
+接口服务完成参数和本地资源校验后，直接提交包含原始 Share、网络规格的实例创建请求。
+InstanceActor 持久化 `InstanceCreationRequested`，进入 `PREPARING_DEPENDENCIES` 并立即回复受理；
+然后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
+再等待 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createShare()`、`createNetwork()`，
 直接校验各自 ask 返回的最终结果；仅 `READY` 才继续下一步，其他状态或 ask 异常直接结束准备。
 准备过程共用 `dependency-preparation-timeout`，不查询轮询，也不自动重新提交创建命令。
+结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
+成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
+再开始创建实例端口、QoS 和 Trunk。原始请求规格保持不变，重复请求仍按原始规格判断幂等。
+准备失败或超时直接持久化实例 `FAILED` 及失败码；此时还没有实例专用资源，无需进入补偿。
+若 Actor 恢复时仍处于 `PREPARING_DEPENDENCIES`，记录中断失败并说明远端结果未确认，不重新提交准备请求。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
 UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Domain 中按名称查询项目，
@@ -130,14 +136,11 @@ CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`，�
 
 Share、用户网络和路由的投影见下方“用户资源读模型”。
 接口失败或单个实例失败不会删除这些共享资源。
-只有依赖全部就绪后才向 InstanceActor 发送 Command，包含已解析的 `projectId`、
-带访问数据的 `ShareRequirement`、已解析父子网络和子网 ID 的 `NetworkRequirement`。
-
-InstanceActor 只保留以下主要阶段：
+InstanceActor 包含以下主要阶段：
 
 ```text
-PREPARING_NETWORK → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
-                                      失败 → COMPENSATING → FAILED
+PREPARING_DEPENDENCIES → PREPARING_NETWORK → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
+    依赖准备失败 → FAILED                   后续阶段失败 → COMPENSATING → FAILED
 ```
 
 若指定浮动 IP 转发，则在网络就绪后、调度前增加 `PREPARING_FORWARDING`。
@@ -162,10 +165,12 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 
 ## 返回值
 
-共享依赖全部就绪且 Actor 持久化受理请求后，接口返回 HTTP `202 Accepted`；实例网络和 Nova 创建继续异步执行。
-等待依赖期间使用 Spring MVC 异步响应，不占用 Servlet 请求线程。
-`INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 11 分钟，应大于依赖准备超时与 Actor 受理等待时间之和。
-依赖准备失败或超时时不提交实例创建；已创建的用户级资源可供下一次请求复用。
+Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、Share、用户网络准备以及
+实例网络和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
+`INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 30 秒，只需覆盖 Actor 受理等待时间
+（`cloud.instance.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
+受理后的依赖准备失败或超时通过 `InstanceLifecycle.get(instanceId)` 和 `instance_view` 的
+`phase`、`failureCode` / `failure_code`、`failureMessage` / `failure_message` 查询，已创建的用户级资源继续保留。
 响应沿用全局 `RespWrapper`，`result` 包含：
 
 ```json
@@ -227,7 +232,9 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 脚本保留原有记录和投影偏移量，不自动回填历史事件中的新增字段。
 已有实例若需要补齐这些信息，应通过实例投影的事件回放重建读模型。
 
-创建事件写入名称、描述、用户、集群、区域、资源规格、共享存储及父子网络配置；
+创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和
+`PREPARING_DEPENDENCIES` 状态，项目及父子网络/子网 ID 暂为空。
+`DependenciesPrepared` 补齐项目 ID、实际复用的逻辑 Share ID、父子网络和子网 ID；
 网络和端口转发就绪事件分别补齐端口、IP、Trunk 和浮动 IP 转发记录。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。

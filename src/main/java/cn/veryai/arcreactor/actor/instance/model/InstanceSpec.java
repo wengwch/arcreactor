@@ -4,10 +4,9 @@ import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
 
-/** Instance configuration; memory is measured in GB. */
+/** Immutable creation requirements, before dependencies are prepared. Memory is measured in GB. */
 public record InstanceSpec(
         String clusterId,
-        String projectId,
         String region,
         String name,
         String imageId,
@@ -23,7 +22,6 @@ public record InstanceSpec(
         String hypervisorType) implements Serializable {
     public InstanceSpec {
         requireText(clusterId, "clusterId");
-        requireText(projectId, "projectId");
         requireText(region, "region");
         requireText(name, "name");
         requireText(imageId, "imageId");
@@ -36,11 +34,11 @@ public record InstanceSpec(
         Objects.requireNonNull(share, "share");
         Objects.requireNonNull(network, "network");
         Objects.requireNonNull(cloudInit, "cloudInit");
-        if (!projectId.equals(share.spec().osProjectId()) || !region.equals(share.spec().regionId())) {
-            throw new IllegalArgumentException("prepared share must belong to the instance project and region");
+        if (!region.equals(share.spec().regionId())) {
+            throw new IllegalArgumentException("share must belong to the instance region");
         }
-        if (!network.resolved() || network.userNetwork() == null || !region.equals(network.userNetwork().regionId())) {
-            throw new IllegalArgumentException("resolved regional network dependencies are required");
+        if (network.userNetwork() == null || !region.equals(network.userNetwork().regionId())) {
+            throw new IllegalArgumentException("regional user network requirements are required");
         }
         if (forwarding != null && forwarding.parentPortId() != null) {
             throw new IllegalArgumentException("forwarding must use the ports created by the instance workflow");

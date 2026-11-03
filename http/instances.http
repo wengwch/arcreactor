@@ -8,15 +8,15 @@
 # 服务端需配置 INSTANCE_SHARE_TYPE、MANILA_FS_NAME 及有效的 OpenStack 连接和管理员角色。
 # 存储、网络、SSH 用户等使用服务端 instance.creation 配置，无需增加请求字段。
 # 创建接口没有 initOpenstack 或 dry-run 参数，执行 POST 会实际提交资源创建。
-# 首次请求可能等待用户项目、共享存储和网络就绪，HTTP 客户端超时需覆盖服务端等待时间
-# （服务端 INSTANCE_CREATE_REQUEST_TIMEOUT 默认 11 分钟）。超时后先核实结果再重试。
+# 请求持久化受理后即返回，用户项目、共享存储和网络由实例工作流异步准备。
+# INSTANCE_CREATE_REQUEST_TIMEOUT 默认 30 秒，仅覆盖受理等待；超时后先核实结果再重试。
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
-@userId = test-user-001
+@userId = test-user-002
 @flavorId = demo-flavor-medium
 @imageId = demo-image-debian
 @hypervisorType = demo-hv-t4
-@instanceName = test-instance-001
+@instanceName = test-instance-002
 
 ### 1. 查询区域内的规格，从 result 中选择 enabled=true 的记录
 # 记录 id 和 hypervisorType，分别填写 flavorId 和 hypervisorType。
@@ -37,7 +37,7 @@ Accept: application/json
 # @name createTestInstance
 # 成功返回 HTTP 202 Accepted，响应包装为 {"code":200,"result":{...}}。
 # result 包含 instanceId、requestId、username、password、jupyterToken。
-# HTTP 202 表示工作流已持久化受理，后续网络和 Nova 创建异步继续，不代表实例已 ACTIVE。
+# HTTP 202 表示工作流已持久化受理，依赖准备、实例网络和 Nova 创建异步继续，不代表实例已 ACTIVE。
 # 相同参数重复提交会生成新的 instanceId/requestId，不具备 HTTP 请求幂等性。
 # 同一用户在同一区域复用用户级存储和网络；当前接口不配置浮动 IP 转发。
 POST {{baseUrl}}/api/v1/instances

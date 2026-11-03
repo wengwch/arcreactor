@@ -4,6 +4,7 @@ import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.InstanceLifecycle;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
+import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
@@ -52,7 +53,6 @@ public class InstanceService {
     private final InstanceCreationProperties creationProperties;
     private final CloudInitRenderer cloudInitRenderer;
     private final InstanceLifecycle instanceLifecycle;
-    private final InstanceDependencyPreparer dependencyPreparer;
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CompletionStage<CreateInstanceResult> create(CreateInstanceParam param) {
@@ -74,13 +74,12 @@ public class InstanceService {
         String instanceId = UUID.randomUUID().toString();
         String requestId = UUID.randomUUID().toString();
         CreationDefaults defaults = creationDefaults(param, region);
-        return dependencyPreparer.prepare(param.getUserId(), region.getClusterId(), defaults.resourceId(),
-                        defaults.share(), defaults.network())
-                .thenCompose(dependencies -> submit(new InstanceLifecycle.CreateRequest(requestId, instanceId,
-                        region.getClusterId(), dependencies.projectId(), region.getId(), param.getName(),
-                        image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getGpus(),
-                        StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
-                        dependencies.share(), null, dependencies.network(), defaults.cloudInit(), param.getHypervisorType())));
+        return submit(new InstanceLifecycle.CreateRequest(requestId, instanceId,
+                region.getClusterId(), region.getId(), param.getName(),
+                image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getGpus(),
+                StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
+                new ShareRequirement(param.getUserId(), defaults.resourceId(), defaults.share()),
+                null, defaults.network(), defaults.cloudInit(), param.getHypervisorType()));
     }
 
     private CompletionStage<CreateInstanceResult> submit(InstanceLifecycle.CreateRequest request) {

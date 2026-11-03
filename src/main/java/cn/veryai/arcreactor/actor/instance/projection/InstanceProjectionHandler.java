@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.actor.instance.projection;
 
 import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
+import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
@@ -34,8 +35,10 @@ public final class InstanceProjectionHandler
         String instanceId = entityId(envelope.persistenceId());
 
         if (event instanceof InstanceCreationRequested created) {
-            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), "NEW", version,
+            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), "PREPARING_DEPENDENCIES", version,
                     Timestamp.from(created.requestedAt()), timestamp);
+        } else if (event instanceof DependenciesPrepared prepared) {
+            mapper.updateDependencies(instanceId, "PREPARING_DEPENDENCIES", prepared.dependencies(), version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
         } else if (event instanceof NetworkPreparationStarted) {

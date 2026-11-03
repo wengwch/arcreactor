@@ -16,12 +16,11 @@ public interface InstanceLifecycle {
 
     CompletionStage<View> get(String instanceId);
 
-    /** Submit only READY shared dependencies and resolved network IDs; memory is measured in GB. */
+    /** Submit dependency requirements; the workflow prepares them after acceptance. Memory is in GB. */
     record CreateRequest(
             String requestId,
             String instanceId,
             String clusterId,
-            String projectId,
             String region,
             String name,
             String imageId,

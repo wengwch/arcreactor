@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.service;
 
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
+import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.user.UserResources;
@@ -29,7 +30,7 @@ import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-/** API orchestration only; reusable resources remain owned and recovered by UserActor. */
+/** Asynchronous workflow dependency preparation; reusable resources remain owned by UserActor. */
 @Service
 @RequiredArgsConstructor
 public class InstanceDependencyPreparer {
@@ -38,8 +39,6 @@ public class InstanceDependencyPreparer {
     private final OpenStackClient openStackClient;
     private final SysNetworkRepo sysNetworkRepo;
     private final InstanceCreationProperties properties;
-
-    public record PreparedDependencies(String projectId, ShareRequirement share, NetworkRequirement network) {}
 
     public CompletionStage<PreparedDependencies> prepare(String userId, String clusterId, String shareId,
             ShareSpec shareSpec, NetworkRequirement network) {
@@ -89,7 +88,7 @@ public class InstanceDependencyPreparer {
                     throw new BaseException(ErrorCode.INSTANCE_USER_NETWORK_PREPARATION_FAILED);
                 }
                 return new PreparedDependencies(projectId,
-                        new ShareRequirement(userId, share.shareId(), resolvedShare, preparedShare),
+                        new ShareRequirement(userId, share.shareId(), resolvedShare), preparedShare,
                         resolved.withSubNetwork(readyNetwork.networkId(), readyNetwork.subnetId()));
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
