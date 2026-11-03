@@ -74,7 +74,6 @@
     </insert>
 
     <insert id="upsertNetwork">
-        <bind name="reconciling" value="network.phase.name() == 'RECONCILING'"/>
         INSERT INTO user_region_network (
           user_id,
           region_id,
@@ -87,8 +86,6 @@
           os_network_id,
           os_subnet_id,
           phase,
-          reconciling,
-          attempts,
           failure_message,
           resource_version,
           created_at,
@@ -105,8 +102,6 @@
           #{network.networkId,jdbcType=VARCHAR},
           #{network.subnetId,jdbcType=VARCHAR},
           #{network.phase,jdbcType=VARCHAR},
-          #{reconciling,jdbcType=BOOLEAN},
-          #{network.attempts,jdbcType=INTEGER},
           #{network.failureMessage,jdbcType=LONGVARCHAR},
           #{version,jdbcType=BIGINT},
           #{updatedAt,jdbcType=TIMESTAMP},
@@ -121,8 +116,6 @@
           os_network_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_network_id), os_network_id),
           os_subnet_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_subnet_id), os_subnet_id),
           phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
-          reconciling = IF(resource_version &lt; VALUES(resource_version), VALUES(reconciling), reconciling),
-          attempts = IF(resource_version &lt; VALUES(resource_version), VALUES(attempts), attempts),
           failure_message = IF(resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
           updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
           created_at = LEAST(created_at, VALUES(created_at)),
@@ -130,7 +123,6 @@
     </insert>
 
     <insert id="upsertRouter">
-        <bind name="reconciling" value="network.phase.name() == 'RECONCILING'"/>
         INSERT INTO user_region_router (
           user_id,
           region_id,
@@ -141,8 +133,6 @@
           os_router_id,
           os_router_port_id,
           phase,
-          reconciling,
-          attempts,
           failure_message,
           resource_version,
           created_at,
@@ -157,8 +147,6 @@
           #{network.routerId,jdbcType=VARCHAR},
           #{network.routerPortId,jdbcType=VARCHAR},
           #{network.phase,jdbcType=VARCHAR},
-          #{reconciling,jdbcType=BOOLEAN},
-          #{network.attempts,jdbcType=INTEGER},
           #{network.failureMessage,jdbcType=LONGVARCHAR},
           #{version,jdbcType=BIGINT},
           #{updatedAt,jdbcType=TIMESTAMP},
@@ -171,11 +159,61 @@
           os_router_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_router_id), os_router_id),
           os_router_port_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_router_port_id), os_router_port_id),
           phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
-          reconciling = IF(resource_version &lt; VALUES(resource_version), VALUES(reconciling), reconciling),
-          attempts = IF(resource_version &lt; VALUES(resource_version), VALUES(attempts), attempts),
           failure_message = IF(resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
           updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
           created_at = LEAST(created_at, VALUES(created_at)),
           resource_version = GREATEST(resource_version, VALUES(resource_version))
     </insert>
+
+    <update id="markNetworkReady">
+        UPDATE user_region_network SET
+          os_local_network_id = #{event.resources.localNetworkId,jdbcType=VARCHAR},
+          os_network_id = #{event.resources.networkId,jdbcType=VARCHAR},
+          os_subnet_id = #{event.resources.subnetId,jdbcType=VARCHAR},
+          phase = 'READY',
+          failure_message = NULL,
+          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
+          resource_version = #{version,jdbcType=BIGINT}
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND region_id = #{event.regionId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </update>
+
+    <update id="markRouterReady">
+        UPDATE user_region_router SET
+          os_local_network_id = #{event.resources.localNetworkId,jdbcType=VARCHAR},
+          os_network_id = #{event.resources.networkId,jdbcType=VARCHAR},
+          os_subnet_id = #{event.resources.subnetId,jdbcType=VARCHAR},
+          os_router_id = #{event.resources.routerId,jdbcType=VARCHAR},
+          os_router_port_id = #{event.resources.routerPortId,jdbcType=VARCHAR},
+          phase = 'READY',
+          failure_message = NULL,
+          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
+          resource_version = #{version,jdbcType=BIGINT}
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND region_id = #{event.regionId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </update>
+
+    <update id="markNetworkFailed">
+        UPDATE user_region_network SET
+          phase = 'FAILED',
+          failure_message = #{event.failure,jdbcType=LONGVARCHAR},
+          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
+          resource_version = #{version,jdbcType=BIGINT}
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND region_id = #{event.regionId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </update>
+
+    <update id="markRouterFailed">
+        UPDATE user_region_router SET
+          phase = 'FAILED',
+          failure_message = #{event.failure,jdbcType=LONGVARCHAR},
+          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
+          resource_version = #{version,jdbcType=BIGINT}
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND region_id = #{event.regionId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </update>
 </mapper>

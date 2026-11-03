@@ -84,7 +84,8 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 接口服务先准备用户项目，检查区域 SHARED 网络，再等待 Share 和用户网络就绪。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
-UserActor 调用 `createProjectWithAdminRole()` 依次创建项目、授予管理员角色，全部成功后才标记 `READY`。
+UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Domain 中按名称查询项目，
+存在则复用，不存在才创建，然后授予管理员角色，全部成功后才标记 `READY`。
 `CreateProject` 先持久化创建意图，再异步调用 OpenStack；结果通过 `ProjectReady` 或
 `ProjectFailed` 命令回到 Actor，最终状态持久化后向所有等待的调用方 `tell` 回复。
 创建、就绪、失败分别持久化 `ProjectCreationRequested`、`ProjectBecameReady`、
@@ -94,6 +95,15 @@ UserActor 调用 `createProjectWithAdminRole()` 依次创建项目、授予管�
 Actor 重启后，未完成的项目也记录 `FAILED`。超时和重启中断时，失败详情会说明远端结果尚未确认。
 创建请求的等待时限为 `project.operation-timeout + ask-timeout`，用于单次操作及持久化、回复。
 项目投影写入 `user_cluster_project`，主键为 `(user_id, cluster_id)`，建表定义见 `sql/read-model.sql`。
+用户网络采用相同流程：`CreateNetwork` 持久化 `NetworkCreationRequested` 后调用
+`createUserNetwork()`，依次校验 LOCAL 网络、创建用户网络、子网、路由和路由接口。
+全部成功后发送 `NetworkReady`，持久化 `NetworkBecameReady`；失败或超时发送
+`NetworkFailed`，持久化 `NetworkCreationFailed`，然后向所有等待的调用方回复最终结果。
+同规格的并发请求共用一次创建流程，`createNetwork()` 等待 `READY` 或 `FAILED`，
+`getNetwork()` 可查询中间状态。网络创建不重试、不逐步持久化资源 ID，Actor 恢复时将
+未完成的网络标记为 `FAILED`。失败可能留下部分远端资源，流程不自动回滚；超时或恢复中断
+也不代表 OpenStack 已停止创建。整套创建操作使用 `network.operation-timeout`，
+请求等待时限为 `network.operation-timeout + ask-timeout`。
 Share、用户网络和路由的投影见下方“用户资源读模型”。
 接口失败或单个实例失败不会删除这些共享资源。
 只有依赖全部就绪后才向 InstanceActor 发送 Command，包含已解析的 `projectId`、
@@ -159,14 +169,14 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 | --- | --- | --- |
 | `user_cluster_project` | `ProjectBecameReady` | 用户与集群项目的对应关系 |
 | `user_region_share` | 全部 `ShareUpdated` | Share 规格、Manila ID、导出路径、授权规则 ID、阶段和失败原因 |
-| `user_region_network` | 全部 `NetworkUpdated` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID |
-| `user_region_router` | 全部 `NetworkUpdated` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的阶段 |
+| `user_region_network` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID、状态和失败原因 |
+| `user_region_router` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的状态和失败原因 |
 
-router 由用户网络流程创建，没有单独的路由事件。每个 `NetworkUpdated` 在同一个 JDBC
-事务内更新网络和路由两条记录，并随投影偏移量一起提交。资源尚未创建时对应的 OpenStack
-ID 为空；router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路由运行状态。
-网络流程仅有 `CREATING`、`RECONCILING`、`READY`、`FAILED` 四个阶段，已确认的资源 ID
-决定下一项操作；`RECONCILING` 只查询当前结果未确认的资源，确认后继续创建剩余资源。
+router 由用户网络流程创建，没有单独的路由事件。每个网络事件在同一个 JDBC 事务内
+更新网络和路由两条记录，并随投影偏移量一起提交。创建事件写入请求规格和 `CREATING`
+状态，就绪事件一次补齐所有资源 ID 并标记 `READY`，失败事件记录 `FAILED` 和失败原因。
+网络流程仅有 `CREATING`、`READY`、`FAILED` 三个状态；就绪前对应的 OpenStack 资源 ID 为空。
+router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路由运行状态。
 网络表的网关和 DNS 来自请求规格；若网关由 Neutron 自动分配，投影中的 `gateway` 保持为空。
 
 三个区域资源表使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。

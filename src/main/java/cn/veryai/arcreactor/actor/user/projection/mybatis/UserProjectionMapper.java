@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.actor.user.projection.mybatis;
 
+import cn.veryai.arcreactor.actor.user.event.NetworkBecameReady;
+import cn.veryai.arcreactor.actor.user.event.NetworkCreationFailed;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.model.UserShareState;
 import cn.veryai.arcreactor.entity.UserClusterProjectEntity;
@@ -26,6 +28,30 @@ public interface UserProjectionMapper {
   int upsertRouter(
       @Param("userId") String userId,
       @Param("network") UserNetworkState network,
+      @Param("version") long version,
+      @Param("updatedAt") Timestamp updatedAt);
+
+  int markNetworkReady(
+      @Param("userId") String userId,
+      @Param("event") NetworkBecameReady event,
+      @Param("version") long version,
+      @Param("updatedAt") Timestamp updatedAt);
+
+  int markRouterReady(
+      @Param("userId") String userId,
+      @Param("event") NetworkBecameReady event,
+      @Param("version") long version,
+      @Param("updatedAt") Timestamp updatedAt);
+
+  int markNetworkFailed(
+      @Param("userId") String userId,
+      @Param("event") NetworkCreationFailed event,
+      @Param("version") long version,
+      @Param("updatedAt") Timestamp updatedAt);
+
+  int markRouterFailed(
+      @Param("userId") String userId,
+      @Param("event") NetworkCreationFailed event,
       @Param("version") long version,
       @Param("updatedAt") Timestamp updatedAt);
 }

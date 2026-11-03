@@ -28,7 +28,7 @@ import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
 import org.springframework.stereotype.Service;
 
 /**
- * Waits for project creation results; query networks and shares until READY before using them.
+ * Waits for project and network creation results; query shares until READY before using them.
  */
 @Slf4j
 @Service
@@ -37,6 +37,7 @@ public final class UserResources {
   private final ClusterSharding sharding;
   private final Duration askTimeout;
   private final Duration projectCreateTimeout;
+  private final Duration networkCreateTimeout;
 
   public UserResources(ActorSystem<?> system, OpenStackClient client) {
     this.system = system;
@@ -51,11 +52,8 @@ public final class UserResources {
     UserProjectSettings projectSettings = new UserProjectSettings(config.getDuration("project.operation-timeout"));
     // Allow one operation plus persistence and reply overhead.
     this.projectCreateTimeout = projectSettings.operationTimeout().plus(askTimeout);
-    UserNetworkSettings networkSettings =
-        new UserNetworkSettings(
-            config.getDuration("network.retry-delay"),
-            config.getDuration("network.operation-timeout"),
-            config.getInt("network.max-attempts"));
+    UserNetworkSettings networkSettings = new UserNetworkSettings(config.getDuration("network.operation-timeout"));
+    this.networkCreateTimeout = networkSettings.operationTimeout().plus(askTimeout);
     sharding.init(
         Entity.of(
             UserActor.TYPE_KEY,
@@ -98,14 +96,14 @@ public final class UserResources {
 
   /**
    * Requires a READY cluster project and exactly one preset shared/external LOCAL network.
-   * Each user has one managed network per region. Query getNetwork until READY; its state contains
-   * the network, subnet, router and interface port IDs.
+   * Each user has one managed network per region. Waits for the persisted READY/FAILED result;
+   * a READY state contains the network, subnet, router and interface port IDs.
    */
   public CompletionStage<NetworkReply> createNetwork(String userId, String clusterId, NetworkSpec spec) {
     return AskPattern.<UserCommand, NetworkReply>ask(
         entityRef(userId),
         replyTo -> new CreateNetwork(clusterId, spec, replyTo),
-        askTimeout,
+        networkCreateTimeout,
         system.scheduler());
   }
 

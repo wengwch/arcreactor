@@ -1,7 +1,4 @@
--- Apply before deploying the user-resources projection.
--- New installations use sql/read-model.sql, which contains the same definitions.
--- This creates the regional resource tables without changing existing project rows or offsets.
--- The new projection name replays retained User events to populate historical resources.
+-- Regional user resource tables; the same definitions are included in sql/read-model.sql.
 
 CREATE TABLE IF NOT EXISTS user_region_share (
   user_id VARCHAR(255) NOT NULL,
@@ -41,8 +38,6 @@ CREATE TABLE IF NOT EXISTS user_region_network (
   os_network_id VARCHAR(255),
   os_subnet_id VARCHAR(255),
   phase VARCHAR(64) NOT NULL,
-  reconciling BOOLEAN NOT NULL,
-  attempts INT NOT NULL,
   failure_message TEXT,
   resource_version BIGINT NOT NULL,
   created_at TIMESTAMP(6) NOT NULL,
@@ -62,8 +57,6 @@ CREATE TABLE IF NOT EXISTS user_region_router (
   os_router_id VARCHAR(255),
   os_router_port_id VARCHAR(255),
   phase VARCHAR(64) NOT NULL COMMENT 'User network workflow phase',
-  reconciling BOOLEAN NOT NULL,
-  attempts INT NOT NULL,
   failure_message TEXT,
   resource_version BIGINT NOT NULL,
   created_at TIMESTAMP(6) NOT NULL,

@@ -12,7 +12,10 @@ import cn.veryai.arcreactor.actor.user.event.UserEvent;
 import cn.veryai.arcreactor.actor.user.event.ProjectCreationRequested;
 import cn.veryai.arcreactor.actor.user.event.ProjectBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ProjectCreationFailed;
-import cn.veryai.arcreactor.actor.user.event.NetworkUpdated;
+import cn.veryai.arcreactor.actor.user.event.NetworkCreationRequested;
+import cn.veryai.arcreactor.actor.user.event.NetworkBecameReady;
+import cn.veryai.arcreactor.actor.user.event.NetworkCreationFailed;
+import cn.veryai.arcreactor.actor.user.model.NetworkResources;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.actor.user.model.UserShareState;
 import cn.veryai.arcreactor.actor.user.model.UserShareState.Phase;
@@ -77,7 +80,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private final Set<String> inFlight = new HashSet<>();
   // Concurrent create requests wait for the same persisted terminal result.
   private final Map<String, Set<ActorRef<ProjectReply>>> projectReplyTos = new HashMap<>();
-  private final Set<String> networksInFlight = new HashSet<>();
+  private final Map<String, Set<ActorRef<NetworkReply>>> networkReplyTos = new HashMap<>();
 
   public record ContinueShare(String regionId, long generation) implements UserCommand {}
   public record ResumeShare(String regionId) implements UserCommand {}
@@ -86,11 +89,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private record ShareTimerKey(String regionId) {}
   public record ProjectReady(String clusterId, long generation, String projectId) implements UserCommand {}
   public record ProjectFailed(String clusterId, long generation, String failure) implements UserCommand {}
-  public record ContinueNetwork(String regionId, long generation) implements UserCommand {}
-  public record ResumeNetwork(String regionId) implements UserCommand {}
-  public record NetworkStepCompleted(String regionId, long generation, UserNetworkState result,
-      boolean definitiveFailure, String failure) implements UserCommand {}
-  private record NetworkTimerKey(String regionId) {}
+  public record NetworkReady(String regionId, long generation, NetworkResources resources) implements UserCommand {}
+  public record NetworkFailed(String regionId, long generation, String failure) implements UserCommand {}
 
   public static Behavior<UserCommand> create(String userId, OpenStackClient client,
       UserShareSettings settings) {
@@ -143,18 +143,22 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .onCommand(ProjectFailed.class, this::onProjectFailed)
         .onCommand(CreateNetwork.class, this::onCreateNetwork)
         .onCommand(GetNetwork.class, this::onGetNetwork)
-        .onCommand(ContinueNetwork.class, this::onContinueNetwork)
-        .onCommand(ResumeNetwork.class, this::onResumeNetwork)
-        .onCommand(NetworkStepCompleted.class, this::onNetworkStepCompleted)
+        .onCommand(NetworkReady.class, this::onNetworkReady)
+        .onCommand(NetworkFailed.class, this::onNetworkFailed)
         .build();
   }
 
   private Effect<UserEvent, UserState> onCreateNetwork(UserState state, CreateNetwork command) {
     UserNetworkState existing = state.networks().get(command.spec().regionId());
     if (existing != null) {
-      command.replyTo().tell(existing.spec().equals(command.spec()) ? NetworkReply.from(userId, existing)
-          : new NetworkReply(NetworkReply.Status.REJECTED, userId, command.spec().regionId(), null,
-              "This user already has a network specification in this region"));
+      if (!existing.spec().equals(command.spec())) {
+        command.replyTo().tell(new NetworkReply(NetworkReply.Status.REJECTED, userId, command.spec().regionId(), null,
+            "This user already has a network specification in this region"));
+      } else if (existing.terminal()) {
+        command.replyTo().tell(NetworkReply.from(userId, existing));
+      } else {
+        networkReplyTos.computeIfAbsent(existing.regionId(), ignored -> new HashSet<>()).add(command.replyTo());
+      }
       return Effect().none();
     }
     UserProjectState project = state.projects().get(command.clusterId());
@@ -163,11 +167,12 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
           command.spec().regionId(), null, "The user cluster project must be READY before creating a network"));
       return Effect().none();
     }
-    UserNetworkState network = UserNetworkState.requested(command.spec(), project.projectId());
-    return Effect().persist(new NetworkUpdated(network)).thenRun(next -> {
-      command.replyTo().tell(NetworkReply.from(userId, network));
-      continueNetwork(network);
-    });
+    return Effect().persist(new NetworkCreationRequested(command.spec(), project.projectId()))
+        .thenRun(next -> {
+          String regionId = command.spec().regionId();
+          networkReplyTos.computeIfAbsent(regionId, ignored -> new HashSet<>()).add(command.replyTo());
+          executeNetwork(next.networks().get(regionId));
+        });
   }
 
   private Effect<UserEvent, UserState> onGetNetwork(UserState state, GetNetwork command) {
@@ -178,109 +183,49 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return Effect().none();
   }
 
-  private Effect<UserEvent, UserState> onContinueNetwork(UserState state, ContinueNetwork command) {
-    UserNetworkState network = state.networks().get(command.regionId());
-    if (network == null || network.terminal() || network.generation() != command.generation()
-        || networksInFlight.contains(network.regionId())) return Effect().none();
-    if (network.attempts() >= networkSettings.maxAttempts()) {
-      String detail = network.phase() == UserNetworkState.Phase.RECONCILING
-          ? "Network creation outcome remains unknown; reconciliation required"
-          : "Network operation retry limit reached";
-      return Effect().persist(new NetworkUpdated(network.failed(detail)));
-    }
-    UserNetworkState attempted = network.attempted();
-    return Effect().persist(new NetworkUpdated(attempted)).thenRun(next -> executeNetwork(attempted));
-  }
-
-  private Effect<UserEvent, UserState> onResumeNetwork(UserState state, ResumeNetwork command) {
-    UserNetworkState network = state.networks().get(command.regionId());
-    if (network == null || network.terminal() || networksInFlight.contains(network.regionId())) return Effect().none();
-    if (network.phase() == UserNetworkState.Phase.CREATING && network.attempts() > 0) {
-      UserNetworkState reconciling = network.reconciling();
-      return Effect().persist(new NetworkUpdated(reconciling)).thenRun(next -> continueNetwork(reconciling));
-    }
-    continueNetwork(network);
-    return Effect().none();
-  }
-
-  private Effect<UserEvent, UserState> onNetworkStepCompleted(UserState state, NetworkStepCompleted command) {
+  private Effect<UserEvent, UserState> onNetworkReady(UserState state, NetworkReady command) {
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
-    networksInFlight.remove(network.regionId());
-    if (command.failure() != null) {
-      if (command.definitiveFailure()) {
-        return Effect().persist(new NetworkUpdated(network.failed(command.failure())));
-      }
-      if (network.phase() == UserNetworkState.Phase.CREATING) {
-        UserNetworkState reconciling = network.reconciling();
-        return Effect().persist(new NetworkUpdated(reconciling)).thenRun(next -> scheduleNetwork(reconciling));
-      }
-      scheduleNetwork(network);
-      return Effect().none();
-    }
-    UserNetworkState result = command.result();
-    if (network.equals(result)) {
-      scheduleNetwork(network);
-      return Effect().none();
-    }
-    return Effect().persist(new NetworkUpdated(result)).thenRun(next -> {
-      if (!result.terminal()) continueNetwork(result);
-    });
+    return Effect().persist(new NetworkBecameReady(command.regionId(), command.resources()))
+        .thenRun(next -> replyNetwork(next.networks().get(command.regionId())));
+  }
+
+  private Effect<UserEvent, UserState> onNetworkFailed(UserState state, NetworkFailed command) {
+    UserNetworkState network = state.networks().get(command.regionId());
+    if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
+    return Effect().persist(new NetworkCreationFailed(command.regionId(), command.failure()))
+        .thenRun(next -> replyNetwork(next.networks().get(command.regionId())));
   }
 
   private void executeNetwork(UserNetworkState network) {
-    networksInFlight.add(network.regionId());
-    CompletionStage<UserNetworkState> operation;
+    CompletionStage<NetworkResources> operation;
     try {
-      String regionId = network.regionId();
-      String projectId = network.projectId();
-      boolean allowCreate = network.phase() == UserNetworkState.Phase.CREATING;
-      // Stable names and tenant ownership identify resources after a lost create response.
-      String name = network.spec().name().substring(0, Math.min(network.spec().name().length(), 180))
-          + "-" + operationId("network:" + regionId);
-      // Confirm one resource at a time; persisted IDs determine what remains to be prepared.
-      CompletionStage<String> step;
-      if (network.localNetworkId() == null) {
-        step = client.resolveUserLocalNetwork(regionId, projectId);
-      } else if (network.networkId() == null) {
-        step = client.ensureUserNetwork(regionId, projectId, name, allowCreate);
-      } else if (network.subnetId() == null) {
-        step = client.ensureUserSubnet(network.spec(), projectId,
-            network.networkId(), name + "-subnet", allowCreate);
-      } else if (network.routerId() == null) {
-        step = client.ensureUserRouter(regionId, projectId,
-            name + "-router", network.localNetworkId(), allowCreate);
-      } else {
-        step = client.ensureUserRouterInterface(regionId, projectId,
-            network.networkId(), network.routerId(), network.subnetId(), allowCreate);
-      }
-      operation = step.thenApply(id -> id == null ? network : network.completed(id));
+      String name = network.spec().name();
+      operation = client.createUserNetwork(network.spec(), network.projectId(), name);
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation.toCompletableFuture().orTimeout(
         networkSettings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
-      if (error == null) return new NetworkStepCompleted(network.regionId(), network.generation(), result, false, null);
+      if (error == null) {
+        return result != null
+            ? new NetworkReady(network.regionId(), network.generation(), result)
+            : new NetworkFailed(network.regionId(), network.generation(), "Network creation returned no resources");
+      }
       Throwable cause = rootCause(error);
       ResponseException response = responseCause(cause);
-      boolean definitive = cause instanceof OpenStackOperationException && cause.getCause() == null;
-      if (response != null) {
-        int status = response.getStatus();
-        definitive = status >= 400 && status < 500 && status != 408 && status != 429 && status != 409;
-      }
-      String detail = cause instanceof OpenStackOperationException && cause.getCause() == null
-          ? cause.getMessage() : "Network operation failed at " + network.phase() + ": "
-              + cause.getClass().getSimpleName()
+      String detail = cause instanceof TimeoutException
+          ? "Network operation timed out; OpenStack outcome is unconfirmed"
+          : cause instanceof OpenStackOperationException && cause.getCause() == null
+          ? cause.getMessage() : "Network operation failed: " + cause.getClass().getSimpleName()
               + (response == null ? "" : " (HTTP " + response.getStatus() + ")");
-      return new NetworkStepCompleted(network.regionId(), network.generation(), null, definitive, detail);
+      return new NetworkFailed(network.regionId(), network.generation(), detail);
     });
   }
 
-  private void continueNetwork(UserNetworkState network) {
-    context.getSelf().tell(new ContinueNetwork(network.regionId(), network.generation()));
-  }
-
-  private void scheduleNetwork(UserNetworkState network) {
-    timers.startSingleTimer(new NetworkTimerKey(network.regionId()),
-        new ContinueNetwork(network.regionId(), network.generation()), networkSettings.retryDelay());
+  private void replyNetwork(UserNetworkState network) {
+    Set<ActorRef<NetworkReply>> replyTos = networkReplyTos.remove(network.regionId());
+    if (replyTos == null) return;
+    NetworkReply reply = NetworkReply.from(userId, network);
+    replyTos.forEach(replyTo -> replyTo.tell(reply));
   }
 
   private Effect<UserEvent, UserState> onCreateProject(UserState state, CreateProject command) {
@@ -328,9 +273,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private void executeProject(UserProjectState project) {
     CompletionStage<String> operation;
     try {
-      String operationId = operationId("project:" + project.clusterId());
       operation = client.createProjectWithAdminRole(
-              project.clusterId(), project.name(), operationId)
+              project.clusterId(), project.name(), userId)
           .thenApply(prepared -> prepared == null ? null : prepared.getId());
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation.toCompletableFuture().orTimeout(
@@ -589,7 +533,13 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
             state.updated(state.projects().get(event.clusterId()).ready(event.projectId())))
         .onEvent(ProjectCreationFailed.class, (state, event) ->
             state.updated(state.projects().get(event.clusterId()).failed(event.failure())))
-        .onEvent(NetworkUpdated.class, (state, event) -> state.updated(event.network())).build();
+        .onEvent(NetworkCreationRequested.class, (state, event) ->
+            state.updated(UserNetworkState.requested(event.spec(), event.projectId())))
+        .onEvent(NetworkBecameReady.class, (state, event) ->
+            state.updated(state.networks().get(event.regionId()).ready(event.resources())))
+        .onEvent(NetworkCreationFailed.class, (state, event) ->
+            state.updated(state.networks().get(event.regionId()).failed(event.failure())))
+        .build();
   }
 
   @Override
@@ -601,7 +551,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
           .forEach(project -> context.getSelf().tell(new ProjectFailed(project.clusterId(), project.generation(),
               "Project creation was interrupted by actor recovery; OpenStack outcome is unconfirmed")));
       state.networks().values().stream().filter(network -> !network.terminal())
-          .forEach(network -> context.getSelf().tell(new ResumeNetwork(network.regionId())));
+          .forEach(network -> context.getSelf().tell(new NetworkFailed(network.regionId(), network.generation(),
+              "Network creation was interrupted by actor recovery; OpenStack outcome is unconfirmed")));
     }).build();
   }
 

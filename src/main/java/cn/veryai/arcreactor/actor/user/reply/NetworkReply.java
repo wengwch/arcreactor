@@ -11,7 +11,7 @@ public record NetworkReply(Status status, String userId, String regionId, UserNe
     Status status = switch (network.phase()) {
       case READY -> Status.READY;
       case FAILED -> Status.FAILED;
-      case CREATING, RECONCILING -> Status.IN_PROGRESS;
+      case CREATING -> Status.IN_PROGRESS;
     };
     return new NetworkReply(status, userId, network.regionId(), network, network.failureMessage());
   }
