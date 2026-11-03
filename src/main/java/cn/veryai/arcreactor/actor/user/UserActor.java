@@ -186,14 +186,14 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private Effect<UserEvent, UserState> onNetworkReady(UserState state, NetworkReady command) {
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new NetworkBecameReady(command.regionId(), command.resources()))
+    return Effect().persist(new NetworkBecameReady(network.spec(), network.projectId(), command.resources()))
         .thenRun(next -> replyNetwork(next.networks().get(command.regionId())));
   }
 
   private Effect<UserEvent, UserState> onNetworkFailed(UserState state, NetworkFailed command) {
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new NetworkCreationFailed(command.regionId(), command.failure()))
+    return Effect().persist(new NetworkCreationFailed(network.spec(), network.projectId(), command.failure()))
         .thenRun(next -> replyNetwork(next.networks().get(command.regionId())));
   }
 
@@ -259,14 +259,14 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private Effect<UserEvent, UserState> onProjectReady(UserState state, ProjectReady command) {
     UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new ProjectBecameReady(command.clusterId(), command.projectId()))
+    return Effect().persist(new ProjectBecameReady(command.clusterId(), project.name(), command.projectId()))
         .thenRun(next -> replyProject(next.projects().get(command.clusterId())));
   }
 
   private Effect<UserEvent, UserState> onProjectFailed(UserState state, ProjectFailed command) {
     UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new ProjectCreationFailed(command.clusterId(), command.failure()))
+    return Effect().persist(new ProjectCreationFailed(command.clusterId(), project.name(), command.failure()))
         .thenRun(next -> replyProject(next.projects().get(command.clusterId())));
   }
 
@@ -536,9 +536,9 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .onEvent(NetworkCreationRequested.class, (state, event) ->
             state.updated(UserNetworkState.requested(event.spec(), event.projectId())))
         .onEvent(NetworkBecameReady.class, (state, event) ->
-            state.updated(state.networks().get(event.regionId()).ready(event.resources())))
+            state.updated(state.networks().get(event.spec().regionId()).ready(event.resources())))
         .onEvent(NetworkCreationFailed.class, (state, event) ->
-            state.updated(state.networks().get(event.regionId()).failed(event.failure())))
+            state.updated(state.networks().get(event.spec().regionId()).failed(event.failure())))
         .build();
   }
 

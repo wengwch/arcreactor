@@ -167,19 +167,25 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 
 | 表 | 事件 | 保存内容 |
 | --- | --- | --- |
-| `user_cluster_project` | `ProjectBecameReady` | 用户与集群项目的对应关系 |
+| `user_cluster_project` | `ProjectCreationRequested`、`ProjectBecameReady`、`ProjectCreationFailed` | 项目名称、OpenStack 项目 ID、状态和失败原因 |
 | `user_region_share` | 全部 `ShareUpdated` | Share 规格、Manila ID、导出路径、授权规则 ID、阶段和失败原因 |
 | `user_region_network` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID、状态和失败原因 |
 | `user_region_router` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的状态和失败原因 |
 
+项目和网络都投影 `CREATING`、`READY`、`FAILED` 三种状态。项目创建时保存名称，
+就绪时保存 OpenStack 项目 ID，失败时保存失败原因；使用项目映射时应筛选 `phase = 'READY'`。
+项目和网络的终态事件携带原始名称或网络规格、项目 ID 等投影所需的数据，可以独立写入读模型。
+
 router 由用户网络流程创建，没有单独的路由事件。每个网络事件在同一个 JDBC 事务内
 更新网络和路由两条记录，并随投影偏移量一起提交。创建事件写入请求规格和 `CREATING`
 状态，就绪事件一次补齐所有资源 ID 并标记 `READY`，失败事件记录 `FAILED` 和失败原因。
-网络流程仅有 `CREATING`、`READY`、`FAILED` 三个状态；就绪前对应的 OpenStack 资源 ID 为空。
+就绪前对应的 OpenStack 资源 ID 为空。
 router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路由运行状态。
 网络表的网关和 DNS 来自请求规格；若网关由 Neutron 自动分配，投影中的 `gateway` 保持为空。
 
-三个区域资源表使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。
+项目和三个区域资源表均使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。
+Project 和网络的三类事件都通过 upsert 写入完整资源状态；即使就绪或失败事件先于创建事件
+到达，也能插入完整记录，后到的创建事件不会清空资源 ID 或回退状态。
 `created_at` 取已投影事件的最早时间，`updated_at` 取最新版本事件时间；它们不是远端资源的
 创建和更新时间。`share_id` 是用户范围内的逻辑 Share ID，`os_share_id` 才是 Manila ID，
 `size_gib` 的单位为 GiB。投影不保存 Share 的 `accessKey`，访问凭据仍由用户 Actor 管理。

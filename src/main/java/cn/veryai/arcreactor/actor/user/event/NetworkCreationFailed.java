@@ -1,4 +1,6 @@
 package cn.veryai.arcreactor.actor.user.event;
 
-/** Records the terminal failure of the network creation workflow. */
-public record NetworkCreationFailed(String regionId, String failure) implements UserEvent {}
+import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
+
+/** Includes the request so the failed network can be projected independently. */
+public record NetworkCreationFailed(NetworkSpec spec, String projectId, String failure) implements UserEvent {}

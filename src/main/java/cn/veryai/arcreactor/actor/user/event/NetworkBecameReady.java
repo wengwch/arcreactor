@@ -1,6 +1,8 @@
 package cn.veryai.arcreactor.actor.user.event;
 
 import cn.veryai.arcreactor.actor.user.model.NetworkResources;
+import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 
-/** Confirms that the network, subnet, router and router interface have been created. */
-public record NetworkBecameReady(String regionId, NetworkResources resources) implements UserEvent {}
+/** Includes the request and all resource IDs so readiness can be projected independently. */
+public record NetworkBecameReady(NetworkSpec spec, String projectId, NetworkResources resources)
+    implements UserEvent {}

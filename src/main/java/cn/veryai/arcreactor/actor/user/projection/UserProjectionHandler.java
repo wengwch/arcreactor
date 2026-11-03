@@ -5,17 +5,19 @@ import cn.veryai.arcreactor.actor.user.event.NetworkCreationRequested;
 import cn.veryai.arcreactor.actor.user.event.NetworkBecameReady;
 import cn.veryai.arcreactor.actor.user.event.NetworkCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.ProjectBecameReady;
+import cn.veryai.arcreactor.actor.user.event.ProjectCreationFailed;
+import cn.veryai.arcreactor.actor.user.event.ProjectCreationRequested;
 import cn.veryai.arcreactor.actor.user.event.ShareUpdated;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
+import cn.veryai.arcreactor.actor.user.model.UserProjectState;
 import cn.veryai.arcreactor.actor.user.projection.mybatis.UserProjectionMapper;
-import cn.veryai.arcreactor.entity.UserClusterProjectEntity;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
 import org.apache.pekko.projection.jdbc.javadsl.JdbcHandler;
 
-/** Projects ready cluster projects, share snapshots and network lifecycle events. */
+/** Projects every project, share and network state with journal sequence number guards. */
 public final class UserProjectionHandler
     extends JdbcHandler<EventEnvelope<UserEvent>, JdbcProjectionSession> {
 
@@ -27,30 +29,38 @@ public final class UserProjectionHandler
     long version = envelope.sequenceNr();
     Timestamp timestamp = Timestamp.from(Instant.ofEpochMilli(envelope.timestamp()));
 
-    if (event instanceof ProjectBecameReady ready) {
-      if (ready.clusterId() == null || ready.clusterId().isBlank()
-          || ready.projectId() == null || ready.projectId().isBlank()) {
+    if (event instanceof ProjectCreationRequested(String clusterId, String name)) {
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name),
+          version, timestamp);
+    } else if (event instanceof ProjectBecameReady(String clusterId, String name, String projectId)) {
+      if (clusterId == null || clusterId.isBlank()
+          || projectId == null || projectId.isBlank()) {
         throw new IllegalArgumentException("ready project must have cluster and project IDs");
       }
-      UserClusterProjectEntity entity = new UserClusterProjectEntity();
-      entity.setUserId(userId);
-      entity.setClusterId(ready.clusterId());
-      entity.setProjectId(ready.projectId());
-      mapper.upsertProject(entity);
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name).ready(projectId),
+          version, timestamp);
+    } else if (event instanceof ProjectCreationFailed(String clusterId, String name, String failure)) {
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name).failed(failure),
+          version, timestamp);
     } else if (event instanceof ShareUpdated updated) {
       mapper.upsertShare(userId, updated.share(), version, timestamp);
     } else if (event instanceof NetworkCreationRequested requested) {
-      UserNetworkState network = UserNetworkState.requested(requested.spec(), requested.projectId());
-      // Router resources share the network workflow; both rows and the offset commit together.
-      mapper.upsertNetwork(userId, network, version, timestamp);
-      mapper.upsertRouter(userId, network, version, timestamp);
+      upsertNetwork(mapper, userId, UserNetworkState.requested(requested.spec(), requested.projectId()),
+          version, timestamp);
     } else if (event instanceof NetworkBecameReady ready) {
-      mapper.markNetworkReady(userId, ready, version, timestamp);
-      mapper.markRouterReady(userId, ready, version, timestamp);
+      upsertNetwork(mapper, userId, UserNetworkState.requested(ready.spec(), ready.projectId()).ready(ready.resources()),
+          version, timestamp);
     } else if (event instanceof NetworkCreationFailed failed) {
-      mapper.markNetworkFailed(userId, failed, version, timestamp);
-      mapper.markRouterFailed(userId, failed, version, timestamp);
+      upsertNetwork(mapper, userId, UserNetworkState.requested(failed.spec(), failed.projectId()).failed(failed.failure()),
+          version, timestamp);
     }
+  }
+
+  private static void upsertNetwork(UserProjectionMapper mapper, String userId, UserNetworkState network,
+      long version, Timestamp timestamp) {
+    // Both rows and the offset commit together, even when the terminal event arrives first.
+    mapper.upsertNetwork(userId, network, version, timestamp);
+    mapper.upsertRouter(userId, network, version, timestamp);
   }
 
   static String entityId(String persistenceId) {

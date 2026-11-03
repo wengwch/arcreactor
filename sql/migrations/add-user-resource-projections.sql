@@ -1,4 +1,19 @@
--- Regional user resource tables; the same definitions are included in sql/read-model.sql.
+-- User resource tables; the same definitions are included in sql/read-model.sql.
+
+CREATE TABLE IF NOT EXISTS user_cluster_project (
+  user_id VARCHAR(255) NOT NULL,
+  cluster_id VARCHAR(255) NOT NULL,
+  name VARCHAR(512) NOT NULL,
+  project_id VARCHAR(255),
+  phase VARCHAR(64) NOT NULL,
+  failure_message TEXT,
+  resource_version BIGINT NOT NULL,
+  created_at TIMESTAMP(6) NOT NULL,
+  updated_at TIMESTAMP(6) NOT NULL,
+  PRIMARY KEY (user_id, cluster_id),
+  INDEX idx_user_project_cluster_phase (cluster_id, phase),
+  INDEX idx_user_project_os_id (cluster_id, project_id)
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS user_region_share (
   user_id VARCHAR(255) NOT NULL,

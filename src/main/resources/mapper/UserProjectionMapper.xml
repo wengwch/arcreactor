@@ -1,14 +1,39 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="cn.veryai.arcreactor.actor.user.projection.mybatis.UserProjectionMapper">
+    <!-- Each event supplies a complete resource state. Only a newer sequence number may replace it.
+         Keep the version assignment last so each condition observes the previous version. -->
     <insert id="upsertProject">
-        INSERT INTO user_cluster_project (user_id, cluster_id, project_id)
-        VALUES (#{userId}, #{clusterId}, #{projectId})
-        ON DUPLICATE KEY UPDATE project_id = #{projectId}
+        INSERT INTO user_cluster_project (
+          user_id,
+          cluster_id,
+          name,
+          project_id,
+          phase,
+          failure_message,
+          resource_version,
+          created_at,
+          updated_at)
+        VALUES (
+          #{userId,jdbcType=VARCHAR},
+          #{project.clusterId,jdbcType=VARCHAR},
+          #{project.name,jdbcType=VARCHAR},
+          #{project.projectId,jdbcType=VARCHAR},
+          #{project.phase,jdbcType=VARCHAR},
+          #{project.failureMessage,jdbcType=LONGVARCHAR},
+          #{version,jdbcType=BIGINT},
+          #{updatedAt,jdbcType=TIMESTAMP},
+          #{updatedAt,jdbcType=TIMESTAMP})
+        ON DUPLICATE KEY UPDATE
+          name = IF(resource_version &lt; VALUES(resource_version), VALUES(name), name),
+          project_id = IF(resource_version &lt; VALUES(resource_version), VALUES(project_id), project_id),
+          phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
+          failure_message = IF(resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
+          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
+          created_at = LEAST(created_at, VALUES(created_at)),
+          resource_version = GREATEST(resource_version, VALUES(resource_version))
     </insert>
 
-    <!-- Snapshots may be replayed: guard mutable fields by journal sequence number.
-         Keep the version assignment last so each condition observes the previous version. -->
     <insert id="upsertShare">
         INSERT INTO user_region_share (
           user_id,
@@ -165,55 +190,4 @@
           resource_version = GREATEST(resource_version, VALUES(resource_version))
     </insert>
 
-    <update id="markNetworkReady">
-        UPDATE user_region_network SET
-          os_local_network_id = #{event.resources.localNetworkId,jdbcType=VARCHAR},
-          os_network_id = #{event.resources.networkId,jdbcType=VARCHAR},
-          os_subnet_id = #{event.resources.subnetId,jdbcType=VARCHAR},
-          phase = 'READY',
-          failure_message = NULL,
-          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
-          resource_version = #{version,jdbcType=BIGINT}
-        WHERE user_id = #{userId,jdbcType=VARCHAR}
-          AND region_id = #{event.regionId,jdbcType=VARCHAR}
-          AND resource_version &lt; #{version,jdbcType=BIGINT}
-    </update>
-
-    <update id="markRouterReady">
-        UPDATE user_region_router SET
-          os_local_network_id = #{event.resources.localNetworkId,jdbcType=VARCHAR},
-          os_network_id = #{event.resources.networkId,jdbcType=VARCHAR},
-          os_subnet_id = #{event.resources.subnetId,jdbcType=VARCHAR},
-          os_router_id = #{event.resources.routerId,jdbcType=VARCHAR},
-          os_router_port_id = #{event.resources.routerPortId,jdbcType=VARCHAR},
-          phase = 'READY',
-          failure_message = NULL,
-          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
-          resource_version = #{version,jdbcType=BIGINT}
-        WHERE user_id = #{userId,jdbcType=VARCHAR}
-          AND region_id = #{event.regionId,jdbcType=VARCHAR}
-          AND resource_version &lt; #{version,jdbcType=BIGINT}
-    </update>
-
-    <update id="markNetworkFailed">
-        UPDATE user_region_network SET
-          phase = 'FAILED',
-          failure_message = #{event.failure,jdbcType=LONGVARCHAR},
-          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
-          resource_version = #{version,jdbcType=BIGINT}
-        WHERE user_id = #{userId,jdbcType=VARCHAR}
-          AND region_id = #{event.regionId,jdbcType=VARCHAR}
-          AND resource_version &lt; #{version,jdbcType=BIGINT}
-    </update>
-
-    <update id="markRouterFailed">
-        UPDATE user_region_router SET
-          phase = 'FAILED',
-          failure_message = #{event.failure,jdbcType=LONGVARCHAR},
-          updated_at = #{updatedAt,jdbcType=TIMESTAMP},
-          resource_version = #{version,jdbcType=BIGINT}
-        WHERE user_id = #{userId,jdbcType=VARCHAR}
-          AND region_id = #{event.regionId,jdbcType=VARCHAR}
-          AND resource_version &lt; #{version,jdbcType=BIGINT}
-    </update>
 </mapper>
