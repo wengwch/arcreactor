@@ -1,7 +1,5 @@
 package cn.veryai.arcreactor.actor.user.model;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import java.io.Serializable;
 
 /** Persisted resources and progress of one user's regional network workflow. */
@@ -52,29 +50,5 @@ public record UserNetworkState(NetworkSpec spec, String projectId, String localN
     return new UserNetworkState(spec, projectId,
         local, network, subnet, router, port,
         port == null ? Phase.CREATING : Phase.READY, 0, generation + 1, null);
-  }
-
-  /** Read journal events and snapshots written with per-resource phases and a reconciliation flag. */
-  @JsonCreator
-  public static UserNetworkState restore(
-      @JsonProperty("spec") NetworkSpec spec,
-      @JsonProperty("projectId") String projectId,
-      @JsonProperty("localNetworkId") String localNetworkId,
-      @JsonProperty("networkId") String networkId,
-      @JsonProperty("subnetId") String subnetId,
-      @JsonProperty("routerId") String routerId,
-      @JsonProperty("routerPortId") String routerPortId,
-      @JsonProperty("phase") String phase,
-      @JsonProperty("reconciling") boolean legacyReconciling,
-      @JsonProperty("attempts") int attempts,
-      @JsonProperty("generation") long generation,
-      @JsonProperty("failureMessage") String failureMessage) {
-    Phase restored = switch (phase) {
-      case "RESOLVING_LOCAL_NETWORK", "CREATING_NETWORK", "CREATING_SUBNET",
-          "CREATING_ROUTER", "ATTACHING_INTERFACE" -> legacyReconciling ? Phase.RECONCILING : Phase.CREATING;
-      default -> Phase.valueOf(phase);
-    };
-    return new UserNetworkState(spec, projectId, localNetworkId, networkId, subnetId, routerId,
-        routerPortId, restored, attempts, generation, failureMessage);
   }
 }

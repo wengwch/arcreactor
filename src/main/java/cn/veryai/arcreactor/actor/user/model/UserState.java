@@ -3,31 +3,15 @@ package cn.veryai.arcreactor.actor.user.model;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 
 /** Projects are indexed by OpenStack clusterId; shares and networks are indexed by regionId. */
 public record UserState(Map<String, UserShareState> shares,
     Map<String, UserProjectState> projects,
     Map<String, UserNetworkState> networks) implements Serializable {
   public UserState {
-    // Reindex snapshots written when shares were keyed by logical shareId.
-    Map<String, UserShareState> sharesByRegion = new HashMap<>();
-    for (UserShareState share : shares.values()) {
-      UserShareState existing = sharesByRegion.putIfAbsent(share.regionId(), share);
-      if (existing != null && !existing.equals(share)) {
-        throw new IllegalStateException("Multiple shares exist in region " + share.regionId());
-      }
-    }
-    shares = Map.copyOf(sharesByRegion);
-    // Snapshots written before project support have no projects field.
-    projects = Map.copyOf(Objects.requireNonNullElse(projects, Map.of()));
-    // Snapshots written before network support have no networks field.
-    networks = Map.copyOf(Objects.requireNonNullElse(networks, Map.of()));
-  }
-
-  public UserState(Map<String, UserShareState> shares) { this(shares, Map.of(), Map.of()); }
-  public UserState(Map<String, UserShareState> shares, Map<String, UserProjectState> projects) {
-    this(shares, projects, Map.of());
+    shares = Map.copyOf(shares);
+    projects = Map.copyOf(projects);
+    networks = Map.copyOf(networks);
   }
 
   public UserState updated(UserShareState share) {

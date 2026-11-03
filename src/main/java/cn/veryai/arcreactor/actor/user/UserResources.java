@@ -28,7 +28,7 @@ import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
 import org.springframework.stereotype.Service;
 
 /**
- * Submits project, network and share requests to UserActor; query until READY before using the resources.
+ * Waits for project creation results; query networks and shares until READY before using them.
  */
 @Slf4j
 @Service
@@ -36,6 +36,7 @@ public final class UserResources {
   private final ActorSystem<?> system;
   private final ClusterSharding sharding;
   private final Duration askTimeout;
+  private final Duration projectCreateTimeout;
 
   public UserResources(ActorSystem<?> system, OpenStackClient client) {
     this.system = system;
@@ -47,11 +48,9 @@ public final class UserResources {
             config.getDuration("share.poll-interval"),
             config.getInt("share.max-poll-attempts"),
             config.getDuration("share.operation-timeout"));
-    UserProjectSettings projectSettings =
-        new UserProjectSettings(
-            config.getDuration("project.retry-delay"),
-            config.getDuration("project.operation-timeout"),
-            config.getInt("project.max-attempts"));
+    UserProjectSettings projectSettings = new UserProjectSettings(config.getDuration("project.operation-timeout"));
+    // Allow one operation plus persistence and reply overhead.
+    this.projectCreateTimeout = projectSettings.operationTimeout().plus(askTimeout);
     UserNetworkSettings networkSettings =
         new UserNetworkSettings(
             config.getDuration("network.retry-delay"),
@@ -80,11 +79,12 @@ public final class UserResources {
         system.scheduler());
   }
 
+  /** Waits for the persisted READY/FAILED result; conflicting specifications are rejected immediately. */
   public CompletionStage<ProjectReply> createProject(String userId, String clusterId, String name) {
     return AskPattern.<UserCommand, ProjectReply>ask(
         entityRef(userId),
         replyTo -> new CreateProject(clusterId, name, replyTo),
-        askTimeout,
+        projectCreateTimeout,
         system.scheduler());
   }
 

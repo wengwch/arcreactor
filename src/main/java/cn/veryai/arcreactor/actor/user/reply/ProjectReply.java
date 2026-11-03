@@ -12,7 +12,7 @@ public record ProjectReply(Status status, String userId, String clusterId, Strin
     Status status = switch (project.phase()) {
       case READY -> Status.READY;
       case FAILED -> Status.FAILED;
-      default -> Status.IN_PROGRESS;
+      case CREATING -> Status.IN_PROGRESS;
     };
     return new ProjectReply(status, userId, project.clusterId(), project.projectId(), project.failureMessage());
   }

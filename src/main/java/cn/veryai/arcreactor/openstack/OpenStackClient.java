@@ -244,39 +244,16 @@ public class OpenStackClient {
     }, PROJECT_EXECUTOR);
   }
 
-  /**
-   * Returns a project only after its administrator role is granted. During reconciliation,
-   * allowCreate is false: look up the managed project and retry the idempotent role grant,
-   * returning null if the project is not found instead of submitting another creation request.
-   */
+  /** Creates the project and grants its administrator role once, completing after both succeed. */
   public CompletionStage<Project> createProjectWithAdminRole(String clusterId, String name,
-      String operationId, boolean allowCreate) {
+      String operationId) {
     requireServerText(operationId, "operationId");
-    CompletionStage<Project> operation = allowCreate
-        ? createProject(clusterId, name, operationId)
-        : findProjectByOperationId(clusterId, name, operationId);
-    return operation.thenCompose(project -> {
-      if (project == null && !allowCreate) return CompletableFuture.completedFuture(null);
+    return createProject(clusterId, name, operationId).thenCompose(project -> {
       if (project == null || project.getId() == null || project.getId().isBlank()) {
         throw new IllegalStateException("Keystone returned no project ID");
       }
       return grantProjectAdminRole(clusterId, project.getId()).thenApply(ignored -> project);
     });
-  }
-
-  public CompletionStage<Project> findProjectByOperationId(String clusterId, String name, String operationId) {
-    return CompletableFuture.supplyAsync(() -> {
-      requireServerText(operationId, "operationId");
-      OpenstackClusterEntity cluster = clusterRepo.findById(clusterId);
-      OSClient.OSClientV3 osClient = getOsClusterAdminClient(cluster, cluster.getAdminDefaultProjectId());
-      Project project = osClient.identity().projects().getByName(name, cluster.getAdminDefaultDomainId());
-      if (project == null) return null;
-      if (!name.equals(project.getName()) || !cluster.getAdminDefaultDomainId().equals(project.getDomainId())
-          || !projectOperationMarker(operationId).equals(project.getDescription())) {
-        throw new OpenStackOperationException("Project name belongs to another creation operation", null);
-      }
-      return project;
-    }, PROJECT_EXECUTOR);
   }
 
   private static String projectOperationMarker(String operationId) {

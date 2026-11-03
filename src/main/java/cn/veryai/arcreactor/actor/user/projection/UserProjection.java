@@ -20,7 +20,6 @@ import org.apache.pekko.projection.javadsl.SourceProvider;
 import org.apache.pekko.projection.jdbc.javadsl.JdbcProjection;
 
 public final class UserProjection {
-  // Use a new offset namespace to backfill resource events ignored by user-region-project.
   public static final String PROJECTION_NAME = "user-resources";
 
   private UserProjection() {}

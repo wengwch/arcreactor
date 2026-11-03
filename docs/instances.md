@@ -85,7 +85,14 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
 UserActor 调用 `createProjectWithAdminRole()` 依次创建项目、授予管理员角色，全部成功后才标记 `READY`。
-项目操作超时或 Actor 恢复时，按操作标记查找已有项目并补齐授权，不重复提交创建请求。
+`CreateProject` 先持久化创建意图，再异步调用 OpenStack；结果通过 `ProjectReady` 或
+`ProjectFailed` 命令回到 Actor，最终状态持久化后向所有等待的调用方 `tell` 回复。
+创建、就绪、失败分别持久化 `ProjectCreationRequested`、`ProjectBecameReady`、
+`ProjectCreationFailed` 事件，由事件处理器更新项目状态。
+同规格的并发创建请求共用一次创建流程；`createProject()` 等待 `READY` 或 `FAILED`，
+`getProject()` 可查询中间状态。项目创建只执行一次，调用失败或超时即记录 `FAILED`；
+Actor 重启后，未完成的项目也记录 `FAILED`。超时和重启中断时，失败详情会说明远端结果尚未确认。
+创建请求的等待时限为 `project.operation-timeout + ask-timeout`，用于单次操作及持久化、回复。
 项目投影写入 `user_cluster_project`，主键为 `(user_id, cluster_id)`，建表定义见 `sql/read-model.sql`。
 Share、用户网络和路由的投影见下方“用户资源读模型”。
 接口失败或单个实例失败不会删除这些共享资源。
@@ -150,7 +157,7 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 
 | 表 | 事件 | 保存内容 |
 | --- | --- | --- |
-| `user_cluster_project` | READY 的 `ProjectUpdated` | 用户与集群项目的对应关系 |
+| `user_cluster_project` | `ProjectBecameReady` | 用户与集群项目的对应关系 |
 | `user_region_share` | 全部 `ShareUpdated` | Share 规格、Manila ID、导出路径、授权规则 ID、阶段和失败原因 |
 | `user_region_network` | 全部 `NetworkUpdated` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID |
 | `user_region_router` | 全部 `NetworkUpdated` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的阶段 |
@@ -167,11 +174,8 @@ ID 为空；router 表中的 `phase` 表示整个用户网络流程，不表示 
 创建和更新时间。`share_id` 是用户范围内的逻辑 Share ID，`os_share_id` 才是 Manila ID，
 `size_gib` 的单位为 GiB。投影不保存 Share 的 `accessKey`，访问凭据仍由用户 Actor 管理。
 
-新库执行 `sql/read-model.sql`；已有库先执行 `sql/migrations/add-user-resource-projections.sql`，
-再部署应用。投影名称由 `user-region-project` 改为 `user-resources`，首次启动会从保留的
-User 事件回放，以补齐旧版投影已经跳过的 Share 和网络事件。原项目记录及旧偏移量保留，
-回放只更新读模型，不重新调用 OpenStack 创建资源。历史事件已被删除的资源无法仅通过此次
-回放补齐。查询结果在回放追上日志后完整可见。
+执行 `sql/read-model.sql` 初始化读模型表。`user-resources` 投影消费 User 事件更新读模型，
+查询结果在投影追上事件日志后完整可见。
 
 ## 实例读模型
 

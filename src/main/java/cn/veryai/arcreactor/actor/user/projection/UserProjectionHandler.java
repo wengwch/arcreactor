@@ -2,10 +2,9 @@ package cn.veryai.arcreactor.actor.user.projection;
 
 import cn.veryai.arcreactor.actor.user.UserActor;
 import cn.veryai.arcreactor.actor.user.event.NetworkUpdated;
-import cn.veryai.arcreactor.actor.user.event.ProjectUpdated;
+import cn.veryai.arcreactor.actor.user.event.ProjectBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ShareUpdated;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
-import cn.veryai.arcreactor.actor.user.model.UserProjectState;
 import cn.veryai.arcreactor.actor.user.projection.mybatis.UserProjectionMapper;
 import cn.veryai.arcreactor.entity.UserClusterProjectEntity;
 import java.sql.Timestamp;
@@ -25,17 +24,15 @@ public final class UserProjectionHandler
     long version = envelope.sequenceNr();
     Timestamp timestamp = Timestamp.from(Instant.ofEpochMilli(envelope.timestamp()));
 
-    if (event instanceof ProjectUpdated updated
-        && updated.project().phase() == UserProjectState.Phase.READY) {
-      UserProjectState project = updated.project();
-      if (project.clusterId() == null || project.clusterId().isBlank()
-          || project.projectId() == null || project.projectId().isBlank()) {
+    if (event instanceof ProjectBecameReady ready) {
+      if (ready.clusterId() == null || ready.clusterId().isBlank()
+          || ready.projectId() == null || ready.projectId().isBlank()) {
         throw new IllegalArgumentException("ready project must have cluster and project IDs");
       }
       UserClusterProjectEntity entity = new UserClusterProjectEntity();
       entity.setUserId(userId);
-      entity.setClusterId(project.clusterId());
-      entity.setProjectId(project.projectId());
+      entity.setClusterId(ready.clusterId());
+      entity.setProjectId(ready.projectId());
       mapper.upsertProject(entity);
     } else if (event instanceof ShareUpdated updated) {
       mapper.upsertShare(userId, updated.share(), version, timestamp);
