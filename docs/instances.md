@@ -44,6 +44,7 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 | `share-size` | `INSTANCE_SHARE_SIZE` | 100 GB |
 | `dependency-preparation-timeout` | `INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT` | 10 分钟，项目、Share、用户网络共用 |
 | `dependency-poll-interval` | `INSTANCE_DEPENDENCY_POLL_INTERVAL` | 2 秒，查询 UserActor 的资源状态 |
+| `forwarding-ports` | `INSTANCE_FORWARDING_PORTS` | `22,8888`，每个内部端口独立分配公网端口 |
 | `network-cidr` | `INSTANCE_NETWORK_CIDR` | `10.0.0.0/16` |
 | `network-dns` | `INSTANCE_NETWORK_DNS` | 空，使用网络服务默认值 |
 | `network-gateway` | `INSTANCE_NETWORK_GATEWAY` | 空，由 Neutron 分配 |
@@ -57,7 +58,14 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 
 每个用户在同一区域内复用同一个共享存储和私有网络。区域应预先配置好工作流所需的
 LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路由应匹配实际环境。
-当前接口提交的流程不包含可选的浮动 IP 端口转发。
+当前区域还需通过 `/api/v1/floating-ips` 创建或登记至少一个用于转发的浮动 IP，示例见
+`http/floating-ip-api.http`。创建实例时按区域读取已登记地址，按名称、业务 ID 排序，
+将其 OpenStack ID 作为候选列表随创建事件持久化；不会在 HTTP 请求期间调用 OpenStack 创建转发。
+没有候选地址时返回业务错误 `11718`，不提交实例工作流。
+新建或登记浮动 IP 时发送 `EnableFloatingIp`，持久化 `FloatingIpEnabled` 保存初始端口位图后返回。
+重复启用会校验身份和位图一致性；恢复时只携带身份的启用消息不会覆盖已有端口预留。
+内部端口默认是 SSH `22` 和 JupyterLab `8888`；配置必须是非空、无重复的 `1–65535` 端口列表。
+安全组使用新建用户项目的 default 安全组，转发过程中确认该安全组绑定在目标父端口上并放行内部端口。
 
 实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先创建
 QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
@@ -158,11 +166,25 @@ Share、用户网络和路由的投影见下方“用户资源读模型”。
 InstanceActor 包含以下主要阶段：
 
 ```text
-PREPARING_DEPENDENCIES → PREPARING_NETWORK → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
-    依赖准备失败 → FAILED                   后续阶段失败 → COMPENSATING → FAILED
+PREPARING_DEPENDENCIES → PREPARING_NETWORK → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
+    依赖准备失败 → FAILED                              后续阶段失败 → COMPENSATING → FAILED
 ```
 
-若指定浮动 IP 转发，则在网络就绪后、调度前增加 `PREPARING_FORWARDING`。
+HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 22、8888 两个内部端口的映射。
+每个内部端口使用独立 claim ID（包含实例 ID、请求 ID、内部端口），分配一个 `10000–40000`
+范围内的公网端口，同时创建 TCP/UDP 转发和相应安全组规则，目标为实例父端口的 IPv4 地址。
+每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
+两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
+每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后才进入调度。
+整个转发阶段共用 `cloud.instance.forwarding-preparation-timeout`（默认 5 分钟）。
+重启后沿用已持久化的候选、内部端口、已完成映射和截止时间，查询当前未完成的 claim；
+只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
+
+Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_retries=0`，
+使监听端口与转发目标保持一致；端口占用时不会自动改用其他端口。
+参数定义见 [Jupyter Server 配置文档](https://jupyter-server.readthedocs.io/en/stable/other/full-config.html#ServerApp.port)。
+`forwarding-ports` 只配置网络映射，镜像中的 SSH/JupyterLab 服务仍须监听对应内部端口。
+
 `prepareInstanceNetwork()` 在一个操作内完成父端口和 QoS、子端口和 QoS、Trunk；
 Actor 只记录创建意图和整套网络就绪结果，不再持久化每个网络子步骤。
 Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询不产生事件；
@@ -185,10 +207,10 @@ Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清
 ## 返回值
 
 Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、Share、用户网络准备以及
-实例网络和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
+实例网络、端口转发和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
 `INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 30 秒，只需覆盖 Actor 受理等待时间
 （`cloud.instance.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
-受理后的依赖准备失败或超时通过 `InstanceLifecycle.get(instanceId)` 和 `instance_view` 的
+受理后的依赖准备失败或超时通过 `GET /api/v1/instances/{instanceId}`、`InstanceLifecycle.get(instanceId)` 和 `instance_view` 的
 `phase`、`failureCode` / `failure_code`、`failureMessage` / `failure_message` 查询，已创建的用户级资源继续保留。
 响应沿用全局 `RespWrapper`，`result` 包含：
 
@@ -207,6 +229,33 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
 
 密码和 token 使用 `SecureRandom` 独立生成，返回时并不表示实例已处于 ACTIVE 状态。
 参数校验和业务错误通过现有国际化异常处理器返回；创建请求确认超时表示受理结果未确定。
+
+## 查询端口转发
+
+创建后轮询 `GET /api/v1/instances/{instanceId}`。接口查询 Actor 的当前状态，返回创建阶段、
+失败信息及 `forwardings` 列表，不包含密码、Jupyter token 或 Share 访问凭据。
+不存在的实例按全局响应约定返回业务 `code = 404`。
+以下仅展示相关字段，地址和端口为示例：
+
+```json
+{
+  "code": 200,
+  "result": {
+    "instanceId": "实例 UUID",
+    "phase": "ACTIVE",
+    "forwardings": [
+      {"internalPort": 22, "floatingIp": "203.0.113.10", "externalPort": 10000},
+      {"internalPort": 8888, "floatingIp": "203.0.113.10", "externalPort": 10001}
+    ]
+  }
+}
+```
+
+实际每条映射还包含 `claimId`、`floatingIpId`、`tcpForwardingId` 和 `udpForwardingId`。
+SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 username>@203.0.113.10`。
+JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
+创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动，`ACTIVE` 也不代表
+cloud-init 和实例内服务已完成启动，连接应在对应服务就绪后进行。
 
 ## 用户资源读模型
 
@@ -246,15 +295,17 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 ## 实例读模型
 
-`InstanceProjection` 将实例事件写入 `instance_view`。新库执行 `sql/read-model.sql`；
-已使用原表结构的库，在部署新版应用前执行一次 `sql/migrations/expand-instance-view.sql`。
-脚本保留原有记录和投影偏移量，不自动回填历史事件中的新增字段。
-已有实例若需要补齐这些信息，应通过实例投影的事件回放重建读模型。
+`InstanceProjection` 将实例状态写入 `instance_view`，每个内部端口的已确认映射写入
+`instance_port_forwarding`，建表定义均位于 `sql/read-model.sql`。
+使用端口转发前需创建新表；本次状态和事件结构调整不提供历史数据兼容转换。
 
 创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和
 `PREPARING_DEPENDENCIES` 状态，项目及父子网络/子网 ID 暂为空。
 `DependenciesPrepared` 补齐项目 ID、实际复用的逻辑 Share ID、父子网络和子网 ID；
-网络和端口转发就绪事件分别补齐端口、IP、Trunk 和浮动 IP 转发记录。
+网络就绪事件补齐端口、IP 和 Trunk；每条 `ForwardingPrepared` 按
+`(instance_id, internal_port)` upsert `instance_port_forwarding`，22 和 8888 不会相互覆盖。
+映射保存 claim ID、浮动 IP ID 和地址、内部/公网端口、TCP/UDP 转发 ID 及日志版本。
+映射 upsert、实例阶段更新和投影偏移量在同一个 JDBC 事务内提交。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。
 `memory_gb` 和 `disk_gb` 单位为 GB，`external_port` 是浮动 IP 的外部转发端口。
@@ -264,5 +315,6 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 每次状态更新以日志序号 `workflow_version` 判断新旧，忽略相同或更早的事件，
 避免重放时覆盖较新的状态和资源信息。进入 `ACTIVE` 时清除失败信息。
-新增字段允许为空，以兼容迁移前的记录；只有创建事件和相应资源就绪事件投影后才有值。
+未就绪资源的字段为空，只有创建事件和相应资源就绪事件投影后才有值。
+转发表记录最后确认成功的映射；后续补偿后应结合实例阶段判断可用性，不能仅凭表中有记录就认为实例可连接。
 读模型与事件投影进度一致，HTTP `202` 返回时记录及最终状态可能尚未可见。

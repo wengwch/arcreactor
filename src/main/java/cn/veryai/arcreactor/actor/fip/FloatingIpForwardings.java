@@ -40,17 +40,17 @@ public final class FloatingIpForwardings {
         config.getDuration("operation-timeout"), config.getInt("max-attempts"),
         creationProperties.isCleanupOnFailure());
     sharding.init(Entity.of(FloatingIpActor.TYPE_KEY,
-        context -> FloatingIpActor.awaitingIdentity(context.getEntityId(), client, settings)));
+        context -> FloatingIpActor.awaitingEnable(context.getEntityId(), client, settings)));
   }
 
-  /** Completes after the actor has persisted its initial port reservations. */
-  public CompletionStage<Boolean> initialize(FloatingIpIdentity identity, byte[] portMask) {
+  /** Enables the actor and completes after its initial port reservations are persisted. */
+  public CompletionStage<Boolean> enable(FloatingIpIdentity identity, byte[] portMask) {
     Objects.requireNonNull(identity, "identity");
     Objects.requireNonNull(portMask, "portMask");
     String key = identity.entityId();
     EntityRef<FloatingIpCommand> ref = sharding.entityRefFor(FloatingIpActor.TYPE_KEY, key);
     return AskPattern.<FloatingIpCommand, Boolean>ask(ref,
-        replyTo -> new InitializeFloatingIp(identity, portMask, replyTo), askTimeout, system.scheduler())
+        replyTo -> new EnableFloatingIp(identity, portMask, replyTo), askTimeout, system.scheduler())
         .thenApply(accepted -> {
           if (Boolean.TRUE.equals(accepted)) identities.put(key, identity);
           return accepted;
@@ -115,7 +115,7 @@ public final class FloatingIpForwardings {
     return identity.thenApply(resolved -> {
       identities.put(key, resolved);
       EntityRef<FloatingIpCommand> ref = sharding.entityRefFor(FloatingIpActor.TYPE_KEY, key);
-      ref.tell(new InitializeFloatingIp(resolved));
+      ref.tell(new EnableFloatingIp(resolved));
       return ref;
     });
   }

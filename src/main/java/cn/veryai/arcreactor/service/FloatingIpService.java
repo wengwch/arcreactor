@@ -85,11 +85,11 @@ public class FloatingIpService {
                 entity.setFloatingIp(floatingIp.getFloatingIpAddress());
             }
             floatingIpRepo.insert(entity);
-            Boolean initialized = floatingIpForwardings.initialize(
+            Boolean enabled = floatingIpForwardings.enable(
                     new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
                             entity.getFloatingIp(), entity.getOsProjectId()), entity.getPortMask())
                     .toCompletableFuture().get();
-            if (!Boolean.TRUE.equals(initialized)) {
+            if (!Boolean.TRUE.equals(enabled)) {
                 throw new IllegalStateException("Floating IP actor identity or initial port mask conflicts");
             }
             return entity;
@@ -97,7 +97,7 @@ public class FloatingIpService {
             throw new BaseException(ErrorCode.FLOATING_IP_ALREADY_EXISTS, exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            log.error("floating IP actor initialization interrupted", exception);
+            log.error("floating IP actor enablement interrupted", exception);
             throw new BaseException(ErrorCode.FLOATING_IP_CREATE_FAILED, exception);
         } catch (Exception exception) {
             log.error("create floating IP error", exception);

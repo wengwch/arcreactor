@@ -383,14 +383,24 @@ public final class InstanceWorkflowActor
           yield beginCompensation("FORWARDING_RESULT_INVALID", "Incomplete or mismatched port forwarding result");
         }
         Instant now = clock.instant();
-        yield Effect().persist(List.of(new ForwardingPrepared(instanceId, PreparedForwarding.from(claim), now),
-                new SchedulingStarted(instanceId, state.requestId(), 1, now)))
-            .thenRun(next -> { cancelForwardingTimers(); startScheduling(next); });
+        List<InstanceWorkflowEvent> events = new ArrayList<>();
+        events.add(new ForwardingPrepared(instanceId, PreparedForwarding.from(claim), now));
+        boolean complete = state.preparedForwardings().size() + 1 == state.spec().forwarding().internalPorts().size();
+        if (complete) events.add(new SchedulingStarted(instanceId, state.requestId(), 1, now));
+        yield Effect().persist(events).thenRun(next -> {
+          if (complete) {
+            cancelForwardingTimers();
+            startScheduling(next);
+          } else {
+            startForwardingPreparation(next);
+          }
+        });
       }
       case FAILED, REJECTED, DELETED -> {
         int nextCandidate = state.forwardingCandidateIndex() + 1;
         if (nextCandidate >= state.spec().forwarding().floatingIpIds().size()) {
-          yield beginCompensation("FORWARDING_PREPARATION_FAILED", "All floating IP candidates failed: " + reply.detail());
+          yield beginCompensation("FORWARDING_PREPARATION_FAILED",
+              "All floating IP candidates failed for internal port " + state.currentForwardingPort() + ": " + reply.detail());
         }
         yield Effect().persist(new ForwardingCandidateSelected(instanceId, nextCandidate))
             .thenRun(this::startForwardingPreparation);
@@ -436,13 +446,13 @@ public final class InstanceWorkflowActor
     PreparedNetwork network = state.networkPreparation().resources();
     var required = state.spec().forwarding();
     return new ForwardingSpec(instanceId, state.spec().share().userId(), state.spec().region(),
-        state.projectId(), network.parentPortId(), network.parentFixedIp(), required.internalPort(), required.securityGroupId());
+        state.projectId(), network.parentPortId(), network.parentFixedIp(), state.currentForwardingPort(), required.securityGroupId());
   }
   private static String forwardingFloatingIpId(InstanceWorkflowState state) {
     return state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
   }
   private static String forwardingClaimId(InstanceWorkflowState state) {
-    return "fip:" + state.instanceId() + ":" + state.requestId();
+    return "fip:" + state.instanceId() + ":" + state.requestId() + ":" + state.currentForwardingPort();
   }
   private static boolean matchesForwarding(InstanceWorkflowState state, long generation) {
     return state.phase() == InstancePhase.PREPARING_FORWARDING && state.pollingGeneration() == generation;

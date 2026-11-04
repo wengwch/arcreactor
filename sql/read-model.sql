@@ -156,12 +156,6 @@ CREATE TABLE IF NOT EXISTS instance_view (
   sub_port_id VARCHAR(255),
   sub_fixed_ip VARCHAR(45),
   trunk_id VARCHAR(255),
-  forwarding_claim_id VARCHAR(255),
-  floating_ip_id VARCHAR(255),
-  floating_ip VARCHAR(45),
-  external_port INT,
-  tcp_forwarding_id VARCHAR(255),
-  udp_forwarding_id VARCHAR(255),
   failure_code VARCHAR(128),
   failure_message TEXT,
   workflow_version BIGINT NOT NULL,
@@ -173,4 +167,21 @@ CREATE TABLE IF NOT EXISTS instance_view (
   INDEX idx_instance_user_region_created (user_id, region_id, created_at),
   INDEX idx_instance_region_phase_created (region_id, phase, created_at),
   INDEX idx_instance_request (request_id)
+) ENGINE=InnoDB;
+
+-- One confirmed mapping per internal service port; an instance may use multiple floating IPs.
+CREATE TABLE IF NOT EXISTS instance_port_forwarding (
+  instance_id VARCHAR(255) NOT NULL,
+  internal_port INT NOT NULL,
+  forwarding_claim_id VARCHAR(255) NOT NULL,
+  floating_ip_id VARCHAR(255) NOT NULL,
+  floating_ip VARCHAR(45) NOT NULL,
+  external_port INT NOT NULL,
+  tcp_forwarding_id VARCHAR(255) NOT NULL,
+  udp_forwarding_id VARCHAR(255) NOT NULL,
+  workflow_version BIGINT NOT NULL,
+  created_at TIMESTAMP(6) NOT NULL,
+  updated_at TIMESTAMP(6) NOT NULL,
+  PRIMARY KEY (instance_id, internal_port),
+  INDEX idx_instance_forwarding_floating_ip (floating_ip_id, external_port)
 ) ENGINE=InnoDB;

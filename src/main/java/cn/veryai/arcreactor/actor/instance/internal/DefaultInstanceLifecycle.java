@@ -58,8 +58,7 @@ public final class DefaultInstanceLifecycle implements InstanceLifecycle {
                 state.spec() == null || state.spec().share() == null ? null : state.spec().share().userId(),
                 state.shareId(),
                 state.preparedShare() == null ? null : state.preparedShare().osShareId(),
-                state.preparedForwarding() == null ? null : state.preparedForwarding().floatingIp(),
-                state.preparedForwarding() == null ? 0 : state.preparedForwarding().externalPort(),
+                state.preparedForwardings(),
                 state.networkPreparation() == null ? null : state.networkPreparation().resources(), state.projectId());
     }
 }

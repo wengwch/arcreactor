@@ -28,12 +28,6 @@ ALTER TABLE instance_view
   ADD COLUMN sub_port_id VARCHAR(255),
   ADD COLUMN sub_fixed_ip VARCHAR(45),
   ADD COLUMN trunk_id VARCHAR(255),
-  ADD COLUMN forwarding_claim_id VARCHAR(255),
-  ADD COLUMN floating_ip_id VARCHAR(255),
-  ADD COLUMN floating_ip VARCHAR(45),
-  ADD COLUMN external_port INT,
-  ADD COLUMN tcp_forwarding_id VARCHAR(255),
-  ADD COLUMN udp_forwarding_id VARCHAR(255),
   ADD INDEX idx_instance_user_region_created (user_id, region_id, created_at),
   ADD INDEX idx_instance_region_phase_created (region_id, phase, created_at),
   ADD INDEX idx_instance_request (request_id);

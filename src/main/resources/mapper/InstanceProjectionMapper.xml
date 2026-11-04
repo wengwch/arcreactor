@@ -120,19 +120,25 @@
         <include refid="newerWorkflow"/>
     </update>
 
-    <update id="updateForwarding">
-        UPDATE instance_view SET
-          phase = #{phase},
-          forwarding_claim_id = #{forwarding.claimId,jdbcType=VARCHAR},
-          floating_ip_id = #{forwarding.floatingIpId,jdbcType=VARCHAR},
-          floating_ip = #{forwarding.floatingIp,jdbcType=VARCHAR},
-          external_port = #{forwarding.externalPort,jdbcType=INTEGER},
-          tcp_forwarding_id = #{forwarding.tcpForwardingId,jdbcType=VARCHAR},
-          udp_forwarding_id = #{forwarding.udpForwardingId,jdbcType=VARCHAR},
-          updated_at = #{updatedAt},
-          workflow_version = #{version}
-        <include refid="newerWorkflow"/>
-    </update>
+    <insert id="upsertForwarding">
+        INSERT INTO instance_port_forwarding (
+          instance_id, internal_port, forwarding_claim_id, floating_ip_id, floating_ip,
+          external_port, tcp_forwarding_id, udp_forwarding_id, workflow_version, created_at, updated_at)
+        VALUES (
+          #{instanceId}, #{forwarding.internalPort}, #{forwarding.claimId}, #{forwarding.floatingIpId},
+          #{forwarding.floatingIp}, #{forwarding.externalPort}, #{forwarding.tcpForwardingId},
+          #{forwarding.udpForwardingId}, #{version}, #{updatedAt}, #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+          forwarding_claim_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(forwarding_claim_id), forwarding_claim_id),
+          floating_ip_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(floating_ip_id), floating_ip_id),
+          floating_ip = IF(workflow_version &lt; VALUES(workflow_version), VALUES(floating_ip), floating_ip),
+          external_port = IF(workflow_version &lt; VALUES(workflow_version), VALUES(external_port), external_port),
+          tcp_forwarding_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(tcp_forwarding_id), tcp_forwarding_id),
+          udp_forwarding_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(udp_forwarding_id), udp_forwarding_id),
+          created_at = LEAST(created_at, VALUES(created_at)),
+          updated_at = IF(workflow_version &lt; VALUES(workflow_version), VALUES(updated_at), updated_at),
+          workflow_version = GREATEST(workflow_version, VALUES(workflow_version))
+    </insert>
 
     <update id="updateNovaOperation">
         UPDATE instance_view SET

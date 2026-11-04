@@ -36,7 +36,7 @@ write_files:
       Type=simple
       User=ubuntu
       WorkingDirectory=/home/ubuntu
-      ExecStart=/home/ubuntu/work/.venv/bin/jupyter-lab --ip=0.0.0.0 --no-browser --IdentityProvider.token='${jupyter_token}' --ServerApp.root_dir=/home/ubuntu/work
+      ExecStart=/home/ubuntu/work/.venv/bin/jupyter-lab --ip=0.0.0.0 --ServerApp.port=8888 --ServerApp.port_retries=0 --no-browser --IdentityProvider.token='${jupyter_token}' --ServerApp.root_dir=/home/ubuntu/work
       Restart=always
       RestartSec=10
 

@@ -41,9 +41,6 @@ public record InstanceSpec(
         if (network.userNetwork() == null || !region.equals(network.userNetwork().regionId())) {
             throw new IllegalArgumentException("regional user network requirements are required");
         }
-        if (forwarding != null && forwarding.parentPortId() != null) {
-            throw new IllegalArgumentException("forwarding must use the ports created by the instance workflow");
-        }
     }
 
     private static void requireText(String value, String name) {

@@ -3,7 +3,8 @@
 # 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
 # Test-SH-01 所属集群的 adminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
 # portMask 使用 Base64 字符串，对应源记录的 BinData；省略时默认为空位图。
-# 新建和登记都会初始化对应的 FloatingIpActor，等待初始位图持久化确认后返回。
+# 新建和登记都会通过 EnableFloatingIp 启用对应 Actor，等待 FloatingIpEnabled 事件持久化初始位图后返回。
+# 实例创建会从同一区域的已登记地址中自动选择候选，为 22 和 8888 分别分配公网端口。
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
 @extNetId = {{csvPublicNetworkId}}

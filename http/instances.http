@@ -5,8 +5,11 @@
 # sql/init-data.sql 中的 demo 镜像和规格默认禁用、属于 demo-region，不能直接用于本请求。
 # 区域及其集群须配置有效，且区域已启用；需有同区域、同类型、资源充足的 ACTIVE 宿主机。
 # Test-SH-01 应已登记 LOCAL 网络，以及唯一的 SHARED 网络和对应 OpenStack 网络/子网。
+# 还需按 http/floating-ip-api.http 登记当前区域的浮动 IP；没有候选地址返回业务 code=11718。
+# 先创建 sql/read-model.sql 中的 instance_port_forwarding 投影表。
 # 服务端需配置 INSTANCE_SHARE_TYPE、MANILA_FS_NAME 及有效的 OpenStack 连接和管理员角色。
 # 存储、网络、SSH 用户等使用服务端 instance.creation 配置，无需增加请求字段。
+# 默认转发内部端口 22 和 8888；INSTANCE_FORWARDING_PORTS 可配置逗号分隔的端口列表。
 # 创建接口没有 initOpenstack 或 dry-run 参数，执行 POST 会实际提交资源创建。
 # 请求持久化受理后即返回，用户项目、共享存储和网络由实例工作流异步准备。
 # INSTANCE_CREATE_REQUEST_TIMEOUT 默认 30 秒，仅覆盖受理等待；超时后先核实结果再重试。
@@ -17,6 +20,7 @@
 @imageId = demo-image-debian
 @hypervisorType = demo-hv-t4
 @instanceName = test-instance-002
+@instanceId = {{createTestInstance.response.body.$.result.instanceId}}
 
 ### 1. 查询区域内的规格，从 result 中选择 enabled=true 的记录
 # 记录 id 和 hypervisorType，分别填写 flavorId 和 hypervisorType。
@@ -37,9 +41,9 @@ Accept: application/json
 # @name createTestInstance
 # 成功返回 HTTP 202 Accepted，响应包装为 {"code":200,"result":{...}}。
 # result 包含 instanceId、requestId、username、password、jupyterToken。
-# HTTP 202 表示工作流已持久化受理，依赖准备、实例网络和 Nova 创建异步继续，不代表实例已 ACTIVE。
+# HTTP 202 表示工作流已持久化受理，依赖准备、实例网络、端口转发和 Nova 创建异步继续，不代表实例已 ACTIVE。
 # 相同参数重复提交会生成新的 instanceId/requestId，不具备 HTTP 请求幂等性。
-# 同一用户在同一区域复用用户级存储和网络；当前接口不配置浮动 IP 转发。
+# 同一用户在同一区域复用用户级存储和网络；22/8888 各分配一个公网端口，均建立 TCP/UDP 转发。
 POST {{baseUrl}}/api/v1/instances
 Content-Type: application/json
 Accept: application/json
@@ -53,3 +57,11 @@ Accept: application/json
   "regionId": "{{regionId}}",
   "userId": "{{userId}}"
 }
+
+### 5. 查询实例创建状态和公网端口映射
+# forwardings 按 internalPort 区分 22 和 8888，每项都有自己的 floatingIp/externalPort。
+# 创建中可能只出现一条映射；映射创建成功后还需要等待 Nova 和实例内服务启动。
+# SSH: ssh -p <22 对应的 externalPort> <创建响应中的 username>@<22 对应的 floatingIp>
+# Jupyter: http://<8888 对应的 floatingIp>:<8888 对应的 externalPort>/lab?token=<jupyterToken>
+GET {{baseUrl}}/api/v1/instances/{{instanceId}}
+Accept: application/json

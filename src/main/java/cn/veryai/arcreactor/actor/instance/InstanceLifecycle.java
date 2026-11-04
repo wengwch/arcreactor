@@ -4,9 +4,11 @@ import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
+import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import java.io.Serializable;
 import java.util.Map;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 
@@ -59,8 +61,7 @@ public interface InstanceLifecycle {
             String userId,
             String shareId,
             String osShareId,
-            String floatingIp,
-            int externalPort,
+            List<PreparedForwarding> forwardings,
             PreparedNetwork network,
             String projectId) implements Serializable {
     }

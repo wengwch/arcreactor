@@ -44,7 +44,7 @@ public record FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> c
     return initialPortMask == null ? null : initialPortMask.clone();
   }
 
-  public FloatingIpState initialized(byte[] portMask) {
+  public FloatingIpState enabled(byte[] portMask) {
     return new FloatingIpState(claims, cancelledClaims, cancelledInstances, usedPorts, portMask);
   }
 

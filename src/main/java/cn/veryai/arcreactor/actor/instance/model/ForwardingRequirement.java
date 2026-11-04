@@ -1,34 +1,22 @@
 package cn.veryai.arcreactor.actor.instance.model;
 
-import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
 import java.io.Serializable;
 import java.util.List;
 
-/** Floating IP IDs are tried in order; new workflows forward to their prepared parent port. */
-public record ForwardingRequirement(List<String> floatingIpIds, String parentPortId, String portId,
-    String fixedIp, int internalPort, String securityGroupId) implements Serializable {
+/** Each service tries the ordered floating IP candidates and targets the instance's prepared parent port. */
+public record ForwardingRequirement(List<String> floatingIpIds, List<Integer> internalPorts,
+    String securityGroupId) implements Serializable {
   public ForwardingRequirement {
     floatingIpIds = List.copyOf(floatingIpIds);
     if (floatingIpIds.isEmpty() || floatingIpIds.stream().anyMatch(String::isBlank)
         || floatingIpIds.stream().distinct().count() != floatingIpIds.size()) {
       throw new IllegalArgumentException("ordered, distinct floating IP IDs are required");
     }
-    boolean suppliedPorts = parentPortId != null || portId != null || fixedIp != null;
-    if (suppliedPorts && (parentPortId == null || parentPortId.isBlank() || portId == null || portId.isBlank()
-        || fixedIp == null || fixedIp.isBlank())) {
-      throw new IllegalArgumentException("supplied network ports and fixed IP must be complete");
-    }
-    if (internalPort < 1 || internalPort > 65535) {
-      throw new IllegalArgumentException("service port must be between 1 and 65535");
+    internalPorts = List.copyOf(internalPorts);
+    if (internalPorts.isEmpty() || internalPorts.stream().anyMatch(port -> port < 1 || port > 65535)
+        || internalPorts.stream().distinct().count() != internalPorts.size()) {
+      throw new IllegalArgumentException("ordered, distinct service ports between 1 and 65535 are required");
     }
     if (securityGroupId != null && securityGroupId.isBlank()) securityGroupId = null;
-  }
-  public ForwardingRequirement(List<String> floatingIpIds, int internalPort, String securityGroupId) {
-    this(floatingIpIds, null, null, null, internalPort, securityGroupId);
-  }
-
-  public ForwardingSpec toSpec(String instanceId, String userId, String region, String projectId) {
-    return new ForwardingSpec(instanceId, userId, region, projectId, parentPortId, fixedIp, internalPort,
-        securityGroupId);
   }
 }

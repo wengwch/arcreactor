@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.config;
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -17,6 +18,8 @@ public class InstanceCreationProperties {
     private boolean cleanupOnFailure = false;
     private Duration dependencyPreparationTimeout = Duration.ofMinutes(10);
     private Duration dependencyPollInterval = Duration.ofSeconds(2);
+    /** Each internal service receives its own external TCP/UDP port. */
+    private List<Integer> forwardingPorts = List.of(22, 8888);
     private String shareType;
     /** Shared storage capacity, in GB. */
     private int shareSize = 1;

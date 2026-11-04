@@ -47,9 +47,8 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
-    int updateForwarding(
+    int upsertForwarding(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
             @Param("forwarding") PreparedForwarding forwarding,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);

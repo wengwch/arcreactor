@@ -48,7 +48,8 @@ public final class InstanceProjectionHandler
         } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof ForwardingPrepared prepared) {
-            mapper.updateForwarding(instanceId, "PREPARING_FORWARDING", prepared.forwarding(), version, timestamp);
+            mapper.upsertForwarding(instanceId, prepared.forwarding(), version, timestamp);
+            mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
             mapper.updateHypervisor(instanceId, "SCHEDULING", selected.hypervisorId(),
                     selected.reservationId(), version, timestamp);

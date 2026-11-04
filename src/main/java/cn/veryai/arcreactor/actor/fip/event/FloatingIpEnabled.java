@@ -2,9 +2,9 @@ package cn.veryai.arcreactor.actor.fip.event;
 
 import java.util.Objects;
 
-/** Imported port reservations remain durable even before the first forwarding claim is created. */
-public record FloatingIpInitialized(byte[] portMask) implements FloatingIpEvent {
-  public FloatingIpInitialized {
+/** Enabling a floating IP persists its imported port reservations before forwarding claims are created. */
+public record FloatingIpEnabled(byte[] portMask) implements FloatingIpEvent {
+  public FloatingIpEnabled {
     portMask = Objects.requireNonNull(portMask, "portMask").clone();
   }
 

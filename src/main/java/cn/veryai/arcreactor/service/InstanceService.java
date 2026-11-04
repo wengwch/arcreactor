@@ -3,18 +3,21 @@ package cn.veryai.arcreactor.service;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.InstanceLifecycle;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
+import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.entity.FlavorEntity;
+import cn.veryai.arcreactor.entity.FloatingIpEntity;
 import cn.veryai.arcreactor.entity.HypervisorTypeEntity;
 import cn.veryai.arcreactor.entity.ImageEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.repo.FlavorRepo;
+import cn.veryai.arcreactor.repo.FloatingIpRepo;
 import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
 import cn.veryai.arcreactor.repo.ImageRepo;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
@@ -24,6 +27,7 @@ import cn.veryai.arcreactor.web.params.CreateInstanceParam;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -50,6 +54,7 @@ public class InstanceService {
     private final FlavorRepo flavorRepo;
     private final ImageRepo imageRepo;
     private final HypervisorTypeRepo hypervisorTypeRepo;
+    private final FloatingIpRepo floatingIpRepo;
     private final InstanceCreationProperties creationProperties;
     private final CloudInitRenderer cloudInitRenderer;
     private final InstanceLifecycle instanceLifecycle;
@@ -79,7 +84,14 @@ public class InstanceService {
                 image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getDisk(), flavor.getGpus(),
                 StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
                 new ShareRequirement(param.getUserId(), defaults.resourceId(), defaults.share()),
-                null, defaults.network(), defaults.cloudInit(), param.getHypervisorType()));
+                defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType()));
+    }
+
+    public CompletionStage<InstanceLifecycle.View> get(String instanceId) {
+        return instanceLifecycle.get(instanceId).thenApply(view -> {
+            if (view.requestId() == null) throw new BaseException(ErrorCode.RESOURCE_NOT_FOUND);
+            return view;
+        });
     }
 
     private CompletionStage<CreateInstanceResult> submit(InstanceLifecycle.CreateRequest request) {
@@ -127,11 +139,17 @@ public class InstanceService {
     private CreationDefaults creationDefaults(CreateInstanceParam param, RegionEntity region) {
         // A user's instances reuse the same regional share and network specification.
         String resourceId = param.getUserId();
+        List<String> floatingIpIds = floatingIpRepo.findByRegionId(region.getId()).stream()
+                .filter(ip -> StringUtils.isNoneBlank(ip.getOsFloatingIpId(), ip.getFloatingIp(), ip.getOsProjectId()))
+                .map(FloatingIpEntity::getOsFloatingIpId).distinct().toList();
+        if (floatingIpIds.isEmpty()) throw new BaseException(ErrorCode.INSTANCE_FLOATING_IP_UNAVAILABLE);
         ShareSpec share;
         NetworkRequirement network;
         CloudInitSpec cloudInit;
+        ForwardingRequirement forwarding;
         try {
             cloudInitRenderer.validateConfiguration();
+            forwarding = new ForwardingRequirement(floatingIpIds, creationProperties.getForwardingPorts(), null);
             share = new ShareSpec(region.getId(), "share-" + resourceId, "Managed user share",
                             creationProperties.getShareSize(), Share.Protocol.CEPHFS,
                             creationProperties.getShareType(), "user-" + resourceId);
@@ -145,10 +163,11 @@ public class InstanceService {
         } catch (IllegalArgumentException | NullPointerException | CloudInitRenderer.RenderingException exception) {
             throw new BaseException(ErrorCode.INSTANCE_CREATION_CONFIG_INVALID, exception);
         }
-        return new CreationDefaults(resourceId, share, network, cloudInit);
+        return new CreationDefaults(resourceId, share, network, cloudInit, forwarding);
     }
 
-    private record CreationDefaults(String resourceId, ShareSpec share, NetworkRequirement network, CloudInitSpec cloudInit) {}
+    private record CreationDefaults(String resourceId, ShareSpec share, NetworkRequirement network,
+            CloudInitSpec cloudInit, ForwardingRequirement forwarding) {}
 
     private static String secret(int byteCount) {
         byte[] value = new byte[byteCount];

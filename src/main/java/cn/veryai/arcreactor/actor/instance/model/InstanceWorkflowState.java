@@ -4,6 +4,8 @@ import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 public record InstanceWorkflowState(
         String instanceId,
@@ -23,16 +25,20 @@ public record InstanceWorkflowState(
         String failureMessage,
         long version,
         Instant forwardingPreparationDeadline,
-        PreparedForwarding preparedForwarding,
+        List<PreparedForwarding> preparedForwardings,
         NetworkPreparation networkPreparation,
         int forwardingCandidateIndex,
         PreparedDependencies dependencies,
         Instant dependencyPreparationDeadline) implements Serializable {
 
+    public InstanceWorkflowState {
+        preparedForwardings = List.copyOf(preparedForwardings);
+    }
+
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, null, 0, 0, null, null, 0, null, null, null, 0, null, null);
+                null, null, null, null, null, 0, 0, null, null, 0, null, List.of(), null, 0, null, null);
     }
 
     public String projectId() { return dependencies == null ? null : dependencies.projectId(); }
@@ -53,7 +59,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, preparedForwarding, networkPreparation, forwardingCandidateIndex, prepared,
+                forwardingPreparationDeadline, preparedForwardings, networkPreparation, forwardingCandidateIndex, prepared,
                 dependencyPreparationDeadline);
     }
 
@@ -61,23 +67,32 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_FORWARDING, spec,
                 hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration + 1, schedulingAttempts,
-                failureCode, failureMessage, version + 1, deadline, null, networkPreparation, 0, dependencies,
+                failureCode, failureMessage, version + 1, deadline, List.of(), networkPreparation, 0, dependencies,
                 dependencyPreparationDeadline);
     }
 
     public InstanceWorkflowState forwardingPrepared(PreparedForwarding forwarding) {
+        if (forwarding.internalPort() != currentForwardingPort()) {
+            throw new IllegalStateException("forwarding result does not match the current service port");
+        }
+        List<PreparedForwarding> next = new ArrayList<>(preparedForwardings);
+        next.add(forwarding);
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
-                pollingGeneration, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, forwarding, networkPreparation, forwardingCandidateIndex, dependencies,
+                pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
+                forwardingPreparationDeadline, next, networkPreparation, 0, dependencies,
                 dependencyPreparationDeadline);
+    }
+
+    public int currentForwardingPort() {
+        return spec.forwarding().internalPorts().get(preparedForwardings.size());
     }
 
     public InstanceWorkflowState forwardingCandidateSelected(int candidateIndex) {
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, preparedForwarding,
+                forwardingPreparationDeadline, preparedForwardings,
                 networkPreparation, candidateIndex, dependencies, dependencyPreparationDeadline);
     }
 
@@ -93,7 +108,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_NETWORK, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, preparedForwarding, preparation, forwardingCandidateIndex, dependencies,
+                forwardingPreparationDeadline, preparedForwardings, preparation, forwardingCandidateIndex, dependencies,
                 dependencyPreparationDeadline);
     }
 
@@ -102,7 +117,7 @@ public record InstanceWorkflowState(
                 hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, null, null, version + 1, forwardingPreparationDeadline,
-                preparedForwarding, networkPreparation, forwardingCandidateIndex, dependencies, deadline);
+                preparedForwardings, networkPreparation, forwardingCandidateIndex, dependencies, deadline);
     }
 
     public InstanceWorkflowState scheduling(int attempts) {
@@ -170,7 +185,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, nextRequestId, nextPhase, nextSpec,
                 nextHypervisorId, nextReservationId, nextOperationId, nextServerId, nextNovaStatus,
                 nextStartedAt, nextDeadline, nextGeneration, nextAttempts,
-                nextFailureCode, nextFailureMessage, version + 1, forwardingPreparationDeadline, preparedForwarding,
+                nextFailureCode, nextFailureMessage, version + 1, forwardingPreparationDeadline, preparedForwardings,
                 networkPreparation, forwardingCandidateIndex, dependencies, dependencyPreparationDeadline);
     }
 }

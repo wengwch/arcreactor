@@ -49,10 +49,10 @@ public final class FloatingIpActor
   public record StepCompleted(String claimId, long generation, StepResult result,
       boolean initialWrite, boolean definitive, String failure) implements FloatingIpCommand {}
 
-  public static Behavior<FloatingIpCommand> awaitingIdentity(String entityId, OpenStackClient client,
+  public static Behavior<FloatingIpCommand> awaitingEnable(String entityId, OpenStackClient client,
       FloatingIpSettings settings) {
     return Behaviors.withStash(1024, stash -> Behaviors.receive(FloatingIpCommand.class)
-        .onMessage(InitializeFloatingIp.class, command -> {
+        .onMessage(EnableFloatingIp.class, command -> {
           if (!entityId.equals(command.identity().entityId())) {
             throw new IllegalArgumentException("Floating IP identity does not match its shard key");
           }
@@ -82,7 +82,7 @@ public final class FloatingIpActor
 
   @Override public CommandHandler<FloatingIpCommand, FloatingIpEvent, FloatingIpState> commandHandler() {
     return newCommandHandlerBuilder().forAnyState()
-        .onCommand(InitializeFloatingIp.class, this::onInitialize)
+        .onCommand(EnableFloatingIp.class, this::onEnable)
         .onCommand(CreatePortForwarding.class, this::onCreate)
         .onCommand(GetPortForwarding.class, this::onGet)
         .onCommand(DeletePortForwarding.class, this::onDelete)
@@ -94,28 +94,28 @@ public final class FloatingIpActor
         .onCommand(StepCompleted.class, this::onStepCompleted).build();
   }
 
-  private Effect<FloatingIpEvent, FloatingIpState> onInitialize(
-      FloatingIpState state, InitializeFloatingIp command) {
+  private Effect<FloatingIpEvent, FloatingIpState> onEnable(
+      FloatingIpState state, EnableFloatingIp command) {
     if (!identity.equals(command.identity())) {
-      acknowledgeInitialization(command, false);
+      acknowledgeEnable(command, false);
       return Effect().none();
     }
     byte[] portMask = command.portMask();
     if (portMask == null) {
-      acknowledgeInitialization(command, true);
+      acknowledgeEnable(command, true);
       return Effect().none();
     }
     byte[] initialPortMask = state.initialPortMask();
     if (initialPortMask != null) {
-      acknowledgeInitialization(command,
+      acknowledgeEnable(command,
           BitSet.valueOf(initialPortMask).equals(BitSet.valueOf(portMask)));
       return Effect().none();
     }
-    return Effect().persist(new FloatingIpInitialized(portMask))
-        .thenRun(next -> acknowledgeInitialization(command, true));
+    return Effect().persist(new FloatingIpEnabled(portMask))
+        .thenRun(next -> acknowledgeEnable(command, true));
   }
 
-  private static void acknowledgeInitialization(InitializeFloatingIp command, boolean accepted) {
+  private static void acknowledgeEnable(EnableFloatingIp command, boolean accepted) {
     if (command.replyTo() != null) command.replyTo().tell(accepted);
   }
 
@@ -369,6 +369,11 @@ public final class FloatingIpActor
         phase == Phase.READY ? null : claim.failure());
   }
   private ForwardingClaim cleanup(ForwardingClaim claim, String detail) {
+    if (claim.phase() == Phase.ALLOCATING) {
+      // No port or forwarding was reserved yet, so the caller can safely try another floating IP.
+      return copy(claim, claim.deleteRequested() ? Phase.DELETED : Phase.FAILED,
+          ForwardingResources.empty(), claim.deleteRequested(), false, false, 0, detail);
+    }
     if (!settings.cleanupOnFailure() && !claim.deleteRequested()) {
       context.getLog().warn(
           "Forwarding failure cleanup disabled; resources retained: instanceId={} claimId={} failure={}",
@@ -411,7 +416,7 @@ public final class FloatingIpActor
 
   @Override public EventHandler<FloatingIpState, FloatingIpEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
-        .onEvent(FloatingIpInitialized.class, (state, event) -> state.initialized(event.portMask()))
+        .onEvent(FloatingIpEnabled.class, (state, event) -> state.enabled(event.portMask()))
         .onEvent(ForwardingUpdated.class, (state, event) -> state.updated(event.claim()))
         .onEvent(ForwardingCancelled.class, (state, event) -> state.cancelled(event.claimId(), event.instanceId())).build();
   }
