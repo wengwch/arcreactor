@@ -24,6 +24,8 @@ import cn.veryai.arcreactor.actor.instance.command.RetryCompensation;
 import cn.veryai.arcreactor.actor.instance.command.RetryConfirm;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingFailed;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
+import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
@@ -42,6 +44,8 @@ import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
+import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
@@ -94,6 +98,7 @@ public final class InstanceWorkflowActor
   private static final String FORWARDING_POLL_TIMER = "forwarding-status-poll";
   private static final String FORWARDING_DEADLINE_TIMER = "forwarding-preparation-deadline";
   private static final String NETWORK_TIMER = "network-preparation";
+  private static final String SECURITY_GROUP_TIMER = "security-group-preparation";
   private static final Executor CLOUD_INIT_EXECUTOR =
       task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
 
@@ -111,6 +116,8 @@ public final class InstanceWorkflowActor
   private String dependencyRequestToken;
   private String forwardingRequestToken;
   private String networkRequestToken;
+  private String securityGroupRequestToken;
+  private CompletionStage<String> securityGroupRequest;
   private String novaRequestToken;
 
   public static Behavior<WorkflowCommand> create(
@@ -181,6 +188,8 @@ public final class InstanceWorkflowActor
         .onCommand(DependenciesReady.class, this::onDependenciesReady)
         .onCommand(DependenciesFailed.class, this::onDependenciesFailed)
         .onCommand(GetInstanceState.class, this::onGetState)
+        .onCommand(SecurityGroupPreparationCompleted.class, this::onSecurityGroupPreparationCompleted)
+        .onCommand(SecurityGroupPreparationTimedOut.class, this::onSecurityGroupPreparationTimedOut)
         .onCommand(CheckNetwork.class, this::onCheckNetwork)
         .onCommand(NetworkPreparationCompleted.class, this::onNetworkPreparationCompleted)
         .onCommand(CheckProvisioning.class, this::onCheckProvisioning)
@@ -255,10 +264,10 @@ public final class InstanceWorkflowActor
     if (!matchesDependencies(state, command.requestToken())) return Effect().none();
     return Effect().persist(List.of(
             new DependenciesPrepared(instanceId, command.dependencies()),
-            new NetworkPreparationStarted(instanceId, clock.instant().plus(settings.provisioningTimeout()))))
+            new SecurityGroupPreparationStarted(instanceId, clock.instant().plus(settings.provisioningTimeout()))))
         .thenRun(next -> {
           dependencyRequestToken = null;
-          requestNetwork(next, true);
+          startSecurityGroupPreparation(next);
         });
   }
 
@@ -287,6 +296,71 @@ public final class InstanceWorkflowActor
 
   private static boolean hasText(String value) { return value != null && !value.isBlank(); }
 
+  private void startSecurityGroupPreparation(InstanceWorkflowState state) {
+    scheduleSecurityGroupDeadline(state);
+    if (!clock.instant().isBefore(state.securityGroupPreparation().deadline())) return;
+    String token = UUID.randomUUID().toString();
+    securityGroupRequestToken = token;
+    List<Integer> ports = state.spec().forwarding() == null ? List.of() : state.spec().forwarding().internalPorts();
+    CompletionStage<String> request;
+    try {
+      request = openStackClient.prepareInstanceSecurityGroup(target(state), securityGroupOperationId(state),
+          ports, state.securityGroupPreparation().deadline());
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    securityGroupRequest = request;
+    context.pipeToSelf(request, (groupId, error) -> {
+      Throwable cause = error == null ? null : rootCause(error);
+      return new SecurityGroupPreparationCompleted(state.pollingGeneration(), token, groupId,
+          cause == null ? null : cause instanceof OpenStackOperationException ? cause.getMessage()
+              : "Security group preparation failed: " + cause.getClass().getSimpleName());
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSecurityGroupPreparationCompleted(
+      InstanceWorkflowState state, SecurityGroupPreparationCompleted command) {
+    if (state.phase() != InstancePhase.PREPARING_SECURITY_GROUP || state.pollingGeneration() != command.generation()
+        || !Objects.equals(securityGroupRequestToken, command.requestToken())) return Effect().none();
+    securityGroupRequestToken = null;
+    securityGroupRequest = null;
+    if (!clock.instant().isBefore(state.securityGroupPreparation().deadline())) {
+      return beginCompensation("SECURITY_GROUP_PREPARATION_TIMEOUT", "Timed out preparing instance security group");
+    }
+    if (command.failure() != null || !hasText(command.securityGroupId())) {
+      return beginCompensation("SECURITY_GROUP_PREPARATION_FAILED",
+          command.failure() == null ? "Missing instance security group ID" : command.failure());
+    }
+    return Effect().persist(List.of(new SecurityGroupPrepared(instanceId, command.securityGroupId()),
+            new NetworkPreparationStarted(instanceId, clock.instant().plus(settings.provisioningTimeout()))))
+        .thenRun(next -> {
+          timers.cancel(SECURITY_GROUP_TIMER);
+          requestNetwork(next, true);
+        });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSecurityGroupPreparationTimedOut(
+      InstanceWorkflowState state, SecurityGroupPreparationTimedOut command) {
+    if (state.phase() != InstancePhase.PREPARING_SECURITY_GROUP
+        || !Objects.equals(state.securityGroupPreparation().deadline(), command.deadline())) return Effect().none();
+    if (clock.instant().isBefore(command.deadline())) {
+      scheduleSecurityGroupDeadline(state);
+      return Effect().none();
+    }
+    return beginCompensation("SECURITY_GROUP_PREPARATION_TIMEOUT", "Timed out preparing instance security group");
+  }
+
+  private void scheduleSecurityGroupDeadline(InstanceWorkflowState state) {
+    Duration remaining = Duration.between(clock.instant(), state.securityGroupPreparation().deadline());
+    timers.startSingleTimer(SECURITY_GROUP_TIMER,
+        new SecurityGroupPreparationTimedOut(state.securityGroupPreparation().deadline()),
+        remaining.isNegative() ? Duration.ZERO : remaining);
+  }
+
+  private static String securityGroupOperationId(InstanceWorkflowState state) {
+    return "security-group:" + state.instanceId() + ":" + state.requestId();
+  }
+
   private InstanceWorkflowEvent afterNetworkStage(InstanceWorkflowState state, Instant now) {
     return state.spec().forwarding() == null
         ? new SchedulingStarted(instanceId, state.requestId(), 1, now)
@@ -311,7 +385,8 @@ public final class InstanceWorkflowActor
     networkRequestToken = token;
     CompletionStage<PreparedNetwork> request;
     try {
-      request = openStackClient.prepareInstanceNetwork(target(state), networkOperationId(state), state.dependencies().network(), allowCreate);
+      request = openStackClient.prepareInstanceNetwork(target(state), networkOperationId(state),
+          state.dependencies().network(), state.securityGroupId(), allowCreate);
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
@@ -377,7 +452,6 @@ public final class InstanceWorkflowActor
             || !forwardingClaimId(state).equals(claim.claimId()) || !forwardingSpec(state).equals(claim.spec())
             || !forwardingFloatingIpId(state).equals(claim.floatingIpId())
             || !hasText(claim.resources().tcpForwardingId()) || !hasText(claim.resources().udpForwardingId())
-            || !hasText(claim.resources().tcpRuleId()) || !hasText(claim.resources().udpRuleId())
             || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 10000
             || claim.resources().externalPort() > 40000) {
           yield beginCompensation("FORWARDING_RESULT_INVALID", "Incomplete or mismatched port forwarding result");
@@ -444,9 +518,8 @@ public final class InstanceWorkflowActor
 
   private ForwardingSpec forwardingSpec(InstanceWorkflowState state) {
     PreparedNetwork network = state.networkPreparation().resources();
-    var required = state.spec().forwarding();
     return new ForwardingSpec(instanceId, state.spec().share().userId(), state.spec().region(),
-        state.projectId(), network.parentPortId(), network.parentFixedIp(), state.currentForwardingPort(), required.securityGroupId());
+        state.projectId(), network.parentPortId(), network.parentFixedIp(), state.currentForwardingPort());
   }
   private static String forwardingFloatingIpId(InstanceWorkflowState state) {
     return state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
@@ -635,6 +708,7 @@ public final class InstanceWorkflowActor
         .thenRun(
             next -> {
               metrics.compensation();
+              timers.cancel(SECURITY_GROUP_TIMER);
               timers.cancel(NETWORK_TIMER);
               timers.cancel(POLL_TIMER);
               cancelForwardingTimers();
@@ -730,6 +804,9 @@ public final class InstanceWorkflowActor
 
   private void startCompensation(InstanceWorkflowState state) {
     if (pauseCompensationIfDisabled(state)) return;
+    // A deadline may fire while Neutron is still creating the group or one of its rules.
+    CompletionStage<Void> securityGroupSettled = securityGroupRequest == null
+        ? CompletableFuture.completedFuture(null) : securityGroupRequest.handle((ignored, error) -> null);
     CompletionStage<Boolean> delete =
         state.novaServerId() == null
             ? (state.novaOperationId() == null ? CompletableFuture.completedFuture(true)
@@ -752,8 +829,15 @@ public final class InstanceWorkflowActor
           : openStackClient.deleteInstanceNetwork(target(state), networkOperationId(state))
               .handle((ignored, error) -> error == null);
     });
+    CompletionStage<Boolean> securityGroupCleanup = networkCleanup.thenCompose(deleted -> {
+      if (!deleted) return CompletableFuture.completedFuture(false);
+      return state.securityGroupPreparation() == null ? CompletableFuture.completedFuture(true)
+          : securityGroupSettled.thenCompose(ignored ->
+              openStackClient.deleteInstanceSecurityGroup(target(state), securityGroupOperationId(state)))
+              .handle((ignored, error) -> error == null);
+    });
     CompletionStage<Boolean> compensated =
-        networkCleanup.thenCompose(
+        securityGroupCleanup.thenCompose(
             deleted -> {
               if (!deleted) return CompletableFuture.completedFuture(false);
               return state.hypervisorId() == null || state.reservationId() == null
@@ -827,6 +911,8 @@ public final class InstanceWorkflowActor
             InstanceCreationRequested.class,
             (state, event) -> state.created(event.requestId(), event.spec(), event.dependencyPreparationDeadline()))
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
+        .onEvent(SecurityGroupPreparationStarted.class, (state, event) -> state.preparingSecurityGroup(event.deadline()))
+        .onEvent(SecurityGroupPrepared.class, (state, event) -> state.securityGroupPrepared(event.securityGroupId()))
         .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline()))
         .onEvent(NetworkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding(event.deadline()))
@@ -864,6 +950,8 @@ public final class InstanceWorkflowActor
             RecoveryCompleted.class,
             (state, signal) -> {
               dependencyRequestToken = null;
+              securityGroupRequestToken = null;
+              securityGroupRequest = null;
               networkRequestToken = null;
               novaRequestToken = null;
               forwardingRequestToken = null;
@@ -882,6 +970,7 @@ public final class InstanceWorkflowActor
                       state.novaServerId());
               switch (state.phase()) {
                 case PREPARING_DEPENDENCIES -> requestDependencies(state);
+                case PREPARING_SECURITY_GROUP -> startSecurityGroupPreparation(state);
                 case PREPARING_NETWORK -> requestNetwork(state, false);
                 case PREPARING_FORWARDING -> {
                   scheduleForwardingDeadline(state);

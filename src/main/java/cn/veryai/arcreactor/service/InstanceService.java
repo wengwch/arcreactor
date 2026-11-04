@@ -149,7 +149,7 @@ public class InstanceService {
         ForwardingRequirement forwarding;
         try {
             cloudInitRenderer.validateConfiguration();
-            forwarding = new ForwardingRequirement(floatingIpIds, creationProperties.getForwardingPorts(), null);
+            forwarding = new ForwardingRequirement(floatingIpIds, creationProperties.getForwardingPorts());
             share = new ShareSpec(region.getId(), "share-" + resourceId, "Managed user share",
                             creationProperties.getShareSize(), Share.Protocol.CEPHFS,
                             creationProperties.getShareType(), "user-" + resourceId);

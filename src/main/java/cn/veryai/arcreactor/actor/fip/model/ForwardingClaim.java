@@ -7,14 +7,11 @@ public record ForwardingClaim(String claimId, String floatingIpId, ForwardingSpe
     Phase phase, ForwardingResources resources, boolean deleteRequested, boolean writeStarted,
     boolean paused, int attempts, long generation, String failure) implements Serializable {
   public enum Phase {
-    ALLOCATING, CREATING_TCP, CREATING_UDP, ENSURING_TCP_RULE, ENSURING_UDP_RULE,
-    READY, DELETING_TCP, DELETING_UDP, DELETING_TCP_RULE, DELETING_UDP_RULE,
-    FAILED, DELETED
+    ALLOCATING, CREATING_TCP, CREATING_UDP, READY, DELETING_TCP, DELETING_UDP, FAILED, DELETED
   }
   public boolean terminal() { return phase == Phase.READY || phase == Phase.FAILED || phase == Phase.DELETED; }
   public boolean writing() {
-    return phase == Phase.CREATING_TCP || phase == Phase.CREATING_UDP
-        || phase == Phase.ENSURING_TCP_RULE || phase == Phase.ENSURING_UDP_RULE;
+    return phase == Phase.CREATING_TCP || phase == Phase.CREATING_UDP;
   }
   public boolean deleting() { return phase.name().startsWith("DELETING_"); }
 }

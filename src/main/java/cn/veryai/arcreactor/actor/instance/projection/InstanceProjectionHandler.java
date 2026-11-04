@@ -17,6 +17,8 @@ import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
+import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -39,6 +41,10 @@ public final class InstanceProjectionHandler
                     Timestamp.from(created.requestedAt()), timestamp);
         } else if (event instanceof DependenciesPrepared prepared) {
             mapper.updateDependencies(instanceId, "PREPARING_DEPENDENCIES", prepared.dependencies(), version, timestamp);
+        } else if (event instanceof SecurityGroupPreparationStarted) {
+            mapper.updatePhase(instanceId, "PREPARING_SECURITY_GROUP", version, timestamp);
+        } else if (event instanceof SecurityGroupPrepared prepared) {
+            mapper.updateSecurityGroup(instanceId, "PREPARING_SECURITY_GROUP", prepared.securityGroupId(), version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
         } else if (event instanceof NetworkPreparationStarted) {

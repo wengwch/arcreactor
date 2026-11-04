@@ -63,6 +63,7 @@ public interface InstanceLifecycle {
             String osShareId,
             List<PreparedForwarding> forwardings,
             PreparedNetwork network,
+            String securityGroupId,
             String projectId) implements Serializable {
     }
 }

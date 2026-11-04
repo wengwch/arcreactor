@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS instance_view (
   nova_operation_id VARCHAR(512),
   nova_server_id VARCHAR(255),
   nova_status VARCHAR(64),
+  security_group_id VARCHAR(255),
   parent_port_id VARCHAR(255),
   parent_mac_address VARCHAR(17),
   parent_fixed_ip VARCHAR(45),

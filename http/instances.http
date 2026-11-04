@@ -59,6 +59,7 @@ Accept: application/json
 }
 
 ### 5. 查询实例创建状态和公网端口映射
+# securityGroupId 为实例专属安全组，安全组就绪后才创建父子端口和转发。
 # forwardings 按 internalPort 区分 22 和 8888，每项都有自己的 floatingIp/externalPort。
 # 创建中可能只出现一条映射；映射创建成功后还需要等待 Nova 和实例内服务启动。
 # SSH: ssh -p <22 对应的 externalPort> <创建响应中的 username>@<22 对应的 floatingIp>

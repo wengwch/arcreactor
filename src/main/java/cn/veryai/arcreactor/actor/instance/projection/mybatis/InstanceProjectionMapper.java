@@ -40,6 +40,13 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateSecurityGroup(
+            @Param("instanceId") String instanceId,
+            @Param("phase") String phase,
+            @Param("securityGroupId") String securityGroupId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updateNetwork(
             @Param("instanceId") String instanceId,
             @Param("phase") String phase,

@@ -106,6 +106,15 @@
         <include refid="newerWorkflow"/>
     </update>
 
+    <update id="updateSecurityGroup">
+        UPDATE instance_view SET
+          phase = #{phase},
+          security_group_id = #{securityGroupId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
     <update id="updateNetwork">
         UPDATE instance_view SET
           phase = #{phase},

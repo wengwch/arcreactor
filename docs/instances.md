@@ -65,7 +65,9 @@ LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路
 新建或登记浮动 IP 时发送 `EnableFloatingIp`，持久化 `FloatingIpEnabled` 保存初始端口位图后返回。
 重复启用会校验身份和位图一致性；恢复时只携带身份的启用消息不会覆盖已有端口预留。
 内部端口默认是 SSH `22` 和 JupyterLab `8888`；配置必须是非空、无重复的 `1–65535` 端口列表。
-安全组使用新建用户项目的 default 安全组，转发过程中确认该安全组绑定在目标父端口上并放行内部端口。
+每个实例先创建一个专属安全组，按上述内部端口配置添加 IPv4 入站 TCP/UDP 规则，来源为 `0.0.0.0/0`。
+父端口和子端口创建时开启 port security，并只绑定该专属安全组；出站沿用 Neutron 新建安全组的默认规则。
+安全组由实例工作流管理，FloatingIpActor 只负责公网端口分配和 TCP/UDP 转发。
 
 实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先创建
 QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
@@ -166,13 +168,13 @@ Share、用户网络和路由的投影见下方“用户资源读模型”。
 InstanceActor 包含以下主要阶段：
 
 ```text
-PREPARING_DEPENDENCIES → PREPARING_NETWORK → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
-    依赖准备失败 → FAILED                              后续阶段失败 → COMPENSATING → FAILED
+PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP → PREPARING_NETWORK → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
+    依赖准备失败 → FAILED                                                    后续阶段失败 → COMPENSATING → FAILED
 ```
 
 HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 22、8888 两个内部端口的映射。
 每个内部端口使用独立 claim ID（包含实例 ID、请求 ID、内部端口），分配一个 `10000–40000`
-范围内的公网端口，同时创建 TCP/UDP 转发和相应安全组规则，目标为实例父端口的 IPv4 地址。
+范围内的公网端口，同时创建 TCP/UDP 转发，目标为实例父端口的 IPv4 地址。
 每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
 每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后才进入调度。
@@ -183,7 +185,15 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_retries=0`，
 使监听端口与转发目标保持一致；端口占用时不会自动改用其他端口。
 参数定义见 [Jupyter Server 配置文档](https://jupyter-server.readthedocs.io/en/stable/other/full-config.html#ServerApp.port)。
-`forwarding-ports` 只配置网络映射，镜像中的 SSH/JupyterLab 服务仍须监听对应内部端口。
+`forwarding-ports` 配置转发目标和安全组放行端口，镜像中的 SSH/JupyterLab 服务仍须监听对应内部端口。
+
+依赖就绪后先持久化 `SecurityGroupPreparationStarted`，再异步创建实例专属安全组和入站规则。
+整组规则就绪后持久化 `SecurityGroupPrepared`，记录安全组 ID，再开始创建端口；失败使用
+`CompensationStarted` 记录失败原因，不重新提交失败的安全组创建流程。
+安全组名称和描述包含由实例 ID、请求 ID 生成的操作标识，重启恢复时先查询匹配的安全组，
+复用已有组并补齐缺失规则；找到多个匹配组则失败，避免任意选择。
+准备阶段沿用已持久化的截止时间，时长使用 `cloud.instance.provisioning-timeout`。
+查找与创建并非原子操作，旧请求在远端继续执行时仍可能出现重复创建窗口。
 
 `prepareInstanceNetwork()` 在一个操作内完成父端口和 QoS、子端口和 QoS、Trunk；
 Actor 只记录创建意图和整套网络就绪结果，不再持久化每个网络子步骤。
@@ -197,17 +207,18 @@ Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补
 
 当前排查模式默认设置 `instance.creation.cleanup-on-failure=false`
 （环境变量 `INSTANCE_CLEANUP_ON_FAILURE`），创建失败后暂停自动清理：
-保留 Nova、父子端口、Trunk、QoS 和端口转发，并保留失败原因；端口创建失败时也不自动删除专用 QoS。
+保留 Nova、专属安全组、父子端口、Trunk、QoS 和端口转发，并保留失败原因；端口创建失败时也不自动删除专用 QoS。
 实例停留在 `COMPENSATING`，不执行清理或安排清理重试，Actor 恢复后同样暂停。
 转发创建失败后的自动回滚和已提交的实例转发清理也暂停，其他转发请求可继续处理。
 
 排查完成后设置 `INSTANCE_CLEANUP_ON_FAILURE=true` 并重启应用，恢复中的工作流按
-Nova、端口转发、实例网络/QoS、资源预留的顺序继续补偿，清理失败后继续重试，完成后进入 `FAILED`。
+Nova、端口转发、实例网络/QoS、专属安全组、资源预留的顺序继续补偿，清理失败后继续重试，完成后进入 `FAILED`。
+专属安全组按项目和操作标识查找并删除，包含创建成功但响应未持久化的组；删除组时一并删除其规则。
 
 ## 返回值
 
 Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、Share、用户网络准备以及
-实例网络、端口转发和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
+实例安全组、网络、端口转发和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
 `INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 30 秒，只需覆盖 Actor 受理等待时间
 （`cloud.instance.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
 受理后的依赖准备失败或超时通过 `GET /api/v1/instances/{instanceId}`、`InstanceLifecycle.get(instanceId)` 和 `instance_view` 的
@@ -233,7 +244,7 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
 ## 查询端口转发
 
 创建后轮询 `GET /api/v1/instances/{instanceId}`。接口查询 Actor 的当前状态，返回创建阶段、
-失败信息及 `forwardings` 列表，不包含密码、Jupyter token 或 Share 访问凭据。
+失败信息、专属 `securityGroupId` 及 `forwardings` 列表，不包含密码、Jupyter token 或 Share 访问凭据。
 不存在的实例按全局响应约定返回业务 `code = 404`。
 以下仅展示相关字段，地址和端口为示例：
 
@@ -243,6 +254,7 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
   "result": {
     "instanceId": "实例 UUID",
     "phase": "ACTIVE",
+    "securityGroupId": "实例专属安全组 UUID",
     "forwardings": [
       {"internalPort": 22, "floatingIp": "203.0.113.10", "externalPort": 10000},
       {"internalPort": 8888, "floatingIp": "203.0.113.10", "externalPort": 10001}
@@ -297,11 +309,12 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 `InstanceProjection` 将实例状态写入 `instance_view`，每个内部端口的已确认映射写入
 `instance_port_forwarding`，建表定义均位于 `sql/read-model.sql`。
-使用端口转发前需创建新表；本次状态和事件结构调整不提供历史数据兼容转换。
+`instance_view.security_group_id` 保存实例专属安全组 ID；本次状态和事件结构调整不提供历史数据兼容转换。
 
 创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和
 `PREPARING_DEPENDENCIES` 状态，项目及父子网络/子网 ID 暂为空。
 `DependenciesPrepared` 补齐项目 ID、实际复用的逻辑 Share ID、父子网络和子网 ID；
+`SecurityGroupPreparationStarted` 更新安全组准备阶段，`SecurityGroupPrepared` 写入专属安全组 ID；
 网络就绪事件补齐端口、IP 和 Trunk；每条 `ForwardingPrepared` 按
 `(instance_id, internal_port)` upsert `instance_port_forwarding`，22 和 8888 不会相互覆盖。
 映射保存 claim ID、浮动 IP ID 和地址、内部/公网端口、TCP/UDP 转发 ID 及日志版本。
@@ -311,6 +324,12 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 `memory_gb` 和 `disk_gb` 单位为 GB，`external_port` 是浮动 IP 的外部转发端口。
 宿主机资源投影保存 `total_disk_gb`、`reserved_disk_gb`、`allocated_disk_gb`，
 `available_disk_gb` 由总量减去预留和已分配容量计算；实例分配记录同时保存 `disk_gb`。
+旧数据库缺少磁盘列时，停止应用后执行 `sql/migrations/add-disk-resource-fields.sql`。
+`sql/read-model.sql` 使用 `CREATE TABLE IF NOT EXISTS`，再次执行不会修改已存在的表。
+升级脚本补齐磁盘列和候选索引，已有字段值、事件日志和投影偏移量保持原样。
+恢复应用后调用 `PUT /api/v1/hypervisor-hosts/{id}/enable`，该接口会发送 `CapacityUpdated`，
+即使宿主机已启用也会刷新包含磁盘的容量；等待投影更新后再调度。
+新加的磁盘计数初始为 0，脚本不推算历史占用；已有预留或分配时，需要从 Actor 事件重建对应磁盘记账。
 密码、Jupyter token 和共享存储访问凭据不写入此表。
 
 每次状态更新以日志序号 `workflow_version` 判断新旧，忽略相同或更早的事件，

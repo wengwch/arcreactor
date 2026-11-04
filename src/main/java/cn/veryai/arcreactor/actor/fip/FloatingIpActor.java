@@ -250,9 +250,7 @@ public final class FloatingIpActor
       boolean definitive = cause instanceof OpenStackOperationException && cause.getCause() == null;
       if (cause instanceof ResponseException response) {
         definitive = response.getStatus() >= 400 && response.getStatus() < 500
-            && response.getStatus() != 408 && response.getStatus() != 429
-            && !(response.getStatus() == 409 && (claim.phase() == Phase.ENSURING_TCP_RULE
-                || claim.phase() == Phase.ENSURING_UDP_RULE));
+            && response.getStatus() != 408 && response.getStatus() != 429;
       }
       return new StepCompleted(claim.claimId(), claim.generation(), null, allowCreate, definitive,
           cause instanceof OpenStackOperationException && cause.getCause() == null ? cause.getMessage()
@@ -286,17 +284,12 @@ public final class FloatingIpActor
         }
         int port = availablePort(state, result.target().occupiedPorts());
         yield port == 0 ? cleanup(claim, "Floating IP port range exhausted")
-            : advance(claim, Phase.CREATING_TCP, resources.allocated(result.target().floatingIpAddress(),
-                result.target().securityGroupId(), port));
+            : advance(claim, Phase.CREATING_TCP, resources.allocated(result.target().floatingIpAddress(), port));
       }
       case CREATING_TCP -> advance(claim, Phase.CREATING_UDP, resources.forwarding(true, result.resource().id()));
-      case CREATING_UDP -> advance(claim, Phase.ENSURING_TCP_RULE, resources.forwarding(false, result.resource().id()));
-      case ENSURING_TCP_RULE -> advance(claim, Phase.ENSURING_UDP_RULE, resources.rule(true, result.resource()));
-      case ENSURING_UDP_RULE -> advance(claim, Phase.READY, resources.rule(false, result.resource()));
+      case CREATING_UDP -> advance(claim, Phase.READY, resources.forwarding(false, result.resource().id()));
       case DELETING_TCP -> advance(claim, Phase.DELETING_UDP, resources.forwarding(true, null));
-      case DELETING_UDP -> advance(claim, Phase.DELETING_TCP_RULE, resources.forwarding(false, null));
-      case DELETING_TCP_RULE -> advance(claim, Phase.DELETING_UDP_RULE, resources.rule(true, null));
-      case DELETING_UDP_RULE -> {
+      case DELETING_UDP -> {
         if (claim.deleteRequested()) yield advance(claim, Phase.DELETED, ForwardingResources.empty());
         yield advance(claim, Phase.FAILED, ForwardingResources.empty());
       }
@@ -320,25 +313,18 @@ public final class FloatingIpActor
   private CompletionStage<StepResult> performStep(ForwardingClaim claim, boolean allowCreate) {
     ForwardingSpec spec = claim.spec(); ForwardingResources r = claim.resources();
     NetProtocol protocol = switch (claim.phase()) {
-      case CREATING_UDP, ENSURING_UDP_RULE, DELETING_UDP, DELETING_UDP_RULE -> NetProtocol.UDP;
+      case CREATING_UDP, DELETING_UDP -> NetProtocol.UDP;
       default -> NetProtocol.TCP;
     };
     return switch (claim.phase()) {
       case ALLOCATING -> client.prepareForwardingTarget(region, spec.projectId(), claim.floatingIpId(),
-          spec.internalPortId(), spec.fixedIp(), spec.securityGroupId()).thenApply(target -> new StepResult(target, null, false));
+          spec.internalPortId(), spec.fixedIp()).thenApply(target -> new StepResult(target, null, false));
       case CREATING_TCP, CREATING_UDP -> client.ensurePortForwarding(region, claim.floatingIpId(),
           r.externalPort(), spec.fixedIp(), spec.internalPort(), spec.internalPortId(), protocol,
           forwardingMarker(claim, protocol), allowCreate).thenApply(resource -> new StepResult(null, resource, resource == null));
-      case ENSURING_TCP_RULE, ENSURING_UDP_RULE -> client.ensureForwardingSecurityRule(region, spec.projectId(),
-          r.securityGroupId(), spec.internalPort(), protocol, securityMarker(claim, protocol), allowCreate)
-          .thenApply(resource -> new StepResult(null, resource == null ? null
-              : new ManagedNetworkResource(resource.id(), false), resource == null));
       case DELETING_TCP, DELETING_UDP -> client.deleteManagedPortForwarding(region, claim.floatingIpId(),
           protocol == NetProtocol.TCP ? r.tcpForwardingId() : r.udpForwardingId(), forwardingMarker(claim, protocol))
           .thenApply(done -> new StepResult(null, null, !done));
-      // Security rules are shared across IP actors. Keep them as shared port policy; deleting a
-      // forwarding must never revoke another IP actor's access to the same internal service.
-      case DELETING_TCP_RULE, DELETING_UDP_RULE -> CompletableFuture.completedFuture(StepResult.done());
       case READY, FAILED, DELETED -> CompletableFuture.completedFuture(StepResult.done());
     };
   }
@@ -402,10 +388,6 @@ public final class FloatingIpActor
 
   private String forwardingMarker(ForwardingClaim claim, NetProtocol protocol) {
     return marker("pf", region + ":" + claim.claimId() + ":" + claim.floatingIpId() + ":" + protocol);
-  }
-  private String securityMarker(ForwardingClaim claim, NetProtocol protocol) {
-    return marker("sg", region + ":" + claim.spec().projectId() + ":" + claim.resources().securityGroupId()
-        + ":" + claim.spec().internalPort() + ":" + protocol);
   }
   private static String marker(String kind, String value) {
     return "arcreactor:" + kind + ":" + UUID.nameUUIDFromBytes(value.getBytes(StandardCharsets.UTF_8));

@@ -7,7 +7,7 @@
 # 实例创建会从同一区域的已登记地址中自动选择候选，为 22 和 8888 分别分配公网端口。
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
-@extNetId = {{csvPublicNetworkId}}
+@extNetId = 2e2d09dd-7f09-4d69-866d-4d4b06062383
 
 ### 创建用于端口转发的浮动 IP，返回 HTTP 201 和浮动 IP 记录
 # 默认 initOpenstack=true，在 OpenStack 中分配地址，不绑定实例端口。

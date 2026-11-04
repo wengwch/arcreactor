@@ -4,8 +4,7 @@ import java.io.Serializable;
 import java.util.List;
 
 /** Each service tries the ordered floating IP candidates and targets the instance's prepared parent port. */
-public record ForwardingRequirement(List<String> floatingIpIds, List<Integer> internalPorts,
-    String securityGroupId) implements Serializable {
+public record ForwardingRequirement(List<String> floatingIpIds, List<Integer> internalPorts) implements Serializable {
   public ForwardingRequirement {
     floatingIpIds = List.copyOf(floatingIpIds);
     if (floatingIpIds.isEmpty() || floatingIpIds.stream().anyMatch(String::isBlank)
@@ -17,6 +16,5 @@ public record ForwardingRequirement(List<String> floatingIpIds, List<Integer> in
         || internalPorts.stream().distinct().count() != internalPorts.size()) {
       throw new IllegalArgumentException("ordered, distinct service ports between 1 and 65535 are required");
     }
-    if (securityGroupId != null && securityGroupId.isBlank()) securityGroupId = null;
   }
 }
