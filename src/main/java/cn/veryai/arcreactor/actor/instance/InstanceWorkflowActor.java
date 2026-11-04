@@ -51,7 +51,6 @@ import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.exceptions.BaseException;
-import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
@@ -220,7 +219,8 @@ public final class InstanceWorkflowActor
     }
     Instant now = clock.instant();
     return Effect()
-        .persist(new InstanceCreationRequested(instanceId, command.requestId(), command.spec(), now))
+        .persist(new InstanceCreationRequested(instanceId, command.requestId(), command.spec(), now,
+            dependencyPreparer.preparationDeadline(now)))
         .thenRun(
             next -> {
               metrics.workflowStarted();
@@ -236,7 +236,7 @@ public final class InstanceWorkflowActor
     CompletionStage<PreparedDependencies> request;
     try {
       request = dependencyPreparer.prepare(share.userId(), state.spec().clusterId(), share.shareId(),
-          share.spec(), state.spec().network());
+          share.spec(), state.spec().network(), state.dependencyPreparationDeadline());
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
@@ -815,7 +815,7 @@ public final class InstanceWorkflowActor
         .forAnyState()
         .onEvent(
             InstanceCreationRequested.class,
-            (state, event) -> state.created(event.requestId(), event.spec()))
+            (state, event) -> state.created(event.requestId(), event.spec(), event.dependencyPreparationDeadline()))
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline()))
         .onEvent(NetworkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
@@ -871,12 +871,7 @@ public final class InstanceWorkflowActor
                       state.novaOperationId(),
                       state.novaServerId());
               switch (state.phase()) {
-                case PREPARING_DEPENDENCIES -> {
-                  dependencyRequestToken = UUID.randomUUID().toString();
-                  context.getSelf().tell(new DependenciesFailed(dependencyRequestToken,
-                      Integer.toString(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_INTERRUPTED.getCode()),
-                      "Instance workflow recovered before dependency preparation completed; remote outcomes are unconfirmed"));
-                }
+                case PREPARING_DEPENDENCIES -> requestDependencies(state);
                 case PREPARING_NETWORK -> requestNetwork(state, false);
                 case PREPARING_FORWARDING -> {
                   scheduleForwardingDeadline(state);

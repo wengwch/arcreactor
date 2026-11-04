@@ -43,6 +43,7 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 | --- | --- | --- |
 | `share-size` | `INSTANCE_SHARE_SIZE` | 100 GB |
 | `dependency-preparation-timeout` | `INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT` | 10 分钟，项目、Share、用户网络共用 |
+| `dependency-poll-interval` | `INSTANCE_DEPENDENCY_POLL_INTERVAL` | 2 秒，查询 UserActor 的资源状态 |
 | `network-cidr` | `INSTANCE_NETWORK_CIDR` | `10.0.0.0/16` |
 | `network-dns` | `INSTANCE_NETWORK_DNS` | 空，使用网络服务默认值 |
 | `network-gateway` | `INSTANCE_NETWORK_GATEWAY` | 空，由 Neutron 分配 |
@@ -86,35 +87,44 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 InstanceActor 持久化 `InstanceCreationRequested`，进入 `PREPARING_DEPENDENCIES` 并立即回复受理；
 然后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
 再等待 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createShare()`、`createNetwork()`，
-直接校验各自 ask 返回的最终结果；仅 `READY` 才继续下一步，其他状态或 ask 异常直接结束准备。
-准备过程共用 `dependency-preparation-timeout`，不查询轮询，也不自动重新提交创建命令。
+创建请求持久化后即返回当前状态，首次受理为 `IN_PROGRESS`，已有资源直接返回其当前状态。
+准备器每隔 `dependency-poll-interval` 调用对应的 `getProject()`、`getShare()`、`getNetwork()`；
+仅 `READY` 才继续下一步，`FAILED`、`REJECTED` 直接结束准备。
+ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时才重新提交幂等创建命令。
+所有创建和查询 ask 均使用 `cloud.user.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
+准备过程共用 `dependency-preparation-timeout`，绝对截止时间随 `InstanceCreationRequested` 持久化。
 结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
 再开始创建实例端口、QoS 和 Trunk。原始请求规格保持不变，重复请求仍按原始规格判断幂等。
 准备失败或超时直接持久化实例 `FAILED` 及失败码；此时还没有实例专用资源，无需进入补偿。
-若 Actor 恢复时仍处于 `PREPARING_DEPENDENCIES`，记录中断失败并说明远端结果未确认，不重新提交准备请求。
+若 Actor 恢复时仍处于 `PREPARING_DEPENDENCIES`，使用原始规格和原截止时间重新执行准备器：
+同规格创建命令只返回已持久化的资源状态，已有 `READY` 资源直接复用，未完成资源继续查询。
+停机时间计入准备超时，重启不会延长截止时间；已记录的失败不会自动重试。
+当前 `pekko.cluster.sharding.remember-entities = off`，应用启动不会主动唤醒所有历史实例。
+实例收到消息（例如 `InstanceLifecycle.get(instanceId)`）后才恢复，准备器的创建和查询消息会唤醒对应 UserActor。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
 UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Domain 中按名称查询项目，
 存在则复用，不存在才创建，然后授予管理员角色，全部成功后才标记 `READY`。
 `CreateProject` 先持久化创建意图，再异步调用 OpenStack；结果通过 `ProjectReady` 或
-`ProjectFailed` 命令回到 Actor，最终状态持久化后向所有等待的调用方 `tell` 回复。
+`ProjectFailed` 命令回到 Actor，持久化最终状态，供后续查询。
 创建、就绪、失败分别持久化 `ProjectCreationRequested`、`ProjectBecameReady`、
 `ProjectCreationFailed` 事件，由事件处理器更新项目状态。
-同规格的并发创建请求共用一次创建流程；`createProject()` 等待 `READY` 或 `FAILED`，
-`getProject()` 可查询中间状态。项目创建只执行一次，调用失败或超时即记录 `FAILED`；
-Actor 重启后，未完成的项目也记录 `FAILED`。超时和重启中断时，失败详情会说明远端结果尚未确认。
-创建请求的等待时限为 `project.operation-timeout + ask-timeout`，用于单次操作及持久化、回复。
+同规格的并发创建请求共用一次创建流程，并立即返回当前状态；Actor 不保存调用方的等待列表。
+调用失败或超时记录 `FAILED`；恢复中的 `CREATING` 项目按 Domain 和名称查找并复用，
+缺失时才创建，然后完成管理员授权。`project.operation-timeout` 决定创建截止时间，
+创建事件持久化该时间，恢复时只使用剩余时限。
 项目投影写入 `user_cluster_project`，主键为 `(user_id, cluster_id)`，建表定义见 `sql/read-model.sql`。
 用户网络采用相同流程：`CreateNetwork` 持久化 `NetworkCreationRequested` 后调用
 `createUserNetwork()`，依次校验 LOCAL 网络、创建用户网络、子网、路由和路由接口。
 全部成功后发送 `NetworkReady`，持久化 `NetworkBecameReady`；失败或超时发送
-`NetworkFailed`，持久化 `NetworkCreationFailed`，然后向所有等待的调用方回复最终结果。
-同规格的并发请求共用一次创建流程，`createNetwork()` 等待 `READY` 或 `FAILED`，
-`getNetwork()` 可查询中间状态。网络创建不重试、不逐步持久化资源 ID，Actor 恢复时将
-未完成的网络标记为 `FAILED`。失败可能留下部分远端资源，流程不自动回滚；超时或恢复中断
-也不代表 OpenStack 已停止创建。整套创建操作使用 `network.operation-timeout`，
-请求等待时限为 `network.operation-timeout + ask-timeout`。
+`NetworkFailed`，持久化 `NetworkCreationFailed`，调用方通过 `getNetwork()` 查询结果。
+同规格的并发请求共用一次创建流程，`createNetwork()` 在创建意图持久化后立即返回。
+恢复中的 `CREATING` 网络按项目和名称分别查找已有网络、子网、路由，校验规格后复用；
+路由接口按路由和子网查找，缺失步骤才继续创建。查到多个匹配资源或规格不一致直接失败。
+整套创建操作的截止时间由 `network.operation-timeout` 决定并持久化，重启只使用剩余时间。
+网络仍只有创建、就绪、失败三类事件，不逐步持久化资源 ID，不自动重试已失败流程或回滚。
+操作超时不代表 OpenStack 已停止创建，远端可能留下部分资源。
 
 Share 的创建和访问授权都由 Manila 异步完成，状态依次为：
 
@@ -123,19 +133,25 @@ CREATING → WAITING_EXPORT → GRANTING_ACCESS → WAITING_ACCESS → READY
                             任一步失败或超时 → FAILED
 ```
 
-`CreateShare` 持久化 `ShareCreationRequested` 后提交一次创建请求；返回 Share ID 时持久化
+`CreateShare` 持久化 `ShareCreationRequested` 后立即回复 `IN_PROGRESS`，再异步创建；返回 Share ID 时持久化
 `ShareCreated`，进入 `WAITING_EXPORT`。定时查询 Share，待状态为 `AVAILABLE` 且存在非管理员
 专用、包含 ID 和路径的 export location 后，持久化 `ShareExportBecameReady`，再提交一次
 CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`，进入 `WAITING_ACCESS`；
-访问规则变为 `ACTIVE` 且 access key 非空时，持久化 `ShareBecameReady` 并回复调用方。
-错误、操作超时或整体超时产生 `ShareCreationFailed`，保留已确认的资源 ID 并回复失败。
+访问规则变为 `ACTIVE` 且 access key 非空时，持久化 `ShareBecameReady`。
+错误、操作超时或整体超时产生 `ShareCreationFailed`，保留已确认的资源 ID；调用方通过 `getShare()` 查询。
 
 等待阶段每隔 `share.poll-interval`（默认 2 秒）查询一次；资源尚未就绪或暂不可见（404）时
-继续等待，其他调用错误直接失败。创建和授权请求都不重试，不执行自动回滚；Actor 恢复时
-未完成的 Share 记录为 `FAILED`，详情说明远端结果尚未确认。每次查询或写入受
-`share.operation-timeout`（默认 30 秒）限制，整个流程受 `share.creation-timeout`
-（默认 5 分钟）限制。同规格并发请求共用一次流程；`createShare()` 等待最终 `READY` 或
-`FAILED`，等待时限为 `share.creation-timeout + ask-timeout`，`getShare()` 可查询中间状态。
+继续等待，其他调用错误直接失败。恢复后按已持久化阶段继续：
+`CREATING` 按项目和操作 metadata 查找 Share，`GRANTING_ACCESS` 按 Share、访问类型和用户名
+查找已有授权，缺失时才创建；`WAITING_EXPORT`、`WAITING_ACCESS` 恢复查询。
+已有授权的权限级别必须匹配；多个匹配资源直接失败，不任意选择一个继续。
+每次查询或写入受 `share.operation-timeout`（默认 30 秒）限制，整个流程的截止时间随
+创建事件持久化，由 `share.creation-timeout`（当前配置 15 秒）决定，恢复时不会重置。
+同规格并发请求立即返回同一流程的当前状态；失败不自动重试，也不执行自动回滚。
+
+创建前查询已有资源用于恢复和复用；OpenStack 查询与创建不是一个原子操作。
+若旧请求在重启时仍由远端执行，仍可能出现并发创建窗口，不能据此保证外部资源恰好创建一次。
+发现多个匹配资源时流程会记录失败，保留资源供核对。
 
 Share、用户网络和路由的投影见下方“用户资源读模型”。
 接口失败或单个实例失败不会删除这些共享资源。
@@ -152,7 +168,7 @@ Actor 只记录创建意图和整套网络就绪结果，不再持久化每个�
 Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询不产生事件；
 阶段变化和资源 ID、状态变化才持久化，数据库投影使用相同阶段。
 
-网络和 Nova 的创建意图先持久化，再调用 OpenStack。发生超时或 Actor 恢复时只查询已有资源，
+实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。发生超时或 Actor 恢复时只查询已有资源，
 不会盲目重发创建请求。若网络只完成一部分，超时后进入补偿；
 Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补偿。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。

@@ -18,6 +18,7 @@ import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -26,8 +27,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import org.apache.pekko.pattern.AskTimeoutException;
 import org.springframework.stereotype.Service;
 
 /** Asynchronous workflow dependency preparation; reusable resources remain owned by UserActor. */
@@ -40,16 +43,26 @@ public class InstanceDependencyPreparer {
     private final SysNetworkRepo sysNetworkRepo;
     private final InstanceCreationProperties properties;
 
-    public CompletionStage<PreparedDependencies> prepare(String userId, String clusterId, String shareId,
-            ShareSpec shareSpec, NetworkRequirement network) {
+    public Instant preparationDeadline(Instant startedAt) {
         Duration timeout = properties.getDependencyPreparationTimeout();
         requirePositive(timeout);
-        long deadline = System.nanoTime() + timeout.toNanos();
+        return startedAt.plus(timeout);
+    }
+
+    public CompletionStage<PreparedDependencies> prepare(String userId, String clusterId, String shareId,
+            ShareSpec shareSpec, NetworkRequirement network, Instant deadline) {
+        Duration pollInterval = properties.getDependencyPollInterval();
+        requirePositive(pollInterval);
+        long remaining = remainingNanos(deadline);
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String region = shareSpec.regionId();
-                var project = awaitReply(() -> userResources.createProject(userId, clusterId, userId),
-                        deadline, ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
+                var project = awaitReady(() -> userResources.createProject(userId, clusterId, userId),
+                        () -> userResources.getProject(userId, clusterId),
+                        reply -> reply.status() == ProjectReply.Status.READY,
+                        reply -> reply.status() == ProjectReply.Status.IN_PROGRESS,
+                        reply -> reply.status() == ProjectReply.Status.NOT_FOUND,
+                        deadline, pollInterval, ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
                 if (project == null || project.status() != ProjectReply.Status.READY
                         || !userId.equals(project.userId()) || !clusterId.equals(project.clusterId())
                         || !hasText(project.projectId())) {
@@ -58,8 +71,12 @@ public class InstanceDependencyPreparer {
                 String projectId = project.projectId();
                 NetworkRequirement resolved = resolveSharedNetwork(region, projectId, network);
                 ShareSpec resolvedShare = shareSpec.withProjectId(projectId);
-                var shareReply = awaitReply(() -> userResources.createShare(userId, shareId, resolvedShare),
-                        deadline, ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED);
+                var shareReply = awaitReady(() -> userResources.createShare(userId, shareId, resolvedShare),
+                        () -> userResources.getShare(userId, region),
+                        reply -> reply.status() == ShareReply.Status.READY,
+                        reply -> reply.status() == ShareReply.Status.IN_PROGRESS,
+                        reply -> reply.status() == ShareReply.Status.NOT_FOUND,
+                        deadline, pollInterval, ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED);
                 if (shareReply == null || shareReply.status() != ShareReply.Status.READY) {
                     throw new BaseException(ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED);
                 }
@@ -73,8 +90,12 @@ public class InstanceDependencyPreparer {
                 } catch (IllegalArgumentException exception) {
                     throw new BaseException(ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED, exception);
                 }
-                var networkReply = awaitReply(() -> userResources.createNetwork(userId, clusterId, network.userNetwork()),
-                        deadline, ErrorCode.INSTANCE_USER_NETWORK_PREPARATION_FAILED);
+                var networkReply = awaitReady(() -> userResources.createNetwork(userId, clusterId, network.userNetwork()),
+                        () -> userResources.getNetwork(userId, region),
+                        reply -> reply.status() == NetworkReply.Status.READY,
+                        reply -> reply.status() == NetworkReply.Status.IN_PROGRESS,
+                        reply -> reply.status() == NetworkReply.Status.NOT_FOUND,
+                        deadline, pollInterval, ErrorCode.INSTANCE_USER_NETWORK_PREPARATION_FAILED);
                 if (networkReply == null || networkReply.status() != NetworkReply.Status.READY) {
                     throw new BaseException(ErrorCode.INSTANCE_USER_NETWORK_PREPARATION_FAILED);
                 }
@@ -94,7 +115,7 @@ public class InstanceDependencyPreparer {
                 Thread.currentThread().interrupt();
                 throw new BaseException(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_INTERRUPTED, exception);
             }
-        }, EXECUTOR).orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS)
+        }, EXECUTOR).orTimeout(remaining, TimeUnit.NANOSECONDS)
                 .exceptionally(error -> {
                     Throwable cause = error;
                     while (cause instanceof CompletionException && cause.getCause() != null) cause = cause.getCause();
@@ -104,20 +125,48 @@ public class InstanceDependencyPreparer {
                 });
     }
 
-    /** Sends one ask and waits for its reply within the remaining preparation time. */
-    private <T> T awaitReply(Supplier<CompletionStage<T>> ask, long deadline, ErrorCode failure)
-            throws InterruptedException {
-        long remaining = deadline - System.nanoTime();
-        if (remaining <= 0) throw new BaseException(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT);
+    /** Re-submitting an intent only returns existing state; all subsequent waiting uses queries. */
+    private <T> T awaitReady(Supplier<CompletionStage<T>> create, Supplier<CompletionStage<T>> query,
+            Predicate<T> ready, Predicate<T> inProgress, Predicate<T> notFound,
+            Instant deadline, Duration pollInterval, ErrorCode failure) throws InterruptedException {
+        Supplier<CompletionStage<T>> request = create;
+        while (true) {
+            try {
+                T reply = awaitReply(request, deadline, failure);
+                if (reply == null) throw new BaseException(failure);
+                if (ready.test(reply)) return reply;
+                if (notFound.test(reply)) request = create;
+                else if (inProgress.test(reply)) request = query;
+                else throw new BaseException(failure);
+            } catch (AskTimeoutException exception) {
+                // A reply may be lost during entity recovery; query before submitting another intent.
+                request = query;
+            }
+            TimeUnit.NANOSECONDS.sleep(Math.min(pollInterval.toNanos(), remainingNanos(deadline)));
+        }
+    }
+
+    private <T> T awaitReply(Supplier<CompletionStage<T>> ask, Instant deadline, ErrorCode failure)
+            throws InterruptedException, AskTimeoutException {
+        long remaining = remainingNanos(deadline);
         try {
             return ask.get().toCompletableFuture().get(remaining, TimeUnit.NANOSECONDS);
         } catch (TimeoutException exception) {
             throw new BaseException(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT, exception);
         } catch (ExecutionException exception) {
-            throw new BaseException(failure, exception.getCause());
+            Throwable cause = exception.getCause();
+            while (cause instanceof CompletionException && cause.getCause() != null) cause = cause.getCause();
+            if (cause instanceof AskTimeoutException timeout) throw timeout;
+            throw new BaseException(failure, cause);
         } catch (RuntimeException exception) {
             throw new BaseException(failure, exception);
         }
+    }
+
+    private static long remainingNanos(Instant deadline) {
+        long remaining = Duration.between(Instant.now(), deadline).toNanos();
+        if (remaining <= 0) throw new BaseException(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT);
+        return remaining;
     }
 
     private NetworkRequirement resolveSharedNetwork(String region, String projectId, NetworkRequirement requested) {

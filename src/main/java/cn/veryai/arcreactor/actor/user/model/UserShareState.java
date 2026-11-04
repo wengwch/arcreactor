@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.actor.user.model;
 
 import java.io.Serializable;
+import java.time.Instant;
 
 public record UserShareState(
     String shareId,
@@ -12,13 +13,14 @@ public record UserShareState(
     String osGrantAccessId,
     String accessKey,
     long generation,
-    String failureMessage) implements Serializable {
+    String failureMessage,
+    Instant deadline) implements Serializable {
   public enum Phase {
     CREATING, WAITING_EXPORT, GRANTING_ACCESS, WAITING_ACCESS, READY, FAILED
   }
 
-  public static UserShareState requested(String shareId, ShareSpec spec) {
-    return new UserShareState(shareId, spec, Phase.CREATING, null, null, null, null, null, 0, null);
+  public static UserShareState requested(String shareId, ShareSpec spec, Instant deadline) {
+    return new UserShareState(shareId, spec, Phase.CREATING, null, null, null, null, null, 0, null, deadline);
   }
 
   public String regionId() {
@@ -32,20 +34,20 @@ public record UserShareState(
   public UserShareState created(String id) {
     requireText(id, "osShareId");
     return new UserShareState(shareId, spec, Phase.WAITING_EXPORT, id, null, null, null, null,
-        generation + 1, null);
+        generation + 1, null, deadline);
   }
 
   public UserShareState exportReady(String id, String path) {
     requireText(id, "osExportLocationId");
     requireText(path, "exportLocationPath");
     return new UserShareState(shareId, spec, Phase.GRANTING_ACCESS, osShareId, id, path, null, null,
-        generation + 1, null);
+        generation + 1, null, deadline);
   }
 
   public UserShareState accessCreated(String id) {
     requireText(id, "osGrantAccessId");
     return new UserShareState(shareId, spec, Phase.WAITING_ACCESS, osShareId, osExportLocationId,
-        exportLocationPath, id, null, generation + 1, null);
+        exportLocationPath, id, null, generation + 1, null, deadline);
   }
 
   public UserShareState ready(String key) {
@@ -55,12 +57,12 @@ public record UserShareState(
     requireText(osGrantAccessId, "osGrantAccessId");
     requireText(key, "accessKey");
     return new UserShareState(shareId, spec, Phase.READY, osShareId, osExportLocationId,
-        exportLocationPath, osGrantAccessId, key, generation + 1, null);
+        exportLocationPath, osGrantAccessId, key, generation + 1, null, deadline);
   }
 
   public UserShareState failed(String message) {
     return new UserShareState(shareId, spec, Phase.FAILED, osShareId, osExportLocationId,
-        exportLocationPath, osGrantAccessId, null, generation + 1, message);
+        exportLocationPath, osGrantAccessId, null, generation + 1, message, deadline);
   }
 
   private static void requireText(String value, String name) {

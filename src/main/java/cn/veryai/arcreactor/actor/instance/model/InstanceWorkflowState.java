@@ -26,12 +26,13 @@ public record InstanceWorkflowState(
         PreparedForwarding preparedForwarding,
         NetworkPreparation networkPreparation,
         int forwardingCandidateIndex,
-        PreparedDependencies dependencies) implements Serializable {
+        PreparedDependencies dependencies,
+        Instant dependencyPreparationDeadline) implements Serializable {
 
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, null, 0, 0, null, null, 0, null, null, null, 0, null);
+                null, null, null, null, null, 0, 0, null, null, 0, null, null, null, 0, null, null);
     }
 
     public String projectId() { return dependencies == null ? null : dependencies.projectId(); }
@@ -52,21 +53,24 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, preparedForwarding, networkPreparation, forwardingCandidateIndex, prepared);
+                forwardingPreparationDeadline, preparedForwarding, networkPreparation, forwardingCandidateIndex, prepared,
+                dependencyPreparationDeadline);
     }
 
     public InstanceWorkflowState preparingForwarding(Instant deadline) {
         return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_FORWARDING, spec,
                 hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
                 provisioningStartedAt, provisioningDeadline, pollingGeneration + 1, schedulingAttempts,
-                failureCode, failureMessage, version + 1, deadline, null, networkPreparation, 0, dependencies);
+                failureCode, failureMessage, version + 1, deadline, null, networkPreparation, 0, dependencies,
+                dependencyPreparationDeadline);
     }
 
     public InstanceWorkflowState forwardingPrepared(PreparedForwarding forwarding) {
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, forwarding, networkPreparation, forwardingCandidateIndex, dependencies);
+                forwardingPreparationDeadline, forwarding, networkPreparation, forwardingCandidateIndex, dependencies,
+                dependencyPreparationDeadline);
     }
 
     public InstanceWorkflowState forwardingCandidateSelected(int candidateIndex) {
@@ -74,7 +78,7 @@ public record InstanceWorkflowState(
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
                 forwardingPreparationDeadline, preparedForwarding,
-                networkPreparation, candidateIndex, dependencies);
+                networkPreparation, candidateIndex, dependencies, dependencyPreparationDeadline);
     }
 
     public InstanceWorkflowState preparingNetwork(Instant deadline) {
@@ -89,13 +93,16 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_NETWORK, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
-                forwardingPreparationDeadline, preparedForwarding, preparation, forwardingCandidateIndex, dependencies);
+                forwardingPreparationDeadline, preparedForwarding, preparation, forwardingCandidateIndex, dependencies,
+                dependencyPreparationDeadline);
     }
 
-    public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec) {
-        return copy(nextRequestId, InstancePhase.PREPARING_DEPENDENCIES, nextSpec, hypervisorId, reservationId,
+    public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec, Instant deadline) {
+        return new InstanceWorkflowState(instanceId, nextRequestId, InstancePhase.PREPARING_DEPENDENCIES, nextSpec,
+                hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
-                pollingGeneration, schedulingAttempts, null, null);
+                pollingGeneration, schedulingAttempts, null, null, version + 1, forwardingPreparationDeadline,
+                preparedForwarding, networkPreparation, forwardingCandidateIndex, dependencies, deadline);
     }
 
     public InstanceWorkflowState scheduling(int attempts) {
@@ -164,6 +171,6 @@ public record InstanceWorkflowState(
                 nextHypervisorId, nextReservationId, nextOperationId, nextServerId, nextNovaStatus,
                 nextStartedAt, nextDeadline, nextGeneration, nextAttempts,
                 nextFailureCode, nextFailureMessage, version + 1, forwardingPreparationDeadline, preparedForwarding,
-                networkPreparation, forwardingCandidateIndex, dependencies);
+                networkPreparation, forwardingCandidateIndex, dependencies, dependencyPreparationDeadline);
     }
 }

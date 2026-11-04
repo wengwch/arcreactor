@@ -25,7 +25,7 @@ import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
 import org.springframework.stereotype.Service;
 
 /**
- * Waits for persisted creation results for projects, networks and shares.
+ * Submits durable creation requests and queries their current state.
  */
 @Slf4j
 @Service
@@ -33,9 +33,6 @@ public final class UserResources {
   private final ActorSystem<?> system;
   private final ClusterSharding sharding;
   private final Duration askTimeout;
-  private final Duration projectCreateTimeout;
-  private final Duration networkCreateTimeout;
-  private final Duration shareCreateTimeout;
 
   public UserResources(ActorSystem<?> system, OpenStackClient client) {
     this.system = system;
@@ -47,12 +44,8 @@ public final class UserResources {
             config.getDuration("share.poll-interval"),
             config.getDuration("share.operation-timeout"),
             config.getDuration("share.creation-timeout"));
-    this.shareCreateTimeout = settings.creationTimeout().plus(askTimeout);
     UserProjectSettings projectSettings = new UserProjectSettings(config.getDuration("project.operation-timeout"));
-    // Allow one operation plus persistence and reply overhead.
-    this.projectCreateTimeout = projectSettings.operationTimeout().plus(askTimeout);
     UserNetworkSettings networkSettings = new UserNetworkSettings(config.getDuration("network.operation-timeout"));
-    this.networkCreateTimeout = networkSettings.operationTimeout().plus(askTimeout);
     sharding.init(
         Entity.of(
             UserActor.TYPE_KEY,
@@ -60,12 +53,12 @@ public final class UserResources {
                 projectSettings, networkSettings)));
   }
 
-  /** Waits until the export location and access key are ready, or creation has failed. */
+  /** Returns after the request is persisted; use getShare to observe progress and the access key. */
   public CompletionStage<ShareReply> createShare(String userId, String shareId, ShareSpec spec) {
     return AskPattern.<UserCommand, ShareReply>ask(
         entityRef(userId),
         replyTo -> new CreateShare(shareId, spec, replyTo),
-        shareCreateTimeout,
+        askTimeout,
         system.scheduler());
   }
 
@@ -77,12 +70,12 @@ public final class UserResources {
         system.scheduler());
   }
 
-  /** Waits for the persisted READY/FAILED result; conflicting specifications are rejected immediately. */
+  /** Returns the persisted current state; conflicting specifications are rejected immediately. */
   public CompletionStage<ProjectReply> createProject(String userId, String clusterId, String name) {
     return AskPattern.<UserCommand, ProjectReply>ask(
         entityRef(userId),
         replyTo -> new CreateProject(clusterId, name, replyTo),
-        projectCreateTimeout,
+        askTimeout,
         system.scheduler());
   }
 
@@ -96,14 +89,14 @@ public final class UserResources {
 
   /**
    * Requires a READY cluster project and exactly one preset shared/external LOCAL network.
-   * Each user has one managed network per region. Waits for the persisted READY/FAILED result;
-   * a READY state contains the network, subnet, router and interface port IDs.
+   * Each user has one managed network per region. Returns after persisting the request;
+   * use getNetwork to obtain the resource IDs once the state is READY.
    */
   public CompletionStage<NetworkReply> createNetwork(String userId, String clusterId, NetworkSpec spec) {
     return AskPattern.<UserCommand, NetworkReply>ask(
         entityRef(userId),
         replyTo -> new CreateNetwork(clusterId, spec, replyTo),
-        networkCreateTimeout,
+        askTimeout,
         system.scheduler());
   }
 

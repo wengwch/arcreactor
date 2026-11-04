@@ -35,47 +35,48 @@ public final class UserProjectionHandler
     long version = envelope.sequenceNr();
     Timestamp timestamp = Timestamp.from(Instant.ofEpochMilli(envelope.timestamp()));
 
-    if (event instanceof ProjectCreationRequested(String clusterId, String name)) {
-      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name),
+    if (event instanceof ProjectCreationRequested(String clusterId, String name, Instant deadline)) {
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, deadline),
           version, timestamp);
     } else if (event instanceof ProjectBecameReady(String clusterId, String name, String projectId)) {
       if (clusterId == null || clusterId.isBlank()
           || projectId == null || projectId.isBlank()) {
         throw new IllegalArgumentException("ready project must have cluster and project IDs");
       }
-      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name).ready(projectId),
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, null).ready(projectId),
           version, timestamp);
     } else if (event instanceof ProjectCreationFailed(String clusterId, String name, String failure)) {
-      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name).failed(failure),
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, null).failed(failure),
           version, timestamp);
     } else if (event instanceof ShareCreationRequested requested) {
-      mapper.upsertShare(userId, UserShareState.requested(requested.shareId(), requested.spec()), version, timestamp);
+      mapper.upsertShare(userId, UserShareState.requested(requested.shareId(), requested.spec(), requested.deadline()),
+          version, timestamp);
     } else if (event instanceof ShareCreated created) {
-      mapper.upsertShare(userId, UserShareState.requested(created.shareId(), created.spec()).created(created.osShareId()),
+      mapper.upsertShare(userId, UserShareState.requested(created.shareId(), created.spec(), null).created(created.osShareId()),
           version, timestamp);
     } else if (event instanceof ShareExportBecameReady ready) {
-      mapper.upsertShare(userId, UserShareState.requested(ready.shareId(), ready.spec()).created(ready.osShareId())
+      mapper.upsertShare(userId, UserShareState.requested(ready.shareId(), ready.spec(), null).created(ready.osShareId())
           .exportReady(ready.osExportLocationId(), ready.exportLocationPath()), version, timestamp);
     } else if (event instanceof ShareAccessCreated created) {
-      mapper.upsertShare(userId, UserShareState.requested(created.shareId(), created.spec()).created(created.osShareId())
+      mapper.upsertShare(userId, UserShareState.requested(created.shareId(), created.spec(), null).created(created.osShareId())
           .exportReady(created.osExportLocationId(), created.exportLocationPath()).accessCreated(created.osGrantAccessId()),
           version, timestamp);
     } else if (event instanceof ShareBecameReady ready) {
-      mapper.upsertShare(userId, UserShareState.requested(ready.shareId(), ready.spec()).created(ready.osShareId())
+      mapper.upsertShare(userId, UserShareState.requested(ready.shareId(), ready.spec(), null).created(ready.osShareId())
           .exportReady(ready.osExportLocationId(), ready.exportLocationPath()).accessCreated(ready.osGrantAccessId())
           .ready(ready.accessKey()), version, timestamp);
     } else if (event instanceof ShareCreationFailed failed) {
       mapper.upsertShare(userId, new UserShareState(failed.shareId(), failed.spec(), UserShareState.Phase.FAILED,
           failed.osShareId(), failed.osExportLocationId(), failed.exportLocationPath(), failed.osGrantAccessId(),
-          null, 0, failed.failure()), version, timestamp);
+          null, 0, failed.failure(), null), version, timestamp);
     } else if (event instanceof NetworkCreationRequested requested) {
-      upsertNetwork(mapper, userId, UserNetworkState.requested(requested.spec(), requested.projectId()),
+      upsertNetwork(mapper, userId, UserNetworkState.requested(requested.spec(), requested.projectId(), requested.deadline()),
           version, timestamp);
     } else if (event instanceof NetworkBecameReady ready) {
-      upsertNetwork(mapper, userId, UserNetworkState.requested(ready.spec(), ready.projectId()).ready(ready.resources()),
+      upsertNetwork(mapper, userId, UserNetworkState.requested(ready.spec(), ready.projectId(), null).ready(ready.resources()),
           version, timestamp);
     } else if (event instanceof NetworkCreationFailed failed) {
-      upsertNetwork(mapper, userId, UserNetworkState.requested(failed.spec(), failed.projectId()).failed(failed.failure()),
+      upsertNetwork(mapper, userId, UserNetworkState.requested(failed.spec(), failed.projectId(), null).failed(failed.failure()),
           version, timestamp);
     }
   }

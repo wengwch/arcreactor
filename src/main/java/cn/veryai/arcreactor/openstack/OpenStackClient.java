@@ -65,6 +65,7 @@ public class OpenStackClient {
 
   private static final long TOKEN_REFRESH_MARGIN_MILLIS = Duration.ofMinutes(1).toMillis();
   private static final String NOVA_OPERATION_ID = "arcreactor_operation_id";
+  private static final String SHARE_OPERATION_ID = "arcreactor_share_operation_id";
   private static final Executor NOVA_EXECUTOR =
       task -> Thread.ofVirtual().name("openstack-nova").start(task);
   private static final Executor SHARE_EXECUTOR =
@@ -563,30 +564,41 @@ public class OpenStackClient {
     }
   }
 
-  /** Creates the network, subnet, router and interface once, completing after all succeed. */
+  /** Resumes the user network by reusing each confirmed resource before creating a missing step. */
   public CompletionStage<NetworkResources> createUserNetwork(NetworkSpec spec, String projectId, String name) {
     return CompletableFuture.supplyAsync(() -> {
       String regionId = spec.regionId();
       String localNetworkId = resolveUserLocalNetwork(regionId, projectId);
 
-      Network network = createNetwork(regionId, projectId, name);
+      Network network = uniqueResource(listNetworks(regionId, projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId()) && name.equals(item.getName())).toList(),
+          "user network");
+      if (network == null) network = createNetwork(regionId, projectId, name);
       if (network == null) throw new IllegalStateException("Neutron returned no network");
       if (!projectId.equals(network.getTenantId()) || network.isRouterExternal() || network.isShared()) {
         throw new OpenStackOperationException("User network has mismatched ownership or visibility", null);
       }
       String networkId = networkResourceId(network.getId());
 
-      Subnet subnet = createSubnet(regionId, projectId, networkId, name + "-subnet",
+      Subnet subnet = uniqueResource(listSubnets(regionId, projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId()) && (name + "-subnet").equals(item.getName())).toList(),
+          "user subnet");
+      if (subnet == null) subnet = createSubnet(regionId, projectId, networkId, name + "-subnet",
           spec.ipv4CIDR(), spec.dns(), spec.gateway(), Map.of());
       if (subnet == null) throw new IllegalStateException("Neutron returned no subnet");
       if (!projectId.equals(subnet.getTenantId()) || !networkId.equals(subnet.getNetworkId())
-          || !spec.ipv4CIDR().equals(subnet.getCidr())
+          || !spec.ipv4CIDR().equals(subnet.getCidr()) || subnet.getIpVersion() != IPVersionType.V4
+          || !subnet.isDHCPEnabled() || !userNetworkDns(spec.dns()).equals(
+              subnet.getDnsNames() == null ? Set.of() : new HashSet<>(subnet.getDnsNames()))
           || (spec.gateway() != null && !spec.gateway().equals(subnet.getGateway()))) {
-        throw new OpenStackOperationException("User subnet has mismatched ownership, network, CIDR or gateway", null);
+        throw new OpenStackOperationException("User subnet has mismatched ownership or network settings", null);
       }
       String subnetId = networkResourceId(subnet.getId());
 
-      Router router = createRouter(regionId, projectId, name + "-router", localNetworkId);
+      Router router = uniqueResource(listRouters(regionId, projectId).stream()
+          .filter(item -> projectId.equals(item.getTenantId()) && (name + "-router").equals(item.getName())).toList(),
+          "user router");
+      if (router == null) router = createRouter(regionId, projectId, name + "-router", localNetworkId);
       if (router == null) throw new IllegalStateException("Neutron returned no router");
       if (!projectId.equals(router.getTenantId()) || router.getExternalGatewayInfo() == null
           || !localNetworkId.equals(router.getExternalGatewayInfo().getNetworkId())) {
@@ -594,13 +606,43 @@ public class OpenStackClient {
       }
       String routerId = networkResourceId(router.getId());
 
-      RouterInterface attached = attachRouterInterface(regionId, projectId, routerId, subnetId);
-      if (attached == null || !subnetId.equals(attached.getSubnetId()) || !routerId.equals(attached.getId())) {
-        throw new IllegalStateException("Neutron did not confirm the user router interface");
+      Port existing = findUserRouterInterface(regionId, projectId, routerId, networkId, subnetId);
+      String routerPortId;
+      if (existing != null) {
+        routerPortId = networkResourceId(existing.getId());
+      } else {
+        RouterInterface attached = attachRouterInterface(regionId, projectId, routerId, subnetId);
+        if (attached == null || !subnetId.equals(attached.getSubnetId()) || !routerId.equals(attached.getId())) {
+          throw new IllegalStateException("Neutron did not confirm the user router interface");
+        }
+        routerPortId = networkResourceId(attached.getPortId());
       }
-      return new NetworkResources(localNetworkId, networkId, subnetId, routerId,
-          networkResourceId(attached.getPortId()));
+      return new NetworkResources(localNetworkId, networkId, subnetId, routerId, routerPortId);
     }, NETWORK_EXECUTOR);
+  }
+
+  private Port findUserRouterInterface(String regionId, String projectId, String routerId,
+      String networkId, String subnetId) {
+    Port port = uniqueResource(listPorts(regionId, projectId).stream()
+        .filter(item -> routerId.equals(item.getDeviceId()) && item.getFixedIps() != null
+            && item.getFixedIps().stream().anyMatch(ip -> subnetId.equals(ip.getSubnetId())))
+        .toList(), "user router interface");
+    if (port != null && (!projectId.equals(port.getTenantId()) || !networkId.equals(port.getNetworkId())
+        || !Set.of("network:router_interface", "network:router_interface_distributed",
+            "network:ha_router_replicated_interface").contains(Objects.toString(port.getDeviceOwner(), "")))) {
+      throw new OpenStackOperationException("User router interface has mismatched ownership or network", null);
+    }
+    return port;
+  }
+
+  private static Set<String> userNetworkDns(String dns) {
+    if (dns == null || dns.isBlank()) return Set.of();
+    return new HashSet<>(Arrays.stream(dns.split(",")).map(String::trim).filter(value -> !value.isBlank()).toList());
+  }
+
+  private static <T> T uniqueResource(List<? extends T> matches, String resource) {
+    if (matches.size() > 1) throw new OpenStackOperationException("Multiple matching " + resource + " resources", null);
+    return matches.isEmpty() ? null : matches.getFirst();
   }
 
   private String resolveUserLocalNetwork(String regionId, String projectId) {
@@ -1385,11 +1427,27 @@ public class OpenStackClient {
     osClient.compute().flavors().createAndUpdateExtraSpecs(flavorId, flavorMetaData);
   }
 
-  /** Runs blocking Manila SDK calls, including authentication, on virtual threads. */
+  /** Reuses the share identified by the persisted operation marker before issuing a create. */
   public CompletionStage<Share> createShare(String region, String projectId, ShareCreate shareCreate) {
     return CompletableFuture.supplyAsync(() -> {
       try {
-        return getOsShareClient(region, projectId).share().shares().create(shareCreate);
+        String operationId = shareCreate.getMetadata() == null ? null : shareCreate.getMetadata().get(SHARE_OPERATION_ID);
+        requireServerText(operationId, "shareOperationId");
+        var shares = getOsShareClient(region, projectId).share().shares();
+        Share existing = uniqueResource(shares.listDetails().stream()
+            .filter(share -> projectId.equals(share.getProjectId()) && share.getMetadata() != null
+                && operationId.equals(share.getMetadata().get(SHARE_OPERATION_ID))).toList(), "user share");
+        if (existing != null) {
+          if (!Objects.equals(shareCreate.getName(), existing.getName())
+              || !Objects.equals(shareCreate.getSize(), existing.getSize())
+              || shareCreate.getShareProto() != existing.getShareProto()
+              || (!Objects.equals(shareCreate.getShareType(), existing.getShareType())
+                  && !Objects.equals(shareCreate.getShareType(), existing.getShareTypeName()))) {
+            throw new OpenStackOperationException("Existing share has mismatched specification", null);
+          }
+          return existing;
+        }
+        return shares.create(shareCreate);
       } catch (Exception e) {
         log.error("create share failed", e);
         throw new OpenStackOperationException("create share failed", e);
@@ -1429,10 +1487,17 @@ public class OpenStackClient {
       String region, String projectId, String shareId, AccessOptions accessOptions) {
     return CompletableFuture.supplyAsync(() -> {
       try {
-        return getOsShareClient(region, projectId)
-            .share()
-            .shares()
-            .grantAccess(shareId, accessOptions);
+        var shares = getOsShareClient(region, projectId).share().shares();
+        Access existing = uniqueResource(shares.listAccess(shareId).stream()
+            .filter(access -> accessOptions.getAccessType() == access.getAccessType()
+                && accessOptions.getAccessTo().equals(access.getAccessTo())).toList(), "share access");
+        if (existing != null) {
+          if (existing.getAccessLevel() != accessOptions.getAccessLevel()) {
+            throw new OpenStackOperationException("Existing share access has a different level", null);
+          }
+          return existing;
+        }
+        return shares.grantAccess(shareId, accessOptions);
       } catch (Exception e) {
         log.error("grant share access failed", e);
         throw new OpenStackOperationException("grant share access failed", e);

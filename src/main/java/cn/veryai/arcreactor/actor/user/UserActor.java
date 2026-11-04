@@ -33,8 +33,9 @@ import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
@@ -45,9 +46,9 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -84,10 +85,10 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private final UserProjectSettings projectSettings;
   private final UserNetworkSettings networkSettings;
   private final Set<String> sharePollsInFlight = new HashSet<>();
-  // Concurrent create requests wait for the same persisted terminal result.
-  private final Map<String, Set<ActorRef<ShareReply>>> shareReplyTos = new HashMap<>();
-  private final Map<String, Set<ActorRef<ProjectReply>>> projectReplyTos = new HashMap<>();
-  private final Map<String, Set<ActorRef<NetworkReply>>> networkReplyTos = new HashMap<>();
+  private String recoveryToken;
+
+  /** Local async replies from an earlier recovery must not change the resumed workflow. */
+  private record OperationCompleted(String recoveryToken, UserCommand result) implements UserCommand {}
 
   public record ShareCreateCompleted(String regionId, long generation, String osShareId) implements UserCommand {}
   public record ShareExportReady(String regionId, long generation, String exportId, String exportPath)
@@ -150,6 +151,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   @Override
   public CommandHandler<UserCommand, UserEvent, UserState> commandHandler() {
     return newCommandHandlerBuilder().forAnyState()
+        .onCommand(OperationCompleted.class, this::onOperationCompleted)
         .onCommand(CreateShare.class, this::onCreateShare)
         .onCommand(GetShare.class, this::onGetShare)
         .onCommand(ShareCreateCompleted.class, this::onShareCreated)
@@ -171,16 +173,36 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .build();
   }
 
+  private Effect<UserEvent, UserState> onOperationCompleted(UserState state, OperationCompleted command) {
+    if (!Objects.equals(recoveryToken, command.recoveryToken())) return Effect().none();
+    return switch (command.result()) {
+      case ProjectReady ready -> onProjectReady(state, ready);
+      case ProjectFailed failed -> onProjectFailed(state, failed);
+      case NetworkReady ready -> onNetworkReady(state, ready);
+      case NetworkFailed failed -> onNetworkFailed(state, failed);
+      case ShareCreateCompleted created -> onShareCreated(state, created);
+      case ShareExportReady ready -> onShareExportReady(state, ready);
+      case ShareAccessCreateCompleted created -> onShareAccessCreated(state, created);
+      case ShareReady ready -> onShareReady(state, ready);
+      case ShareFailed failed -> onShareFailed(state, failed);
+      case SharePollPending pending -> onSharePollPending(state, pending);
+      default -> throw new IllegalArgumentException("Unexpected operation result");
+    };
+  }
+
+  private <T> void pipeOperation(CompletionStage<T> operation, BiFunction<T, Throwable, UserCommand> result) {
+    String token = recoveryToken;
+    context.pipeToSelf(operation, (value, error) -> new OperationCompleted(token, result.apply(value, error)));
+  }
+
   private Effect<UserEvent, UserState> onCreateNetwork(UserState state, CreateNetwork command) {
     UserNetworkState existing = state.networks().get(command.spec().regionId());
     if (existing != null) {
       if (!existing.spec().equals(command.spec())) {
         command.replyTo().tell(new NetworkReply(NetworkReply.Status.REJECTED, userId, command.spec().regionId(), null,
             "This user already has a network specification in this region"));
-      } else if (existing.terminal()) {
-        command.replyTo().tell(NetworkReply.from(userId, existing));
       } else {
-        networkReplyTos.computeIfAbsent(existing.regionId(), ignored -> new HashSet<>()).add(command.replyTo());
+        command.replyTo().tell(NetworkReply.from(userId, existing));
       }
       return Effect().none();
     }
@@ -190,11 +212,12 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
           command.spec().regionId(), null, "The user cluster project must be READY before creating a network"));
       return Effect().none();
     }
-    return Effect().persist(new NetworkCreationRequested(command.spec(), project.projectId()))
+    return Effect().persist(new NetworkCreationRequested(command.spec(), project.projectId(),
+            Instant.now().plus(networkSettings.operationTimeout())))
         .thenRun(next -> {
-          String regionId = command.spec().regionId();
-          networkReplyTos.computeIfAbsent(regionId, ignored -> new HashSet<>()).add(command.replyTo());
-          executeNetwork(next.networks().get(regionId));
+          UserNetworkState network = next.networks().get(command.spec().regionId());
+          command.replyTo().tell(NetworkReply.from(userId, network));
+          executeNetwork(network);
         });
   }
 
@@ -209,25 +232,29 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private Effect<UserEvent, UserState> onNetworkReady(UserState state, NetworkReady command) {
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new NetworkBecameReady(network.spec(), network.projectId(), command.resources()))
-        .thenRun(next -> replyNetwork(next.networks().get(command.regionId())));
+    return Effect().persist(new NetworkBecameReady(network.spec(), network.projectId(), command.resources()));
   }
 
   private Effect<UserEvent, UserState> onNetworkFailed(UserState state, NetworkFailed command) {
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new NetworkCreationFailed(network.spec(), network.projectId(), command.failure()))
-        .thenRun(next -> replyNetwork(next.networks().get(command.regionId())));
+    return Effect().persist(new NetworkCreationFailed(network.spec(), network.projectId(), command.failure()));
   }
 
   private void executeNetwork(UserNetworkState network) {
+    Duration remaining = Duration.between(Instant.now(), network.deadline());
+    if (remaining.isNegative() || remaining.isZero()) {
+      context.getSelf().tell(new NetworkFailed(network.regionId(), network.generation(),
+          "Network creation timed out; OpenStack outcome is unconfirmed"));
+      return;
+    }
     CompletionStage<NetworkResources> operation;
     try {
       String name = network.spec().name();
       operation = client.createUserNetwork(network.spec(), network.projectId(), name);
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
-    context.pipeToSelf(operation.toCompletableFuture().orTimeout(
-        networkSettings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
+    pipeOperation(operation.toCompletableFuture().orTimeout(
+        remaining.toNanos(), TimeUnit.NANOSECONDS), (result, error) -> {
       if (error == null) {
         return result != null
             ? new NetworkReady(network.regionId(), network.generation(), result)
@@ -244,30 +271,23 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     });
   }
 
-  private void replyNetwork(UserNetworkState network) {
-    Set<ActorRef<NetworkReply>> replyTos = networkReplyTos.remove(network.regionId());
-    if (replyTos == null) return;
-    NetworkReply reply = NetworkReply.from(userId, network);
-    replyTos.forEach(replyTo -> replyTo.tell(reply));
-  }
-
   private Effect<UserEvent, UserState> onCreateProject(UserState state, CreateProject command) {
     UserProjectState existing = state.projects().get(command.clusterId());
     if (existing != null) {
       if (!existing.name().equals(command.name())) {
         command.replyTo().tell(new ProjectReply(ProjectReply.Status.REJECTED, userId, command.clusterId(), null,
             "This user already has a project specification in this cluster"));
-      } else if (existing.terminal()) {
-        command.replyTo().tell(ProjectReply.from(userId, existing));
       } else {
-        projectReplyTos.computeIfAbsent(command.clusterId(), ignored -> new HashSet<>()).add(command.replyTo());
+        command.replyTo().tell(ProjectReply.from(userId, existing));
       }
       return Effect().none();
     }
-    return Effect().persist(new ProjectCreationRequested(command.clusterId(), command.name()))
+    return Effect().persist(new ProjectCreationRequested(command.clusterId(), command.name(),
+            Instant.now().plus(projectSettings.operationTimeout())))
         .thenRun(next -> {
-          projectReplyTos.computeIfAbsent(command.clusterId(), ignored -> new HashSet<>()).add(command.replyTo());
-          executeProject(next.projects().get(command.clusterId()));
+          UserProjectState project = next.projects().get(command.clusterId());
+          command.replyTo().tell(ProjectReply.from(userId, project));
+          executeProject(project);
         });
   }
 
@@ -282,26 +302,30 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private Effect<UserEvent, UserState> onProjectReady(UserState state, ProjectReady command) {
     UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new ProjectBecameReady(command.clusterId(), project.name(), command.projectId()))
-        .thenRun(next -> replyProject(next.projects().get(command.clusterId())));
+    return Effect().persist(new ProjectBecameReady(command.clusterId(), project.name(), command.projectId()));
   }
 
   private Effect<UserEvent, UserState> onProjectFailed(UserState state, ProjectFailed command) {
     UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
-    return Effect().persist(new ProjectCreationFailed(command.clusterId(), project.name(), command.failure()))
-        .thenRun(next -> replyProject(next.projects().get(command.clusterId())));
+    return Effect().persist(new ProjectCreationFailed(command.clusterId(), project.name(), command.failure()));
   }
 
   private void executeProject(UserProjectState project) {
+    Duration remaining = Duration.between(Instant.now(), project.deadline());
+    if (remaining.isNegative() || remaining.isZero()) {
+      context.getSelf().tell(new ProjectFailed(project.clusterId(), project.generation(),
+          "Project creation timed out; OpenStack outcome is unconfirmed"));
+      return;
+    }
     CompletionStage<String> operation;
     try {
       operation = client.createProjectWithAdminRole(
               project.clusterId(), project.name(), userId)
           .thenApply(prepared -> prepared == null ? null : prepared.getId());
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
-    context.pipeToSelf(operation.toCompletableFuture().orTimeout(
-        projectSettings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
+    pipeOperation(operation.toCompletableFuture().orTimeout(
+        remaining.toNanos(), TimeUnit.NANOSECONDS), (result, error) -> {
       if (error == null) {
         return hasText(result)
             ? new ProjectReady(project.clusterId(), project.generation(), result)
@@ -318,32 +342,22 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     });
   }
 
-  private void replyProject(UserProjectState project) {
-    Set<ActorRef<ProjectReply>> replyTos = projectReplyTos.remove(project.clusterId());
-    if (replyTos == null) return;
-    ProjectReply reply = ProjectReply.from(userId, project);
-    replyTos.forEach(replyTo -> replyTo.tell(reply));
-  }
-
   private Effect<UserEvent, UserState> onCreateShare(UserState state, CreateShare command) {
     UserShareState existing = state.shares().get(command.spec().regionId());
     if (existing != null) {
       if (!existing.spec().equals(command.spec())) {
         command.replyTo().tell(new ShareReply(ShareReply.Status.REJECTED, null,
             "This user already has a share specification in this region"));
-      } else if (existing.terminal()) {
-        command.replyTo().tell(ShareReply.from(existing));
       } else {
-        shareReplyTos.computeIfAbsent(existing.regionId(), ignored -> new HashSet<>()).add(command.replyTo());
+        command.replyTo().tell(ShareReply.from(existing));
       }
       return Effect().none();
     }
-    return Effect().persist(new ShareCreationRequested(command.shareId(), command.spec())).thenRun(next -> {
+    return Effect().persist(new ShareCreationRequested(command.shareId(), command.spec(),
+        Instant.now().plus(settings.creationTimeout()))).thenRun(next -> {
       UserShareState share = next.shares().get(command.spec().regionId());
-      shareReplyTos.computeIfAbsent(share.regionId(), ignored -> new HashSet<>()).add(command.replyTo());
-      timers.startSingleTimer(new ShareCreationTimerKey(share.regionId()),
-          new ShareCreationTimedOut(share.regionId()), settings.creationTimeout());
-      executeShareCreate(share);
+      command.replyTo().tell(ShareReply.from(share));
+      resumeShare(share);
     });
   }
 
@@ -385,7 +399,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     if (!matchesShare(share, command.generation(), Phase.WAITING_ACCESS)) return Effect().none();
     return Effect().persist(new ShareBecameReady(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), share.osGrantAccessId(), command.accessKey()))
-        .thenRun(next -> replyShare(next.shares().get(command.regionId())));
+        .thenRun(next -> stopSharePolling(command.regionId()));
   }
 
   private Effect<UserEvent, UserState> onShareFailed(UserState state, ShareFailed command) {
@@ -393,7 +407,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     if (share == null || share.terminal() || share.generation() != command.generation()) return Effect().none();
     return Effect().persist(new ShareCreationFailed(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), share.osGrantAccessId(), command.failure()))
-        .thenRun(next -> replyShare(next.shares().get(command.regionId())));
+        .thenRun(next -> stopSharePolling(command.regionId()));
   }
 
   private Effect<UserEvent, UserState> onShareCreationTimedOut(UserState state, ShareCreationTimedOut command) {
@@ -485,14 +499,20 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private <T> void pipeShareOperation(UserShareState share, Supplier<CompletionStage<T>> call,
       Function<T, UserCommand> success) {
+    Duration remaining = Duration.between(Instant.now(), share.deadline());
+    if (remaining.isNegative() || remaining.isZero()) {
+      context.getSelf().tell(new ShareCreationTimedOut(share.regionId()));
+      return;
+    }
+    Duration timeout = remaining.compareTo(settings.operationTimeout()) < 0 ? remaining : settings.operationTimeout();
     CompletionStage<UserCommand> operation;
     try {
       operation = call.get().thenApply(success);
     } catch (RuntimeException error) {
       operation = CompletableFuture.failedFuture(error);
     }
-    context.pipeToSelf(operation.toCompletableFuture()
-        .orTimeout(settings.operationTimeout().toMillis(), TimeUnit.MILLISECONDS), (result, error) -> {
+    pipeOperation(operation.toCompletableFuture()
+        .orTimeout(timeout.toNanos(), TimeUnit.NANOSECONDS), (result, error) -> {
       if (error == null) return result;
       Throwable cause = rootCause(error);
       ResponseException response = responseCause(cause);
@@ -519,14 +539,26 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     context.getSelf().tell(new PollShare(share.regionId(), share.generation()));
   }
 
-  private void replyShare(UserShareState share) {
-    timers.cancel(new SharePollTimerKey(share.regionId()));
-    timers.cancel(new ShareCreationTimerKey(share.regionId()));
-    sharePollsInFlight.remove(share.regionId());
-    Set<ActorRef<ShareReply>> replyTos = shareReplyTos.remove(share.regionId());
-    if (replyTos == null) return;
-    ShareReply reply = ShareReply.from(share);
-    replyTos.forEach(replyTo -> replyTo.tell(reply));
+  private void stopSharePolling(String regionId) {
+    timers.cancel(new SharePollTimerKey(regionId));
+    timers.cancel(new ShareCreationTimerKey(regionId));
+    sharePollsInFlight.remove(regionId);
+  }
+
+  private void resumeShare(UserShareState share) {
+    Duration remaining = Duration.between(Instant.now(), share.deadline());
+    if (remaining.isNegative() || remaining.isZero()) {
+      context.getSelf().tell(new ShareCreationTimedOut(share.regionId()));
+      return;
+    }
+    timers.startSingleTimer(new ShareCreationTimerKey(share.regionId()),
+        new ShareCreationTimedOut(share.regionId()), remaining);
+    switch (share.phase()) {
+      case CREATING -> executeShareCreate(share);
+      case GRANTING_ACCESS -> executeShareAccessCreate(share);
+      case WAITING_EXPORT, WAITING_ACCESS -> pollShareNow(share);
+      default -> {}
+    }
   }
 
   private String operationId(String shareId) {
@@ -538,7 +570,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   public EventHandler<UserState, UserEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
         .onEvent(ShareCreationRequested.class, (state, event) ->
-            state.updated(UserShareState.requested(event.shareId(), event.spec())))
+            state.updated(UserShareState.requested(event.shareId(), event.spec(), event.deadline())))
         .onEvent(ShareCreated.class, (state, event) ->
             state.updated(state.shares().get(event.spec().regionId()).created(event.osShareId())))
         .onEvent(ShareExportBecameReady.class, (state, event) ->
@@ -551,13 +583,13 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .onEvent(ShareCreationFailed.class, (state, event) ->
             state.updated(state.shares().get(event.spec().regionId()).failed(event.failure())))
         .onEvent(ProjectCreationRequested.class, (state, event) ->
-            state.updated(UserProjectState.requested(event.clusterId(), event.name())))
+            state.updated(UserProjectState.requested(event.clusterId(), event.name(), event.deadline())))
         .onEvent(ProjectBecameReady.class, (state, event) ->
             state.updated(state.projects().get(event.clusterId()).ready(event.projectId())))
         .onEvent(ProjectCreationFailed.class, (state, event) ->
             state.updated(state.projects().get(event.clusterId()).failed(event.failure())))
         .onEvent(NetworkCreationRequested.class, (state, event) ->
-            state.updated(UserNetworkState.requested(event.spec(), event.projectId())))
+            state.updated(UserNetworkState.requested(event.spec(), event.projectId(), event.deadline())))
         .onEvent(NetworkBecameReady.class, (state, event) ->
             state.updated(state.networks().get(event.spec().regionId()).ready(event.resources())))
         .onEvent(NetworkCreationFailed.class, (state, event) ->
@@ -568,15 +600,14 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   @Override
   public SignalHandler<UserState> signalHandler() {
     return newSignalHandlerBuilder().onSignal(RecoveryCompleted.class, (state, signal) -> {
+      recoveryToken = UUID.randomUUID().toString();
+      sharePollsInFlight.clear();
       state.shares().values().stream().filter(share -> !share.terminal())
-          .forEach(share -> context.getSelf().tell(new ShareFailed(share.regionId(), share.generation(),
-              "Share creation was interrupted by actor recovery; OpenStack outcome is unconfirmed")));
+          .forEach(this::resumeShare);
       state.projects().values().stream().filter(project -> !project.terminal())
-          .forEach(project -> context.getSelf().tell(new ProjectFailed(project.clusterId(), project.generation(),
-              "Project creation was interrupted by actor recovery; OpenStack outcome is unconfirmed")));
+          .forEach(this::executeProject);
       state.networks().values().stream().filter(network -> !network.terminal())
-          .forEach(network -> context.getSelf().tell(new NetworkFailed(network.regionId(), network.generation(),
-              "Network creation was interrupted by actor recovery; OpenStack outcome is unconfirmed")));
+          .forEach(this::executeNetwork);
     }).build();
   }
 
