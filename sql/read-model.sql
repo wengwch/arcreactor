@@ -83,7 +83,6 @@ CREATE TABLE IF NOT EXISTS hypervisor_resource (
   hypervisor_id VARCHAR(255) PRIMARY KEY,
   status VARCHAR(32) NOT NULL,
   availability_zone VARCHAR(255) NOT NULL DEFAULT 'default',
-  traits JSON NOT NULL,
   total_vcpu INT NOT NULL DEFAULT 0,
   reserved_vcpu INT NOT NULL DEFAULT 0,
   allocated_vcpu INT NOT NULL DEFAULT 0,

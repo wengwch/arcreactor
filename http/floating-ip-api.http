@@ -1,4 +1,5 @@
 # 新库先执行 sql/floating-ips.sql；已按旧结构建表的库执行 sql/migrations/add-floating-ip-port-mask.sql。
+# 已有 floating_ip 表还需执行 sql/migrations/add-floating-ip-projection-version.sql，增加投影版本列。
 # 先执行 http/sys-network-router.http 中的公网网络请求，保存 csvPublicNetworkId，
 # 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
 # Test-SH-01 所属集群的 adminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。

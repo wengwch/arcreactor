@@ -1,8 +1,8 @@
 package cn.veryai.arcreactor.web.api;
 
-import cn.veryai.arcreactor.actor.instance.InstanceLifecycle;
 import cn.veryai.arcreactor.service.InstanceService;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
+import cn.veryai.arcreactor.vo.InstanceView;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
 import jakarta.validation.Valid;
 import java.util.concurrent.CompletionStage;
@@ -29,7 +29,7 @@ public class InstanceController {
     }
 
     @GetMapping("/{instanceId}")
-    public CompletionStage<InstanceLifecycle.View> getInstance(@PathVariable("instanceId") String instanceId) {
+    public CompletionStage<InstanceView> getInstance(@PathVariable("instanceId") String instanceId) {
         return instanceService.get(instanceId);
     }
 }

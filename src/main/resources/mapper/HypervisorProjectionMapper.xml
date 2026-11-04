@@ -11,9 +11,9 @@
 
     <insert id="upsertCapacity">
         INSERT INTO hypervisor_resource(
-          hypervisor_id, status, availability_zone, traits, total_vcpu, total_memory_gb, total_disk_gb,
+          hypervisor_id, status, availability_zone, total_vcpu, total_memory_gb, total_disk_gb,
           total_gpu, resource_version, updated_at)
-        VALUES (#{hypervisorId}, 'MAINTENANCE', #{capacity.availabilityZone}, '[]', #{capacity.totalVcpus},
+        VALUES (#{hypervisorId}, 'MAINTENANCE', #{capacity.availabilityZone}, #{capacity.totalVcpus},
           #{capacity.totalMemoryGb}, #{capacity.totalDiskGb}, #{capacity.gpus}, #{version}, #{updatedAt})
         ON DUPLICATE KEY UPDATE
           availability_zone = IF(resource_version &lt; VALUES(resource_version), VALUES(availability_zone), availability_zone),

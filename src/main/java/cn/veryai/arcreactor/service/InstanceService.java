@@ -1,11 +1,17 @@
 package cn.veryai.arcreactor.service;
 
+import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
-import cn.veryai.arcreactor.actor.instance.InstanceLifecycle;
+import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
+import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
+import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
 import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
+import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
+import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
+import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
@@ -23,8 +29,8 @@ import cn.veryai.arcreactor.repo.ImageRepo;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
+import cn.veryai.arcreactor.vo.InstanceView;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
@@ -38,6 +44,7 @@ import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.pekko.actor.typed.javadsl.AskPattern;
 import org.openstack4j.model.manila.Share;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -57,7 +64,7 @@ public class InstanceService {
     private final FloatingIpRepo floatingIpRepo;
     private final InstanceCreationProperties creationProperties;
     private final CloudInitRenderer cloudInitRenderer;
-    private final InstanceLifecycle instanceLifecycle;
+    private final PekkoRuntime pekkoRuntime;
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CompletionStage<CreateInstanceResult> create(CreateInstanceParam param) {
@@ -79,23 +86,32 @@ public class InstanceService {
         String instanceId = UUID.randomUUID().toString();
         String requestId = UUID.randomUUID().toString();
         CreationDefaults defaults = creationDefaults(param, region);
-        return submit(new InstanceLifecycle.CreateRequest(requestId, instanceId,
-                region.getClusterId(), region.getId(), param.getName(),
+        InstanceSpec spec = new InstanceSpec(region.getClusterId(), region.getId(), param.getName(),
                 image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getDisk(), flavor.getGpus(),
                 StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
                 new ShareRequirement(param.getUserId(), defaults.resourceId(), defaults.share()),
-                defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType()));
+                defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType());
+        return submit(requestId, instanceId, spec);
     }
 
-    public CompletionStage<InstanceLifecycle.View> get(String instanceId) {
-        return instanceLifecycle.get(instanceId).thenApply(view -> {
-            if (view.requestId() == null) throw new BaseException(ErrorCode.RESOURCE_NOT_FOUND);
-            return view;
-        });
+    public CompletionStage<InstanceView> get(String instanceId) {
+        return AskPattern.<WorkflowCommand, InstanceWorkflowState>ask(
+                        pekkoRuntime.instanceActor(instanceId),
+                        GetInstanceState::new,
+                        pekkoRuntime.getInstanceAskTimeout(),
+                        pekkoRuntime.getActorSystem().scheduler())
+                .thenApply(state -> {
+                    if (state.requestId() == null) throw new BaseException(ErrorCode.RESOURCE_NOT_FOUND);
+                    return InstanceView.from(state);
+                });
     }
 
-    private CompletionStage<CreateInstanceResult> submit(InstanceLifecycle.CreateRequest request) {
-        return instanceLifecycle.create(request).handle((submission, error) -> {
+    private CompletionStage<CreateInstanceResult> submit(String requestId, String instanceId, InstanceSpec spec) {
+        return AskPattern.<WorkflowCommand, InstanceReply>ask(
+                pekkoRuntime.instanceActor(instanceId),
+                replyTo -> new CreateInstance(requestId, instanceId, spec, replyTo),
+                pekkoRuntime.getInstanceAskTimeout(),
+                pekkoRuntime.getActorSystem().scheduler()).handle((reply, error) -> {
             if (error != null) {
                 Throwable cause = error;
                 while ((cause instanceof CompletionException || cause instanceof ExecutionException) && cause.getCause() != null) {
@@ -104,13 +120,13 @@ public class InstanceService {
                 throw new BaseException(cause instanceof TimeoutException
                         ? ErrorCode.INSTANCE_CREATE_TIMEOUT : ErrorCode.INSTANCE_CREATE_UNCONFIRMED, cause);
             }
-            if (!submission.accepted()) {
+            if (!reply.accepted()) {
                 log.warn("Instance creation rejected: instanceId={}, requestId={}, detail={}",
-                        request.instanceId(), request.requestId(), submission.detail());
+                        instanceId, requestId, reply.detail());
                 throw new BaseException(ErrorCode.INSTANCE_CREATE_REJECTED);
             }
-            CloudInitSpec credentials = request.cloudInit();
-            return new CreateInstanceResult(request.instanceId(), request.requestId(), credentials.username(),
+            CloudInitSpec credentials = spec.cloudInit();
+            return new CreateInstanceResult(instanceId, requestId, credentials.username(),
                     credentials.password(), credentials.jupyterToken());
         });
     }

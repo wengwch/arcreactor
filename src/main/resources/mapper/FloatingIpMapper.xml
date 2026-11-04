@@ -3,7 +3,7 @@
 <mapper namespace="cn.veryai.arcreactor.mapper.FloatingIpMapper">
     <select id="findByRegionId" resultType="cn.veryai.arcreactor.entity.FloatingIpEntity">
         SELECT id, name, description, region_id, ext_net_id, os_ext_net_id,
-               os_project_id, os_floating_ip_id, floating_ip, port_mask
+               os_project_id, os_floating_ip_id, floating_ip, port_mask, resource_version
         FROM floating_ip
         WHERE region_id = #{regionId}
         ORDER BY name, id

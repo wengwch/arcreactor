@@ -7,9 +7,11 @@ import cn.veryai.arcreactor.actor.hypervisor.projection.HypervisorProjection;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
+import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
 import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
+import cn.veryai.arcreactor.actor.fip.projection.FloatingIpProjection;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
@@ -30,6 +32,7 @@ import org.springframework.stereotype.Component;
 public final class PekkoRuntime {
   @Getter private final ActorSystem<Void> actorSystem;
   @Getter private final Duration askTimeout;
+  @Getter private final Duration instanceAskTimeout;
   private final ClusterSharding sharding;
 
   public PekkoRuntime(
@@ -46,6 +49,7 @@ public final class PekkoRuntime {
     this.actorSystem = actorSystem;
     Config config = actorSystem.settings().config();
     this.askTimeout = config.getDuration("cloud.scheduler.ask-timeout");
+    this.instanceAskTimeout = config.getDuration("cloud.instance.ask-timeout");
     InstanceWorkflowSettings settings =
         new InstanceWorkflowSettings(
             duration(config, "cloud.reservation.ttl"),
@@ -83,6 +87,11 @@ public final class PekkoRuntime {
             dataSource,
             sqlSessionFactory,
             actorSystem.settings().config().getInt("cloud.projection.slice-ranges"));
+        FloatingIpProjection.init(
+            actorSystem,
+            dataSource,
+            sqlSessionFactory,
+            actorSystem.settings().config().getInt("cloud.projection.slice-ranges"));
       }
     } catch (Exception ex) {
       actorSystem.terminate();
@@ -97,6 +106,10 @@ public final class PekkoRuntime {
 
   public EntityRef<HypervisorCommand> hypervisorActor(String id) {
     return sharding.entityRefFor(HypervisorActor.TYPE_KEY, id);
+  }
+
+  public EntityRef<WorkflowCommand> instanceActor(String id) {
+    return sharding.entityRefFor(InstanceWorkflowActor.TYPE_KEY, id);
   }
 
   @PreDestroy

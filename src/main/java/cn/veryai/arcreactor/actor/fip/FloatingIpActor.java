@@ -111,7 +111,8 @@ public final class FloatingIpActor
           BitSet.valueOf(initialPortMask).equals(BitSet.valueOf(portMask)));
       return Effect().none();
     }
-    return Effect().persist(new FloatingIpEnabled(portMask))
+    return Effect().persist(new FloatingIpEnabled(
+            identity, portMask, state.enabled(portMask).usedPorts().toByteArray()))
         .thenRun(next -> acknowledgeEnable(command, true));
   }
 
@@ -145,7 +146,7 @@ public final class FloatingIpActor
     long order = state.claims().values().stream().mapToLong(ForwardingClaim::order).max().orElse(0) + 1;
     ForwardingClaim claim = new ForwardingClaim(command.claimId(), identity.floatingIpId(), command.spec(), order,
         Phase.ALLOCATING, ForwardingResources.empty(), false, false, false, 0, 0, null);
-    return Effect().persist(new ForwardingUpdated(claim)).thenRun(next -> {
+    return Effect().persist(forwardingUpdated(state, claim)).thenRun(next -> {
       command.replyTo().tell(ForwardingReply.from(claim)); drive(next);
     });
   }
@@ -158,14 +159,14 @@ public final class FloatingIpActor
   private Effect<FloatingIpEvent, FloatingIpState> onDelete(FloatingIpState state, DeletePortForwarding command) {
     ForwardingClaim claim = state.claims().get(command.claimId());
     if (claim == null) {
-      return Effect().persist(new ForwardingCancelled(command.claimId(), null))
+      return Effect().persist(new ForwardingCancelled(identity, command.claimId(), null))
           .thenRun(next -> command.replyTo().tell(new ForwardingReply(ForwardingReply.Status.DELETED, null, null)));
     }
     if (claim.phase() == Phase.DELETED || (claim.deleteRequested() && !claim.paused())) {
       command.replyTo().tell(ForwardingReply.from(claim)); return Effect().none();
     }
     ForwardingClaim deleting = requestDelete(claim);
-    return Effect().persist(new ForwardingUpdated(deleting)).thenRun(next -> {
+    return Effect().persist(forwardingUpdated(state, deleting)).thenRun(next -> {
       delayed.remove(claim.claimId()); command.replyTo().tell(ForwardingReply.from(deleting)); drive(next);
     });
   }
@@ -174,13 +175,13 @@ public final class FloatingIpActor
       FloatingIpState state, DeleteInstancePortForwardings command) {
     List<FloatingIpEvent> events = new ArrayList<>();
     if (!state.cancelledInstances().contains(command.instanceId())) {
-      events.add(new ForwardingCancelled(null, command.instanceId()));
+      events.add(new ForwardingCancelled(identity, null, command.instanceId()));
     }
     boolean complete = true;
     for (ForwardingClaim claim : state.claims().values()) {
       if (!claim.spec().instanceId().equals(command.instanceId()) || claim.phase() == Phase.DELETED) continue;
       complete = false;
-      if (!claim.deleteRequested() || claim.paused()) events.add(new ForwardingUpdated(requestDelete(claim)));
+      if (!claim.deleteRequested() || claim.paused()) events.add(forwardingUpdated(state, requestDelete(claim)));
     }
     boolean reply = complete;
     return Effect().persist(events).thenRun(next -> {
@@ -198,7 +199,7 @@ public final class FloatingIpActor
       command.replyTo().tell(reply(claim)); return Effect().none();
     }
     ForwardingClaim resumed = resume(claim);
-    return Effect().persist(new ForwardingUpdated(resumed)).thenRun(next -> {
+    return Effect().persist(forwardingUpdated(state, resumed)).thenRun(next -> {
       delayed.remove(claim.claimId()); command.replyTo().tell(ForwardingReply.from(resumed)); drive(next);
     });
   }
@@ -228,12 +229,12 @@ public final class FloatingIpActor
         || claim.generation() != command.generation() || delayed.contains(claim.claimId())) return Effect().none();
     if (failureCleanupDisabled(state, claim)) return Effect().none();
     if (claim.attempts() >= settings.maxAttempts()) {
-      return Effect().persist(new ForwardingUpdated(pause(claim, "Operation requires reconciliation")))
+      return Effect().persist(forwardingUpdated(state, pause(claim, "Operation requires reconciliation")))
           .thenRun(this::drive);
     }
     boolean allowCreate = !claim.writeStarted();
     ForwardingClaim attempted = attempted(claim);
-    return Effect().persist(new ForwardingUpdated(attempted))
+    return Effect().persist(forwardingUpdated(state, attempted))
         .thenRun(next -> execute(attempted, allowCreate));
   }
 
@@ -268,7 +269,7 @@ public final class FloatingIpActor
     if (command.failure() != null) {
       if (claim.phase() == Phase.ALLOCATING || (command.definitive() && !claim.deleting()
           && (!claim.writing() || command.initialWrite()))) {
-        return save(cleanup(claim, command.failure()));
+        return save(state, cleanup(claim, command.failure()));
       }
       delay(claim); drive(state); return Effect().none();
     }
@@ -298,11 +299,15 @@ public final class FloatingIpActor
     if (next.deleteRequested() && !next.deleting() && next.phase() != Phase.DELETED) {
       next = cleanup(next, next.failure());
     }
-    return save(next);
+    return save(state, next);
   }
 
-  private Effect<FloatingIpEvent, FloatingIpState> save(ForwardingClaim claim) {
-    return Effect().persist(new ForwardingUpdated(claim)).thenRun(this::drive);
+  private ForwardingUpdated forwardingUpdated(FloatingIpState state, ForwardingClaim claim) {
+    return new ForwardingUpdated(identity, claim, state.updated(claim).usedPorts().toByteArray());
+  }
+
+  private Effect<FloatingIpEvent, FloatingIpState> save(FloatingIpState state, ForwardingClaim claim) {
+    return Effect().persist(forwardingUpdated(state, claim)).thenRun(this::drive);
   }
 
   private void delay(ForwardingClaim claim) {

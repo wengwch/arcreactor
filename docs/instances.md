@@ -73,13 +73,13 @@ LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路
 QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
 创建 Command 的 `spec.network.parentPortBandwidthLimit` 和 `spec.network.subPortBandwidthLimit`
 分别携带父、子端口限速，随实例创建事件持久化；恢复时沿用提交时的值。
-HTTP 层从以上服务端配置组装这两个参数，直接调用 `InstanceLifecycle` 的调用方可以逐实例传入不同限速：
+服务层从以上配置组装这两个参数，直接发送 `CreateInstance` 命令的调用方可以逐实例传入不同限速：
 
 ```java
 NetworkRequirement network = new NetworkRequirement(segmentationId, userNetworkSpec,
     new PortBandwidthLimit(100_000, 10_000),   // 父端口：100 Mbps，突发 10,000 kbit
     new PortBandwidthLimit(1_000_000, 100_000)); // 子端口：1 Gbps，突发 100,000 kbit
-// 将 network 传给 InstanceLifecycle.CreateRequest，最终进入 CreateInstance.spec.network。
+// 将 network 传入 InstanceSpec，再通过 CreateInstance 命令提交。
 ```
 
 每个端口的同一组参数分别创建 ingress 和 egress 两条规则。`maxKbps` 单位为 kbit/s，
@@ -93,7 +93,10 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 
 ## 创建流程与恢复
 
-接口服务完成参数和本地资源校验后，直接提交包含原始 Share、网络规格的实例创建请求。
+`InstanceService` 完成参数和本地资源校验后，构造包含原始 Share、网络规格的 `InstanceSpec`，
+通过 `PekkoRuntime.instanceActor(instanceId)` 直接 ask `CreateInstance`。
+查询同样向 Actor 发送 `GetInstanceState`，将返回状态转换成 `InstanceView`；
+创建和查询均使用 `cloud.instance.ask-timeout`。
 InstanceActor 持久化 `InstanceCreationRequested`，进入 `PREPARING_DEPENDENCIES` 并立即回复受理；
 然后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
 再等待 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createShare()`、`createNetwork()`，
@@ -101,7 +104,7 @@ InstanceActor 持久化 `InstanceCreationRequested`，进入 `PREPARING_DEPENDEN
 准备器每隔 `dependency-poll-interval` 调用对应的 `getProject()`、`getShare()`、`getNetwork()`；
 仅 `READY` 才继续下一步，`FAILED`、`REJECTED` 直接结束准备。
 ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时才重新提交幂等创建命令。
-所有创建和查询 ask 均使用 `cloud.user.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
+准备器向 UserActor 发送的创建和查询 ask 均使用 `cloud.user.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
 准备过程共用 `dependency-preparation-timeout`，绝对截止时间随 `InstanceCreationRequested` 持久化。
 结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
@@ -111,7 +114,7 @@ ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时
 同规格创建命令只返回已持久化的资源状态，已有 `READY` 资源直接复用，未完成资源继续查询。
 停机时间计入准备超时，重启不会延长截止时间；已记录的失败不会自动重试。
 当前 `pekko.cluster.sharding.remember-entities = off`，应用启动不会主动唤醒所有历史实例。
-实例收到消息（例如 `InstanceLifecycle.get(instanceId)`）后才恢复，准备器的创建和查询消息会唤醒对应 UserActor。
+实例收到消息（例如 `InstanceService.get(instanceId)`）后才恢复，准备器的创建和查询消息会唤醒对应 UserActor。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
 同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
 UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Domain 中按名称查询项目，
@@ -221,7 +224,7 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
 实例安全组、网络、端口转发和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
 `INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 30 秒，只需覆盖 Actor 受理等待时间
 （`cloud.instance.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
-受理后的依赖准备失败或超时通过 `GET /api/v1/instances/{instanceId}`、`InstanceLifecycle.get(instanceId)` 和 `instance_view` 的
+受理后的依赖准备失败或超时通过 `GET /api/v1/instances/{instanceId}`、`InstanceService.get(instanceId)` 和 `instance_view` 的
 `phase`、`failureCode` / `failure_code`、`failureMessage` / `failure_message` 查询，已创建的用户级资源继续保留。
 响应沿用全局 `RespWrapper`，`result` 包含：
 
@@ -304,6 +307,30 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 执行 `sql/read-model.sql` 初始化读模型表。`user-resources` 投影消费 User 事件更新读模型，
 查询结果在投影追上事件日志后完整可见。
+
+## 浮动 IP 读模型
+
+`FloatingIpProjection` 消费 `FloatingIpActor` 的事件，投影名为 `floating-ip`，
+与其他投影一起由 `cloud.projection.enabled` 和 `cloud.projection.slice-ranges` 控制。
+投影按 `(region_id, os_floating_ip_id)` 直接更新已登记的 `floating_ip` 表中的 `port_mask`
+和 `resource_version`。名称、描述、外部网络和地址等字段仍由登记流程维护。
+
+`FloatingIpEnabled` 和 `ForwardingUpdated` 携带事件生效后的完整端口位图 `usedPortMask`，
+包含导入的初始预留和所有 claim 当前持有的端口。分配公网端口时置位，TCP/UDP 清理完成、
+Actor 释放端口后清位；暂停或清理未完成时继续保留占用。初始预留始终保留，
+即使它与某个后来被删除的 claim 使用相同端口，也不会被误释放。
+位图第 0 位对应公网端口 10000，使用 `BitSet.toByteArray()` 编码。
+
+`ForwardingCancelled` 只改变取消意图，不更新端口位图。claim 状态和取消记录继续保存在
+Actor 事件及快照中，实例已确认的映射仍由 `instance_port_forwarding` 保存。
+恢复 Actor 时只发送身份启用消息，初始预留从 Actor 自己的事件和快照恢复；
+不要把投影后的动态 `port_mask` 再作为初始预留导入。
+
+`resource_version` 默认是 0，随后保存最近一次端口位图事件的日志序号，只有更新的事件才能覆盖位图。
+位图更新和 offset 在同一个 JDBC 事务中提交；若登记记录尚不可见，投影报错而不推进 offset，
+避免创建事务与投影并发时丢失更新。投影不调用 Actor 或 OpenStack。
+新库执行 `sql/floating-ips.sql`，已有数据库执行 `sql/migrations/add-floating-ip-projection-version.sql`
+补充版本列。本次事件增加完整位图，不提供历史事件兼容转换。
 
 ## 实例读模型
 
