@@ -5,7 +5,7 @@ import java.time.Instant;
 import java.util.Objects;
 
 /** One service mapping; TCP and UDP are created and deleted as a single operation. */
-public record ForwardingClaim(String claimId, String floatingIpId, ForwardingSpec spec, long order,
+public record ForwardingClaim(String claimId, String floatingIpId, ForwardingSpec spec,
     Phase phase, ForwardingResources resources, boolean deleteRequested, boolean paused,
     long generation, Instant deadline, String failure) implements Serializable {
   public enum Phase { CREATING, READY, FAILED, DELETING, DELETED }
@@ -18,8 +18,8 @@ public record ForwardingClaim(String claimId, String floatingIpId, ForwardingSpe
   }
 
   public static ForwardingClaim requested(String claimId, String floatingIpId, ForwardingSpec spec,
-      long order, Instant deadline) {
-    return new ForwardingClaim(claimId, floatingIpId, spec, order, Phase.CREATING,
+      Instant deadline) {
+    return new ForwardingClaim(claimId, floatingIpId, spec, Phase.CREATING,
         ForwardingResources.empty(), false, false, 0, deadline, null);
   }
 
@@ -27,8 +27,9 @@ public record ForwardingClaim(String claimId, String floatingIpId, ForwardingSpe
   public boolean deleting() { return phase == Phase.DELETING; }
 
   public ForwardingClaim allocated(String address, int port) {
+    // Reservation and rule creation belong to the same async operation and generation.
     return copy(Phase.CREATING, new ForwardingResources(address, port, null, null),
-        deleteRequested, false, generation + 1, deadline, null);
+        deleteRequested, false, generation, deadline, null);
   }
 
   public ForwardingClaim ready(ForwardingResources prepared) {
@@ -66,7 +67,7 @@ public record ForwardingClaim(String claimId, String floatingIpId, ForwardingSpe
 
   private ForwardingClaim copy(Phase nextPhase, ForwardingResources nextResources,
       boolean nextDeleteRequested, boolean nextPaused, long nextGeneration, Instant nextDeadline, String detail) {
-    return new ForwardingClaim(claimId, floatingIpId, spec, order, nextPhase, nextResources,
+    return new ForwardingClaim(claimId, floatingIpId, spec, nextPhase, nextResources,
         nextDeleteRequested, nextPaused, nextGeneration, nextDeadline, detail);
   }
 }

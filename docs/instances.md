@@ -191,16 +191,27 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
 
 FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETED`。
-`CreatePortForwarding` 先持久化 `ForwardingCreationRequested` 并立即返回 `IN_PROGRESS`；
-校验内部端口、查询远端占用后，持久化 `ForwardingPortAllocated`，预留公网端口，再调用
-`OpenStackClient.createPortForwardings()`。该方法在一次异步操作中依次完成 TCP、UDP 两条规则，
-成功发送 `ForwardingReady` 并持久化 `ForwardingBecameReady`，失败发送 `ForwardingFailed`
-并持久化 `ForwardingCreationFailed`。Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
+`CreatePortForwarding` 先持久化 `ForwardingCreationRequested`，立即返回 `IN_PROGRESS` 并启动该 claim 的创建流程；
+不再保存 `order` 或通过全局 `Drive` 排队，不同 claim 的 OpenStack 异步操作可以并行执行。
+`executeCreation()` 将目标检查、端口预留和 TCP/UDP 创建串成一次异步操作。
+校验内部端口、查询远端占用后，通过内部 `ReservePort` 请求由 Actor 持久化 `ForwardingPortAllocated`；
+收到预留成功的回复后，同一异步流程继续调用 `OpenStackClient.createPortForwardings()`，依次完成 TCP、UDP 两条规则。
+不再发送 `TargetReady` 或单独调用 `onTargetReady`；整套流程成功发送 `ForwardingReady` 并持久化
+`ForwardingBecameReady`，失败发送 `ForwardingFailed` 并持久化 `ForwardingCreationFailed`。
+Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
+端口分配在 Actor 处理预留请求时使用最新占用位图，并先持久化预留再回复，避免不同 claim 分配到同一端口。
+每次分配从 `10000–40000` 内随机位置开始向后查找，到末尾仍未找到时从范围起点继续查找；
+本地预留和远端占用均会跳过，整个范围都已占用才返回端口耗尽。恢复已有预留时沿用原端口。
+每个 claim 分别跟踪当前操作标识，同一 claim 不会同时发起创建和删除；回调仅清除自己的操作标识，
+其他 claim 的回调以及重启前的迟到回调不会使当前操作失效。
+端口预留请求也校验该操作标识和 generation；端口预留沿用本次创建的 generation，统一由最终结果完成该操作。
+预留前已收到删除请求时直接结束该 claim，异步流程不会继续创建规则。
 
 每条规则通过包含区域、claim ID、浮动 IP ID 和协议的操作标识查找，校验参数后复用已有规则，
 缺失时才创建。因此重启后可以复用已完成的 TCP 规则，再补齐 UDP。
 从受理到完成整套创建共用 `cloud.fip.operation-timeout`（默认 30 秒），截止时间随请求事件保存，
-恢复只使用剩余时间；每次发起新的远端写入前都会检查截止时间。已失败的创建不会自动重做。
+恢复时按每个 claim 的持久化状态分别继续创建或清理，只使用剩余时间；每次发起新的远端写入前都会检查截止时间。
+已完成或暂停的 claim 不会启动操作，已失败的创建不会自动重做。
 远端查找和创建不是原子操作，发现重复操作标识时记录失败并保留端口供核对。
 
 删除使用 `ForwardingDeletionRequested`、`ForwardingDeletionStarted`、`ForwardingDeleted`

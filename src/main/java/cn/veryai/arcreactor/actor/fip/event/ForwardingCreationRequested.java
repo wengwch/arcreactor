@@ -6,4 +6,4 @@ import java.time.Instant;
 
 /** The creation intent and its deadline are persisted before contacting OpenStack. */
 public record ForwardingCreationRequested(FloatingIpIdentity identity, String claimId, ForwardingSpec spec,
-    long order, Instant deadline) implements FloatingIpEvent {}
+    Instant deadline) implements FloatingIpEvent {}
