@@ -3,7 +3,7 @@ package cn.veryai.arcreactor.actor.fip.event;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
 import java.util.Objects;
 
-/** Imported reservations and the complete resulting port usage are persisted together. */
+/** Enables the actor with a persisted identity, imported reservations and complete resulting port usage. */
 public record FloatingIpEnabled(FloatingIpIdentity identity, byte[] portMask, byte[] usedPortMask)
     implements FloatingIpEvent {
   public FloatingIpEnabled {

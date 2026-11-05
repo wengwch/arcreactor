@@ -8,13 +8,9 @@ public record EnableFloatingIp(FloatingIpIdentity identity, byte[] portMask,
     ActorRef<Boolean> replyTo) implements FloatingIpCommand {
   public EnableFloatingIp {
     Objects.requireNonNull(identity, "identity");
-    portMask = portMask == null ? null : portMask.clone();
+    portMask = Objects.requireNonNull(portMask, "portMask").clone();
+    Objects.requireNonNull(replyTo, "replyTo");
   }
 
-  /** Identity-only enable messages reactivate an actor without changing its initial port reservations. */
-  public EnableFloatingIp(FloatingIpIdentity identity) {
-    this(identity, null, null);
-  }
-
-  @Override public byte[] portMask() { return portMask == null ? null : portMask.clone(); }
+  @Override public byte[] portMask() { return portMask.clone(); }
 }

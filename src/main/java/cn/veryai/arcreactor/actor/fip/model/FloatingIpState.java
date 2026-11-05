@@ -8,44 +8,34 @@ import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 
-public record FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> cancelledClaims,
+public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
+    Map<String, ForwardingClaim> claims, Set<String> cancelledClaims,
     Set<String> cancelledInstances,
     @JsonSerialize(using = PortUsageJson.Serializer.class)
     @JsonDeserialize(using = PortUsageJson.Deserializer.class) BitSet usedPorts,
     byte[] initialPortMask) implements Serializable {
   public FloatingIpState {
+    if (enabled) Objects.requireNonNull(identity, "identity");
     claims = Map.copyOf(claims);
     cancelledClaims = Set.copyOf(cancelledClaims);
     cancelledInstances = Set.copyOf(cancelledInstances);
-    initialPortMask = initialPortMask == null ? null : initialPortMask.clone();
-    if (usedPorts == null) {
-      usedPorts = new BitSet();
-      for (ForwardingClaim claim : claims.values()) {
-        int port = claim.resources().externalPort();
-        if (port >= FloatingIpSettings.FIRST_PORT && port <= FloatingIpSettings.LAST_PORT) {
-          usedPorts.set(port - FloatingIpSettings.FIRST_PORT);
-        }
-      }
-    } else {
-      usedPorts = (BitSet) usedPorts.clone();
-    }
-    if (initialPortMask != null) usedPorts.or(BitSet.valueOf(initialPortMask));
+    initialPortMask = Objects.requireNonNull(initialPortMask, "initialPortMask").clone();
+    usedPorts = (BitSet) Objects.requireNonNull(usedPorts, "usedPorts").clone();
+    usedPorts.or(BitSet.valueOf(initialPortMask));
   }
 
-  public FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> cancelledClaims,
-      Set<String> cancelledInstances, BitSet usedPorts) {
-    this(claims, cancelledClaims, cancelledInstances, usedPorts, null);
+  public static FloatingIpState empty() {
+    return new FloatingIpState(false, null, Map.of(), Set.of(), Set.of(), new BitSet(), new byte[0]);
   }
 
   @Override public BitSet usedPorts() { return (BitSet) usedPorts.clone(); }
-  @Override public byte[] initialPortMask() {
-    return initialPortMask == null ? null : initialPortMask.clone();
-  }
+  @Override public byte[] initialPortMask() { return initialPortMask.clone(); }
 
-  public FloatingIpState enabled(byte[] portMask) {
-    return new FloatingIpState(claims, cancelledClaims, cancelledInstances, usedPorts, portMask);
+  public FloatingIpState enabled(FloatingIpIdentity identity, byte[] portMask) {
+    return new FloatingIpState(true, identity, claims, cancelledClaims, cancelledInstances, usedPorts, portMask);
   }
 
   public FloatingIpState updated(ForwardingClaim claim) {
@@ -64,13 +54,13 @@ public record FloatingIpState(Map<String, ForwardingClaim> claims, Set<String> c
       }
       ports.set(newPort - FloatingIpSettings.FIRST_PORT);
     }
-    return new FloatingIpState(next, cancelledClaims, cancelledInstances, ports, initialPortMask);
+    return new FloatingIpState(enabled, identity, next, cancelledClaims, cancelledInstances, ports, initialPortMask);
   }
   public FloatingIpState cancelled(String claimId, String instanceId) {
     Set<String> nextClaims = new HashSet<>(cancelledClaims);
     Set<String> nextInstances = new HashSet<>(cancelledInstances);
     if (claimId != null) nextClaims.add(claimId);
     if (instanceId != null) nextInstances.add(instanceId);
-    return new FloatingIpState(claims, nextClaims, nextInstances, usedPorts, initialPortMask);
+    return new FloatingIpState(enabled, identity, claims, nextClaims, nextInstances, usedPorts, initialPortMask);
   }
 }

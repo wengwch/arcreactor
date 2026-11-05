@@ -3,7 +3,8 @@
 <mapper namespace="cn.veryai.arcreactor.actor.fip.projection.mybatis.FloatingIpProjectionMapper">
     <update id="updatePortMask">
         UPDATE floating_ip
-        SET port_mask = #{portMask,jdbcType=BLOB},
+        SET enabled = TRUE,
+            port_mask = #{portMask,jdbcType=BLOB},
             resource_version = #{version,jdbcType=BIGINT}
         WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
           AND os_floating_ip_id = #{identity.floatingIpId,jdbcType=VARCHAR}

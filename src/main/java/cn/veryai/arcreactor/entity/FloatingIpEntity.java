@@ -15,6 +15,7 @@ public class FloatingIpEntity {
     private String osProjectId;
     private String osFloatingIpId;
     private String floatingIp;
+    private boolean enabled;
     private byte[] portMask = new byte[0];
     private long resourceVersion;
 }

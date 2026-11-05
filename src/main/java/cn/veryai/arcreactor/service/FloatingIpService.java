@@ -92,6 +92,8 @@ public class FloatingIpService {
             if (!Boolean.TRUE.equals(enabled)) {
                 throw new IllegalStateException("Floating IP actor identity or initial port mask conflicts");
             }
+            // The reply reflects the persisted actor state; the database flag is updated by projection.
+            entity.setEnabled(true);
             return entity;
         } catch (DuplicateKeyException exception) {
             throw new BaseException(ErrorCode.FLOATING_IP_ALREADY_EXISTS, exception);

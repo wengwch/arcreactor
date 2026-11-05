@@ -59,11 +59,16 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 每个用户在同一区域内复用同一个共享存储和私有网络。区域应预先配置好工作流所需的
 LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路由应匹配实际环境。
 当前区域还需通过 `/api/v1/floating-ips` 创建或登记至少一个用于转发的浮动 IP，示例见
-`http/floating-ip-api.http`。创建实例时按区域读取已登记地址，按名称、业务 ID 排序，
+`http/floating-ip-api.http`。创建实例时按区域读取已登记且 `enabled=true` 的地址，按名称、业务 ID 排序，
 将其 OpenStack ID 作为候选列表随创建事件持久化；不会在 HTTP 请求期间调用 OpenStack 创建转发。
 没有候选地址时返回业务错误 `11718`，不提交实例工作流。
-新建或登记浮动 IP 时发送 `EnableFloatingIp`，持久化 `FloatingIpEnabled` 保存初始端口位图后返回。
-重复启用会校验身份和位图一致性；恢复时只携带身份的启用消息不会覆盖已有端口预留。
+新建或登记浮动 IP 时发送 `EnableFloatingIp`，持久化 `FloatingIpEnabled` 保存启用状态、身份和初始端口位图后返回。
+创建响应的 `enabled=true` 表示 Actor 已确认启用；数据库字段由投影异步更新，投影完成后地址才进入实例候选列表。
+`FloatingIpState.enabled` 初始为 `false`，收到启用事件后变为 `true`；重复启用会校验身份和初始位图一致性，
+一致时直接成功，不重复写事件，也不修改当前端口占用。
+Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStash` 等待启用。
+未启用时创建转发立即返回 `REJECTED`，查询或协调返回 `NOT_FOUND`，删除按无资源处理并立即完成。
+调用方必须先等待启用成功再创建转发；普通调用不查询 OpenStack 身份，也不隐式发送启用命令。
 内部端口默认是 SSH `22` 和 JupyterLab `8888`；配置必须是非空、无重复的 `1–65535` 端口列表。
 每个实例先创建一个专属安全组，按上述内部端口配置添加 IPv4 入站 TCP/UDP 规则，来源为 `0.0.0.0/0`。
 父端口和子端口创建时开启 port security，并只绑定该专属安全组；出站沿用 Neutron 新建安全组的默认规则。
@@ -184,6 +189,31 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 整个转发阶段共用 `cloud.instance.forwarding-preparation-timeout`（默认 5 分钟）。
 重启后沿用已持久化的候选、内部端口、已完成映射和截止时间，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
+
+FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETED`。
+`CreatePortForwarding` 先持久化 `ForwardingCreationRequested` 并立即返回 `IN_PROGRESS`；
+校验内部端口、查询远端占用后，持久化 `ForwardingPortAllocated`，预留公网端口，再调用
+`OpenStackClient.createPortForwardings()`。该方法在一次异步操作中依次完成 TCP、UDP 两条规则，
+成功发送 `ForwardingReady` 并持久化 `ForwardingBecameReady`，失败发送 `ForwardingFailed`
+并持久化 `ForwardingCreationFailed`。Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
+
+每条规则通过包含区域、claim ID、浮动 IP ID 和协议的操作标识查找，校验参数后复用已有规则，
+缺失时才创建。因此重启后可以复用已完成的 TCP 规则，再补齐 UDP。
+从受理到完成整套创建共用 `cloud.fip.operation-timeout`（默认 30 秒），截止时间随请求事件保存，
+恢复只使用剩余时间；每次发起新的远端写入前都会检查截止时间。已失败的创建不会自动重做。
+远端查找和创建不是原子操作，发现重复操作标识时记录失败并保留端口供核对。
+
+删除使用 `ForwardingDeletionRequested`、`ForwardingDeletionStarted`、`ForwardingDeleted`
+和 `ForwardingDeletionFailed` 分别记录意图、开始、完成和失败。创建期间的删除请求只记录意图，
+先接收当前操作结果再执行清理。`deletePortForwardings()` 按操作标识查找并删除 TCP/UDP，
+包含创建成功但 ID 尚未写入事件的规则；只有两条规则均确认不存在后才释放端口。
+显式删除完成后进入 `DELETED`；创建失败后的自动清理完成后保留 `FAILED` 和原失败原因。
+
+超时或响应丢失等不确定结果保留端口，并返回 `NEEDS_RECONCILIATION`；通过
+`ReconcilePortForwarding` 显式恢复时记录 `ForwardingReconciliationRequested`，重新设置操作截止时间。
+已有删除意图时继续清理，否则重新查找并补齐转发规则。删除失败也会暂停，重复删除请求可以再次尝试清理。
+自动清理仍受 `cleanup-on-failure` 控制；失败且仍持有端口时，实例工作流进入补偿，不切换浮动 IP。
+只有没有占用端口的失败才允许继续尝试其他候选。
 
 Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_retries=0`，
 使监听端口与转发目标保持一致；端口占用时不会自动改用其他端口。
@@ -312,25 +342,32 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 `FloatingIpProjection` 消费 `FloatingIpActor` 的事件，投影名为 `floating-ip`，
 与其他投影一起由 `cloud.projection.enabled` 和 `cloud.projection.slice-ranges` 控制。
-投影按 `(region_id, os_floating_ip_id)` 直接更新已登记的 `floating_ip` 表中的 `port_mask`
-和 `resource_version`。名称、描述、外部网络和地址等字段仍由登记流程维护。
+投影按 `(region_id, os_floating_ip_id)` 直接更新已登记的 `floating_ip` 表中的 `enabled`、`port_mask`
+和 `resource_version`。`enabled` 为非空布尔值，登记时默认为 `false`，启用事件投影后为 `true`。
+名称、描述、外部网络和地址等字段仍由登记流程维护。
 
-`FloatingIpEnabled` 和 `ForwardingUpdated` 携带事件生效后的完整端口位图 `usedPortMask`，
+`FloatingIpEnabled`、`ForwardingPortAllocated` 和 `ForwardingDeleted` 携带事件生效后的完整端口位图 `usedPortMask`，
 包含导入的初始预留和所有 claim 当前持有的端口。分配公网端口时置位，TCP/UDP 清理完成、
 Actor 释放端口后清位；暂停或清理未完成时继续保留占用。初始预留始终保留，
 即使它与某个后来被删除的 claim 使用相同端口，也不会被误释放。
 位图第 0 位对应公网端口 10000，使用 `BitSet.toByteArray()` 编码。
+这三个事件都描述已启用的 Actor，投影同时写入 `enabled=true`；释放端口不会停用浮动 IP。
 
-`ForwardingCancelled` 只改变取消意图，不更新端口位图。claim 状态和取消记录继续保存在
+创建请求、就绪、失败和删除请求等事件不改变位图；`ForwardingCancelled` 记录尚未创建的 claim
+或整个实例的取消意图，同样不释放端口。claim 状态和取消记录继续保存在
 Actor 事件及快照中，实例已确认的映射仍由 `instance_port_forwarding` 保存。
-恢复 Actor 时只发送身份启用消息，初始预留从 Actor 自己的事件和快照恢复；
+快照保存 `enabled`、`identity`、`initialPortMask` 和 `usedPorts`；启用状态必须包含身份，
+缺少端口位图时直接拒绝加载，不再从 claim 重建位图。
+任意命令都能触发 Actor 的日志恢复；已启用的 Actor 从事件和快照恢复身份、初始预留及转发状态，
+无需再次发送启用消息，恢复完成后继续处理未完成的转发操作。
 不要把投影后的动态 `port_mask` 再作为初始预留导入。
 
-`resource_version` 默认是 0，随后保存最近一次端口位图事件的日志序号，只有更新的事件才能覆盖位图。
-位图更新和 offset 在同一个 JDBC 事务中提交；若登记记录尚不可见，投影报错而不推进 offset，
+`resource_version` 默认是 0，随后保存最近一次端口位图事件的日志序号，只有更新的事件才能覆盖启用状态和位图。
+启用状态、位图更新和 offset 在同一个 JDBC 事务中提交；若登记记录尚不可见，投影报错而不推进 offset，
 避免创建事务与投影并发时丢失更新。投影不调用 Actor 或 OpenStack。
 新库执行 `sql/floating-ips.sql`，已有数据库执行 `sql/migrations/add-floating-ip-projection-version.sql`
-补充版本列。本次事件增加完整位图，不提供历史事件兼容转换。
+补充版本列，缺少启用字段时执行 `sql/migrations/add-floating-ip-enabled.sql`。
+增列脚本中已有记录默认未启用，不回填历史启用状态。当前状态与事件结构直接用于开发阶段，不提供历史事件兼容转换。
 
 ## 实例读模型
 

@@ -1,15 +1,13 @@
 package cn.veryai.arcreactor.actor.fip.event;
 
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
-import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
 import java.util.Objects;
 
-/** The port mask is the complete actor usage after applying this claim, including imported reservations. */
-public record ForwardingUpdated(FloatingIpIdentity identity, ForwardingClaim claim, byte[] usedPortMask)
+/** Both protocol rules have been deleted; the released port usage can now be projected. */
+public record ForwardingDeleted(FloatingIpIdentity identity, String claimId, byte[] usedPortMask)
     implements FloatingIpEvent {
-  public ForwardingUpdated {
+  public ForwardingDeleted {
     Objects.requireNonNull(identity, "identity");
-    Objects.requireNonNull(claim, "claim");
     usedPortMask = Objects.requireNonNull(usedPortMask, "usedPortMask").clone();
   }
 

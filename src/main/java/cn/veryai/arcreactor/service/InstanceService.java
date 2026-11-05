@@ -156,6 +156,7 @@ public class InstanceService {
         // A user's instances reuse the same regional share and network specification.
         String resourceId = param.getUserId();
         List<String> floatingIpIds = floatingIpRepo.findByRegionId(region.getId()).stream()
+                .filter(FloatingIpEntity::isEnabled)
                 .filter(ip -> StringUtils.isNoneBlank(ip.getOsFloatingIpId(), ip.getFloatingIp(), ip.getOsProjectId()))
                 .map(FloatingIpEntity::getOsFloatingIpId).distinct().toList();
         if (floatingIpIds.isEmpty()) throw new BaseException(ErrorCode.INSTANCE_FLOATING_IP_UNAVAILABLE);

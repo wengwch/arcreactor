@@ -1,11 +1,14 @@
 # 新库先执行 sql/floating-ips.sql；已按旧结构建表的库执行 sql/migrations/add-floating-ip-port-mask.sql。
 # 已有 floating_ip 表还需执行 sql/migrations/add-floating-ip-projection-version.sql，增加投影版本列。
+# 缺少 enabled 字段时执行 sql/migrations/add-floating-ip-enabled.sql；已有记录默认未启用，不回填历史状态。
 # 先执行 http/sys-network-router.http 中的公网网络请求，保存 csvPublicNetworkId，
 # 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
 # Test-SH-01 所属集群的 adminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
 # portMask 使用 Base64 字符串，对应源记录的 BinData；省略时默认为空位图。
-# 新建和登记都会通过 EnableFloatingIp 启用对应 Actor，等待 FloatingIpEnabled 事件持久化初始位图后返回。
-# 实例创建会从同一区域的已登记地址中自动选择候选，为 22 和 8888 分别分配公网端口。
+# 新建和登记都会通过 EnableFloatingIp 启用对应 Actor，等待 FloatingIpEnabled 持久化启用状态、身份和初始位图后返回。
+# 响应 enabled=true 表示 Actor 已确认启用，数据库 enabled 在投影完成后更新。
+# 未启用的 Actor 会立即拒绝创建转发；重启后从事件和快照恢复启用状态，无需重新启用。
+# 实例创建会从同一区域已登记且 enabled=true 的地址中自动选择候选，为 22 和 8888 分别分配公网端口。
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
 @extNetId = 2e2d09dd-7f09-4d69-866d-4d4b06062383

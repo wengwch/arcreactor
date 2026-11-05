@@ -3,10 +3,7 @@ package cn.veryai.arcreactor.actor.fip.model;
 import java.io.Serializable;
 import java.util.List;
 
-/**
- * Immutable OpenStack identity passed when constructing one floating-IP actor.
- * The per-IP persistence key differs from the old regional key; regional journals require migration.
- */
+/** Immutable OpenStack identity persisted when enabling one floating-IP actor. */
 public record FloatingIpIdentity(String regionId, String floatingIpId, String floatingIp,
     String projectId) implements Serializable {
   public FloatingIpIdentity {
