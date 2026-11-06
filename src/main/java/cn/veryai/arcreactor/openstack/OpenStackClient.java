@@ -87,10 +87,6 @@ public class OpenStackClient {
       if (id == null || id.isBlank()) throw new IllegalStateException("Missing network resource ID");
     }
   }
-  public record ForwardingTarget(String floatingIpAddress, Set<Integer> occupiedPorts) implements Serializable {
-    public ForwardingTarget { occupiedPorts = Set.copyOf(occupiedPorts); }
-  }
-
   public record ServerTarget(String clusterId, String projectId, String region)
       implements Serializable {}
 
@@ -354,68 +350,61 @@ public class OpenStackClient {
         NETWORK_EXECUTOR);
   }
 
-  /** Validates the forwarding endpoint; the instance workflow owns port security. */
-  public CompletionStage<ForwardingTarget> prepareForwardingTarget(String region, String projectId,
-      String floatingIpId, String portId, String fixedIp) {
-    return CompletableFuture.supplyAsync(() -> {
-      OSClient.OSClientV3 admin = getOsForwardingClient(region);
-      NetFloatingIP fip = admin.networking().floatingip().get(floatingIpId);
-      if (fip == null || fip.getFloatingIpAddress() == null || fip.getFloatingIpAddress().isBlank()
-          || (fip.getPortId() != null && !fip.getPortId().isBlank())) {
-        throw new OpenStackOperationException("Floating IP is missing or directly bound to a port", null);
-      }
-      OSClient.OSClientV3 tenant = getOsAdminClient(region, projectId);
-      Port port = tenant.networking().port().get(portId);
-      if (port == null || !projectId.equals(port.getTenantId()) || fixedIp.contains(":")) {
-        throw new OpenStackOperationException("Forwarding requires an IPv4 port in the target project", null);
-      }
-      if (port.getFixedIps() == null
-          || port.getFixedIps().stream().noneMatch(ip -> fixedIp.equals(ip.getIpAddress()))) {
-        throw new OpenStackOperationException("Forwarding IP is not assigned to the target port", null);
-      }
-      Set<Integer> occupied = new HashSet<>();
-      // SDK sessions also carry thread-local context; restore the shared-IP project after tenant calls.
-      for (PortForwarding rule : getOsForwardingClient(region).networking().floatingip()
-          .portForwarding().list(floatingIpId)) {
-        occupied.add(rule.getExternalPort());
-      }
-      return new ForwardingTarget(fip.getFloatingIpAddress(), occupied);
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Creates the complete TCP/UDP mapping, reusing rules found by their stable operation markers. */
+  /** Directly creates TCP and UDP rules; markers are retained for subsequent cleanup. */
   public CompletionStage<ForwardingResources> createPortForwardings(FloatingIpIdentity identity,
-      String claimId, ForwardingSpec spec, int externalPort, Instant deadline) {
+      String claimId, ForwardingSpec spec, int externalPort) {
     return CompletableFuture.supplyAsync(() -> {
-      requireForwardingDeadline(deadline);
       var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
-      String tcpId = ensurePortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.TCP,
-          forwardingMarker(identity, claimId, NetProtocol.TCP), deadline);
-      String udpId = ensurePortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.UDP,
-          forwardingMarker(identity, claimId, NetProtocol.UDP), deadline);
+      String tcpId = createPortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.TCP,
+          forwardingMarker(identity, claimId, NetProtocol.TCP));
+      String udpId = createPortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.UDP,
+          forwardingMarker(identity, claimId, NetProtocol.UDP));
       return new ForwardingResources(identity.floatingIp(), externalPort, tcpId, udpId);
     }, NETWORK_EXECUTOR);
   }
 
-  private String ensurePortForwarding(PortForwardingService service, String floatingIpId,
-      int externalPort, ForwardingSpec spec, NetProtocol protocol, String marker, Instant deadline) {
-    requireForwardingDeadline(deadline);
-    List<? extends PortForwarding> matches = service.list(floatingIpId).stream()
+  /** Recovery reuses matching rules on the reserved port and creates only missing protocols. */
+  public CompletionStage<ForwardingResources> recoverPortForwardings(FloatingIpIdentity identity,
+      String claimId, ForwardingSpec spec, int externalPort) {
+    return CompletableFuture.supplyAsync(() -> {
+      var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
+      List<? extends PortForwarding> forwardings = service.list(identity.floatingIpId());
+      String tcpMarker = forwardingMarker(identity, claimId, NetProtocol.TCP);
+      String udpMarker = forwardingMarker(identity, claimId, NetProtocol.UDP);
+      // Validate both protocols before creating anything during recovery.
+      String tcpId = findExistingForwardingId(forwardings, externalPort, spec, NetProtocol.TCP, tcpMarker);
+      String udpId = findExistingForwardingId(forwardings, externalPort, spec, NetProtocol.UDP, udpMarker);
+      if (tcpId == null) {
+        tcpId = createPortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.TCP, tcpMarker);
+      }
+      if (udpId == null) {
+        udpId = createPortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.UDP, udpMarker);
+      }
+      return new ForwardingResources(identity.floatingIp(), externalPort, tcpId, udpId);
+    }, NETWORK_EXECUTOR);
+  }
+
+  private static String findExistingForwardingId(List<? extends PortForwarding> forwardings,
+      int externalPort, ForwardingSpec spec, NetProtocol protocol, String marker) {
+    List<? extends PortForwarding> matches = forwardings.stream()
         .filter(rule -> marker.equals(rule.getDescription())).toList();
     if (matches.size() > 1) throw new IllegalStateException("Duplicate forwarding operation marker");
-    if (!matches.isEmpty()) {
-      PortForwarding found = matches.getFirst();
-      if (!Objects.equals(found.getExternalPort(), externalPort)
-          || !Objects.equals(found.getInternalPort(), spec.internalPort())
-          || !spec.fixedIp().equals(found.getInternalIpAddress())
-          || !spec.internalPortId().equals(found.getInternalPortId())
-          || !protocol.name().equalsIgnoreCase(found.getProtocol())) {
-        throw new OpenStackOperationException("Forwarding operation marker has mismatched parameters", null);
-      }
-      if (found.getId() == null || found.getId().isBlank()) throw new IllegalStateException("Missing forwarding ID");
-      return found.getId();
+    if (matches.isEmpty()) return null;
+    PortForwarding existing = matches.getFirst();
+    if (existing.getExternalPort() != externalPort || existing.getInternalPort() != spec.internalPort()
+        || !spec.internalPortId().equals(existing.getInternalPortId())
+        || !spec.fixedIp().equals(existing.getInternalIpAddress())
+        || !protocol.name().equalsIgnoreCase(existing.getProtocol())) {
+      throw new IllegalStateException("Forwarding operation marker has mismatched parameters");
     }
-    requireForwardingDeadline(deadline);
+    if (existing.getId() == null || existing.getId().isBlank()) {
+      throw new IllegalStateException("Missing forwarding ID");
+    }
+    return existing.getId();
+  }
+
+  private String createPortForwarding(PortForwardingService service, String floatingIpId,
+      int externalPort, ForwardingSpec spec, NetProtocol protocol, String marker) {
     PortForwarding created = service.create(floatingIpId, Builders.portForwarding()
         .externalPort(externalPort).internalIpAddress(spec.fixedIp()).internalPort(spec.internalPort())
         .internalPortId(spec.internalPortId()).protocol(protocol.name().toLowerCase(Locale.ROOT))
@@ -428,12 +417,12 @@ public class OpenStackClient {
 
   private static String forwardingMarker(FloatingIpIdentity identity, String claimId, NetProtocol protocol) {
     String key = identity.regionId() + ":" + claimId + ":" + identity.floatingIpId() + ":" + protocol;
-    return "arcreactor:pf:" + UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
+    return "veryai:pf:" + UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
   }
 
-  private static void requireForwardingDeadline(Instant deadline) {
+  private static void requireForwardingDeletionDeadline(Instant deadline) {
     if (!Instant.now().isBefore(deadline)) {
-      throw new CompletionException(new TimeoutException("Forwarding operation deadline exceeded"));
+      throw new CompletionException(new TimeoutException("Forwarding deletion deadline exceeded"));
     }
   }
 
@@ -524,7 +513,7 @@ public class OpenStackClient {
   public CompletionStage<Boolean> deletePortForwardings(FloatingIpIdentity identity, String claimId,
       ForwardingResources resources, Instant deadline) {
     return CompletableFuture.supplyAsync(() -> {
-      requireForwardingDeadline(deadline);
+      requireForwardingDeletionDeadline(deadline);
       var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
       try {
         boolean tcpDeleted = deleteManagedPortForwarding(service, identity.floatingIpId(), resources.tcpForwardingId(),
@@ -542,7 +531,7 @@ public class OpenStackClient {
 
   private boolean deleteManagedPortForwarding(PortForwardingService service, String floatingIpId,
       String ruleId, String marker, Instant deadline) {
-    requireForwardingDeadline(deadline);
+    requireForwardingDeletionDeadline(deadline);
     Set<String> ids = new HashSet<>();
     for (PortForwarding rule : service.list(floatingIpId)) {
       if (marker.equals(rule.getDescription())) ids.add(rule.getId());
@@ -561,7 +550,7 @@ public class OpenStackClient {
       }
     }
     for (String id : ids) {
-      requireForwardingDeadline(deadline);
+      requireForwardingDeletionDeadline(deadline);
       if (id == null || id.isBlank()) throw new IllegalStateException("Missing forwarding ID");
       try {
         requireDeleteResponse(service.delete(floatingIpId, id));

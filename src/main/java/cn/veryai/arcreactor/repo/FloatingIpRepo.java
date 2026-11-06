@@ -15,6 +15,10 @@ public class FloatingIpRepo {
         return mapper.insert(entity);
     }
 
+    public FloatingIpEntity findById(String id) {
+        return mapper.findById(id);
+    }
+
     public List<FloatingIpEntity> findByRegionId(String regionId) {
         return mapper.findByRegionId(regionId);
     }

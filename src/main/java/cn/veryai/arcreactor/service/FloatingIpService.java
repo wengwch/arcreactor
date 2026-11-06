@@ -14,8 +14,11 @@ import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import cn.veryai.arcreactor.web.params.SaveFloatingIpParam;
+import cn.veryai.arcreactor.web.params.EnableFloatingIpParam;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -87,10 +90,10 @@ public class FloatingIpService {
             floatingIpRepo.insert(entity);
             Boolean enabled = floatingIpForwardings.enable(
                     new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
-                            entity.getFloatingIp(), entity.getOsProjectId()), entity.getPortMask())
+                            entity.getFloatingIp(), entity.getOsProjectId()), entity.getPortMask(), null)
                     .toCompletableFuture().get();
             if (!Boolean.TRUE.equals(enabled)) {
-                throw new IllegalStateException("Floating IP actor identity or initial port mask conflicts");
+                throw new IllegalStateException("Floating IP actor identity conflicts or it is already enabled");
             }
             // The reply reflects the persisted actor state; the database flag is updated by projection.
             entity.setEnabled(true);
@@ -104,6 +107,40 @@ public class FloatingIpService {
         } catch (Exception exception) {
             log.error("create floating IP error", exception);
             throw new BaseException(ErrorCode.FLOATING_IP_CREATE_FAILED, exception);
+        }
+    }
+
+    public void enable(String id, EnableFloatingIpParam param) {
+        FloatingIpEntity entity = requireFloatingIp(id);
+        boolean accepted = awaitControl(floatingIpForwardings.enable(
+                new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
+                        entity.getFloatingIp(), entity.getOsProjectId()), null,
+                param == null ? null : param.getForwardings()), ErrorCode.FLOATING_IP_ENABLE_FAILED);
+        if (!accepted) throw new BaseException(ErrorCode.FLOATING_IP_ENABLE_REJECTED);
+    }
+
+    public void disable(String id) {
+        FloatingIpEntity entity = requireFloatingIp(id);
+        if (!awaitControl(floatingIpForwardings.disable(entity.getRegionId(), entity.getOsFloatingIpId()),
+                ErrorCode.FLOATING_IP_DISABLE_FAILED)) {
+            throw new BaseException(ErrorCode.FLOATING_IP_DISABLE_FAILED);
+        }
+    }
+
+    private FloatingIpEntity requireFloatingIp(String id) {
+        FloatingIpEntity entity = floatingIpRepo.findById(id);
+        if (entity == null) throw new BaseException(ErrorCode.FLOATING_IP_NOT_FOUND);
+        return entity;
+    }
+
+    private static boolean awaitControl(CompletionStage<Boolean> operation, ErrorCode failure) {
+        try {
+            return Boolean.TRUE.equals(operation.toCompletableFuture().get());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new BaseException(failure, exception);
+        } catch (ExecutionException exception) {
+            throw new BaseException(failure, exception.getCause());
         }
     }
 }

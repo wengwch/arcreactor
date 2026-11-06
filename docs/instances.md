@@ -64,10 +64,18 @@ LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路
 没有候选地址时返回业务错误 `11718`，不提交实例工作流。
 新建或登记浮动 IP 时发送 `EnableFloatingIp`，持久化 `FloatingIpEnabled` 保存启用状态、身份和初始端口位图后返回。
 创建响应的 `enabled=true` 表示 Actor 已确认启用；数据库字段由投影异步更新，投影完成后地址才进入实例候选列表。
-`FloatingIpState.enabled` 初始为 `false`，收到启用事件后变为 `true`；重复启用会校验身份和初始位图一致性，
-一致时直接成功，不重复写事件，也不修改当前端口占用。
+`FloatingIpState.enabled` 初始为 `false`，收到 `FloatingIpEnabled` 后变为 `true`，收到 `FloatingIpDisabled` 后变为 `false`。
+`PUT /api/v1/floating-ips/{id}/disable` 禁止受理新的 claim，已有创建、查询、删除和恢复继续处理，当前位图保留。
+`PUT /api/v1/floating-ips/{id}/enable` 可不带请求体，沿用当前位图；已启用时重复调用同样成功。
+启用请求可携带 `forwardings` 列表，每项包含规则 `id` 和 `externalPort`（也接受 OpenStack 的 `external_port`）。
+只有 Actor 当前为禁用状态时才能携带列表更新端口占用；已启用时携带列表会被拒绝，即使列表与已有占用一致。
+省略列表或传 `null` 保留已导入占用，`[]` 清空已导入占用；已有 claim 持有的端口始终保留。
+列表中已知的 claim 规则按规则 ID 和端口归属 claim，删除 claim 后可以释放；其余规则作为外部占用导入。
+尚未记录规则 ID 的占用按外部规则保留，可在后续禁用、重新同步时刷新。TCP/UDP 共用同一端口位，范围外的端口不进入位图。
+启用和禁用接口均在事件持久化后返回 HTTP `202`，读模型随后更新；`{id}` 是登记表业务 ID。
 Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStash` 等待启用。
-未启用时创建转发立即返回 `REJECTED`，查询或协调返回 `NOT_FOUND`，删除按无资源处理并立即完成。
+禁用时提交新 claim 立即返回 `REJECTED`；相同 claim 的重复提交返回已有状态，查询和清理已有 claim 正常进行。
+从未启用的 Actor 没有 claim，查询或协调返回 `NOT_FOUND`，删除按无资源处理并立即完成。
 调用方必须先等待启用成功再创建转发；普通调用不查询 OpenStack 身份，也不隐式发送启用命令。
 内部端口默认是 SSH `22` 和 JupyterLab `8888`；配置必须是非空、无重复的 `1–65535` 端口列表。
 每个实例先创建一个专属安全组，按上述内部端口配置添加 IPv4 入站 TCP/UDP 规则，来源为 `0.0.0.0/0`。
@@ -191,39 +199,71 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
 
 FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETED`。
-`CreatePortForwarding` 先持久化 `ForwardingCreationRequested`，立即返回 `IN_PROGRESS` 并启动该 claim 的创建流程；
+`CreatePortForwarding` 根据 Actor 当前 `portMask` 选择端口，将 `ForwardingCreationRequested` 和
+`ForwardingPortAllocated` 一起持久化，然后返回 `IN_PROGRESS` 并立即调用 `OpenStackClient.createPortForwardings()`；
+端口耗尽时持久化创建和失败事件并返回 `FAILED`，不调用 OpenStack。
 不再保存 `order` 或通过全局 `Drive` 排队，不同 claim 的 OpenStack 异步操作可以并行执行。
-`executeCreation()` 将目标检查、端口预留和 TCP/UDP 创建串成一次异步操作。
-校验内部端口、查询远端占用后，通过内部 `ReservePort` 请求由 Actor 持久化 `ForwardingPortAllocated`；
-收到预留成功的回复后，同一异步流程继续调用 `OpenStackClient.createPortForwardings()`，依次完成 TCP、UDP 两条规则。
-不再发送 `TargetReady` 或单独调用 `onTargetReady`；整套流程成功发送 `ForwardingReady` 并持久化
+创建不调用 `prepareForwardingTarget`，也没有内部端口预留 ask；分配端口只依据本地位图。
+`executeCreation()` 在一次异步操作中依次创建 TCP、UDP 规则；整套流程成功发送 `ForwardingReady` 并持久化
 `ForwardingBecameReady`，失败发送 `ForwardingFailed` 并持久化 `ForwardingCreationFailed`。
+`onReady` 和 `onFailed` 只记录结果，不发起删除，也不因已记录删除意图而继续清理。
 Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
-端口分配在 Actor 处理预留请求时使用最新占用位图，并先持久化预留再回复，避免不同 claim 分配到同一端口。
+端口选择和预留均在 Actor 内串行处理，使用最新位图，避免不同 claim 分配到同一端口。
 每次分配从 `10000–40000` 内随机位置开始向后查找，到末尾仍未找到时从范围起点继续查找；
-本地预留和远端占用均会跳过，整个范围都已占用才返回端口耗尽。恢复已有预留时沿用原端口。
+位图中已占用的端口会跳过，整个范围都已占用才返回端口耗尽。恢复已有预留时沿用原端口。
 每个 claim 分别跟踪当前操作标识，同一 claim 不会同时发起创建和删除；回调仅清除自己的操作标识，
 其他 claim 的回调以及重启前的迟到回调不会使当前操作失效。
-端口预留请求也校验该操作标识和 generation；端口预留沿用本次创建的 generation，统一由最终结果完成该操作。
-预留前已收到删除请求时直接结束该 claim，异步流程不会继续创建规则。
+端口预留沿用本次创建的 generation，统一由最终结果完成该操作。
 
-每条规则通过包含区域、claim ID、浮动 IP ID 和协议的操作标识查找，校验参数后复用已有规则，
-缺失时才创建。因此重启后可以复用已完成的 TCP 规则，再补齐 UDP。
-从受理到完成整套创建共用 `cloud.fip.operation-timeout`（默认 30 秒），截止时间随请求事件保存，
-恢复时按每个 claim 的持久化状态分别继续创建或清理，只使用剩余时间；每次发起新的远端写入前都会检查截止时间。
+创建直接依次提交 TCP、UDP 规则，不调用规则列表接口，也不查询或复用已有规则。
+创建事件不保存截止时间，SDK 方法和 Actor 均不额外设置创建超时；底层 HTTP 超时和实例整体转发阶段超时仍按各自配置执行。
+规则描述保留由区域、claim ID、浮动 IP ID 和协议生成的操作标识，供后续删除定位资源。
+`signalHandler` 收到 `RecoveryCompleted` 后通过独立的 `recoverState → recoverClaim` 按持久化状态分流。
+`CREATING` 通过 `recoverCreation → OpenStackClient.recoverPortForwardings()` 恢复；恢复入口和远端操作编排
+均独立于正常创建的 `executeCreation` 和 `createPortForwardings()`，后续可以单独调整恢复策略。
+恢复先查询一次当前浮动 IP 的转发列表，按 claim 和协议对应的操作标识定位 TCP、UDP，
+校验公网端口、内部端口、目标 Neutron 端口、固定 IP、协议和规则 ID。
+两条规则均存在时直接复用并返回就绪；只存在一条时只补建另一条，都不存在时才创建两条。
+两种协议均完成校验后才补建；操作标识重复、参数不一致或规则 ID 缺失时暂停并保留端口，等待核对。
+恢复沿用已预留端口、不增加创建超时；结果通过同一套 Ready/Failed 消息和事件记录。
+恢复只处理未记录删除意图的 `CREATING` claim；已有删除意图或处于删除阶段的 claim 等待外部再次发送删除命令。
+禁用浮动 IP 不阻止已受理创建的恢复，也不阻止外部删除命令。
+中断前已在远端创建但尚未持久化结果的规则，也能通过操作标识发现并复用。
 已完成或暂停的 claim 不会启动操作，已失败的创建不会自动重做。
-远端查找和创建不是原子操作，发现重复操作标识时记录失败并保留端口供核对。
 
 删除使用 `ForwardingDeletionRequested`、`ForwardingDeletionStarted`、`ForwardingDeleted`
-和 `ForwardingDeletionFailed` 分别记录意图、开始、完成和失败。创建期间的删除请求只记录意图，
-先接收当前操作结果再执行清理。`deletePortForwardings()` 按操作标识查找并删除 TCP/UDP，
+和 `ForwardingDeletionFailed` 分别记录意图、开始、完成和失败。
+只有外部 `DeletePortForwarding` 命令会开始或重试删除，
+删除通过独立的命令和事件执行。创建仍在执行时先记录删除意图并返回进行中，
+创建回调只更新结果；调用方需再次发送删除命令。
+实例工作流根据本次请求的所有候选浮动 IP 和内部端口还原 claim ID，逐个调用 `delete`，
+全部返回 `DELETED` 后才继续删除实例网络；未完成时由补偿重试再次发送删除命令。
+删除范围包含创建结果尚未收到的 claim，尚未创建的 claim 会记录取消标记，阻止迟到创建。
+FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级取消记录。
+同一 claim 已有删除请求在执行时，重复删除只返回当前进度，不并发提交删除。
+`deletePortForwardings()` 按操作标识查找并删除 TCP/UDP，
 包含创建成功但 ID 尚未写入事件的规则；只有两条规则均确认不存在后才释放端口。
-显式删除完成后进入 `DELETED`；创建失败后的自动清理完成后保留 `FAILED` 和原失败原因。
+`cloud.fip.operation-timeout`（默认 30 秒）仅用于删除，截止时间随删除开始事件保存；
+每次远端删除前检查截止时间。删除失败或应用重启中断后，由外部删除命令发起新一次删除并设置新的截止时间。
+删除完成后进入 `DELETED`；创建失败时保留 `FAILED`、失败原因和已占用端口，等待外部决定是否删除。
 
-超时或响应丢失等不确定结果保留端口，并返回 `NEEDS_RECONCILIATION`；通过
-`ReconcilePortForwarding` 显式恢复时记录 `ForwardingReconciliationRequested`，重新设置操作截止时间。
-已有删除意图时继续清理，否则重新查找并补齐转发规则。删除失败也会暂停，重复删除请求可以再次尝试清理。
-自动清理仍受 `cleanup-on-failure` 控制；失败且仍持有端口时，实例工作流进入补偿，不切换浮动 IP。
+`claims` 仅保留仍需处理的完整记录。端口耗尽等未分配资源的失败，以及确认删除完成的 claim，
+立即移入精简的 `outcomes`，只保存请求参数指纹、`FAILED`／`DELETED`、失败原因和完成时间。
+仍占用端口、暂停等待核对或处于创建、就绪、删除中的 claim 不会被清理。
+保留期内查询和相同参数的重复创建仍返回原终态，但终态回复的 `claim` 为 `null`；
+相同 claim ID 携带不同参数会被拒绝。尚未创建就被取消的 claim 也保存在 `outcomes` 中，阻止迟到创建。
+
+`cloud.fip.outcome-retention` 默认 `24h`，`outcome-cleanup-interval` 默认 `10m`。
+Actor 恢复后立即检查一次，之后定期将过期记录 ID 持久化为 `ForwardingOutcomesCleaned` 再移除。
+完成时间和取消时间都来自事件，事件重放不会重新开始保留期，重复查询或重复删除也不会延长已删除结果的保留期。
+过期清理后查询返回 `NOT_FOUND`，旧 claim ID 不再保证幂等；保留期应覆盖调用方可能重试的时间范围。
+清理终态记录不改变 `portmask`，不发起 OpenStack 删除，也不删除 journal 历史事件，已有 projection 可以继续消费。
+
+超时或响应丢失等不确定结果保留端口，并返回 `NEEDS_RECONCILIATION`，表示需要外部核对或清理。
+不提供显式恢复命令；重启恢复只继续未收到删除请求的 `CREATING`，已失败的创建不会重新执行。
+失败资源由外部删除命令清理；删除失败也会暂停，通过再次发送删除命令重试。
+失败且仍持有端口时，实例工作流进入补偿，不切换浮动 IP；是否发出删除命令由实例工作流的 `cleanup-on-failure` 控制。
+FloatingIpActor 不再根据该配置自行清理，收到外部删除命令后按删除流程执行。
 只有没有占用端口的失败才允许继续尝试其他候选。
 
 Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_retries=0`，
@@ -253,7 +293,7 @@ Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补
 （环境变量 `INSTANCE_CLEANUP_ON_FAILURE`），创建失败后暂停自动清理：
 保留 Nova、专属安全组、父子端口、Trunk、QoS 和端口转发，并保留失败原因；端口创建失败时也不自动删除专用 QoS。
 实例停留在 `COMPENSATING`，不执行清理或安排清理重试，Actor 恢复后同样暂停。
-转发创建失败后的自动回滚和已提交的实例转发清理也暂停，其他转发请求可继续处理。
+实例工作流暂停发送端口转发删除命令，其他转发请求可继续处理；直接发送给 FloatingIpActor 的删除命令仍会执行。
 
 排查完成后设置 `INSTANCE_CLEANUP_ON_FAILURE=true` 并重启应用，恢复中的工作流按
 Nova、端口转发、实例网络/QoS、专属安全组、资源预留的顺序继续补偿，清理失败后继续重试，完成后进入 `FAILED`。
@@ -354,26 +394,26 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 `FloatingIpProjection` 消费 `FloatingIpActor` 的事件，投影名为 `floating-ip`，
 与其他投影一起由 `cloud.projection.enabled` 和 `cloud.projection.slice-ranges` 控制。
 投影按 `(region_id, os_floating_ip_id)` 直接更新已登记的 `floating_ip` 表中的 `enabled`、`port_mask`
-和 `resource_version`。`enabled` 为非空布尔值，登记时默认为 `false`，启用事件投影后为 `true`。
+和 `resource_version`。`enabled` 为非空布尔值，登记时默认为 `false`，由启用和禁用事件更新。
 名称、描述、外部网络和地址等字段仍由登记流程维护。
 
-`FloatingIpEnabled`、`ForwardingPortAllocated` 和 `ForwardingDeleted` 携带事件生效后的完整端口位图 `usedPortMask`，
-包含导入的初始预留和所有 claim 当前持有的端口。分配公网端口时置位，TCP/UDP 清理完成、
-Actor 释放端口后清位；暂停或清理未完成时继续保留占用。初始预留始终保留，
-即使它与某个后来被删除的 claim 使用相同端口，也不会被误释放。
+`FloatingIpEnabled`、`FloatingIpDisabled`、`ForwardingPortAllocated` 和 `ForwardingDeleted`
+携带事件生效后的完整端口位图 `usedPortMask`，包含已导入占用和所有 claim 当前持有的端口。
+分配公网端口时置位，TCP/UDP 清理完成、Actor 释放端口后清位；暂停或清理未完成时继续保留占用。
+已导入占用只能在禁用后的启用请求中替换；禁用本身不释放任何端口。
 位图第 0 位对应公网端口 10000，使用 `BitSet.toByteArray()` 编码。
-这三个事件都描述已启用的 Actor，投影同时写入 `enabled=true`；释放端口不会停用浮动 IP。
+分配和释放事件同时携带当时的 `enabled`，与位图共用版本保护；禁用期间的清理不会重新启用浮动 IP。
 
-创建请求、就绪、失败和删除请求等事件不改变位图；`ForwardingCancelled` 记录尚未创建的 claim
-或整个实例的取消意图，同样不释放端口。claim 状态和取消记录继续保存在
+创建请求、就绪、失败和删除请求等事件不改变位图；`ForwardingCancelled` 记录单个 claim
+的取消意图，同样不释放端口。claim 状态和取消记录继续保存在
 Actor 事件及快照中，实例已确认的映射仍由 `instance_port_forwarding` 保存。
-快照保存 `enabled`、`identity`、`initialPortMask` 和 `usedPorts`；启用状态必须包含身份，
+快照保存 `enabled`、`identity`、`importedPortMask` 和 `usedPorts`；启用状态必须包含身份，
 缺少端口位图时直接拒绝加载，不再从 claim 重建位图。
-任意命令都能触发 Actor 的日志恢复；已启用的 Actor 从事件和快照恢复身份、初始预留及转发状态，
-无需再次发送启用消息，恢复完成后继续处理未完成的转发操作。
+任意命令都能触发 Actor 的日志恢复；Actor 从事件和快照恢复身份、导入占用及转发状态，
+恢复完成后继续处理未记录删除意图的创建，禁用状态也不跳过这些创建；删除等待外部删除命令重新触发。
 不要把投影后的动态 `port_mask` 再作为初始预留导入。
 
-`resource_version` 默认是 0，随后保存最近一次端口位图事件的日志序号，只有更新的事件才能覆盖启用状态和位图。
+`resource_version` 默认是 0，随后保存最近一次启停或端口位图事件的日志序号，只有更新的事件才能覆盖启用状态和位图。
 启用状态、位图更新和 offset 在同一个 JDBC 事务中提交；若登记记录尚不可见，投影报错而不推进 offset，
 避免创建事务与投影并发时丢失更新。投影不调用 Actor 或 OpenStack。
 新库执行 `sql/floating-ips.sql`，已有数据库执行 `sql/migrations/add-floating-ip-projection-version.sql`

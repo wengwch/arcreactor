@@ -6,8 +6,9 @@ import org.apache.ibatis.annotations.Param;
 
 @Mapper
 public interface FloatingIpProjectionMapper {
-  int updatePortMask(
+  int updateState(
       @Param("identity") FloatingIpIdentity identity,
+      @Param("enabled") boolean enabled,
       @Param("portMask") byte[] portMask,
       @Param("version") long version);
 

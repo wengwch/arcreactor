@@ -1,15 +1,15 @@
 package cn.veryai.arcreactor.actor.fip.event;
 
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
+import java.time.Instant;
 import java.util.Objects;
 
-/** Tombstones prevent delayed create requests from resurrecting deleted instance mappings. */
-public record ForwardingCancelled(FloatingIpIdentity identity, String claimId, String instanceId)
+/** A claim tombstone prevents delayed create requests from resurrecting a deleted mapping. */
+public record ForwardingCancelled(FloatingIpIdentity identity, String claimId, Instant cancelledAt)
     implements FloatingIpEvent {
   public ForwardingCancelled {
     Objects.requireNonNull(identity, "identity");
-    if (claimId == null && instanceId == null) {
-      throw new IllegalArgumentException("a claim or instance cancellation target is required");
-    }
+    Objects.requireNonNull(cancelledAt, "cancelledAt");
+    if (claimId == null || claimId.isBlank()) throw new IllegalArgumentException("claimId is required");
   }
 }

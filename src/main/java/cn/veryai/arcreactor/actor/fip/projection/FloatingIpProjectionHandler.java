@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.actor.fip.projection;
 
 import cn.veryai.arcreactor.actor.fip.FloatingIpActor;
+import cn.veryai.arcreactor.actor.fip.event.FloatingIpDisabled;
 import cn.veryai.arcreactor.actor.fip.event.FloatingIpEnabled;
 import cn.veryai.arcreactor.actor.fip.event.FloatingIpEvent;
 import cn.veryai.arcreactor.actor.fip.event.ForwardingDeleted;
@@ -23,21 +24,28 @@ public final class FloatingIpProjectionHandler
           + envelope.persistenceId());
     }
     byte[] portMask;
-    if (event instanceof FloatingIpEnabled enabled) {
-      portMask = enabled.usedPortMask();
+    boolean enabled;
+    if (event instanceof FloatingIpEnabled activation) {
+      enabled = true;
+      portMask = activation.usedPortMask();
+    } else if (event instanceof FloatingIpDisabled deactivation) {
+      enabled = false;
+      portMask = deactivation.usedPortMask();
     } else if (event instanceof ForwardingPortAllocated allocated) {
+      enabled = allocated.enabled();
       portMask = allocated.usedPortMask();
     } else if (event instanceof ForwardingDeleted deleted) {
+      enabled = deleted.enabled();
       portMask = deleted.usedPortMask();
     } else {
-      // Requests, readiness and failures do not change port ownership.
+      // Requests, readiness, failures and outcome cleanup do not change port ownership.
       return;
     }
 
     FloatingIpProjectionMapper mapper = session.mapper(FloatingIpProjectionMapper.class);
     long version = envelope.sequenceNr();
-    // All three events describe an enabled actor; enabled and port usage share the same version guard.
-    if (mapper.updatePortMask(identity, portMask, version) == 0) {
+    // Port changes also carry enabled, so cleanup cannot overwrite a disabled actor's status.
+    if (mapper.updateState(identity, enabled, portMask, version) == 0) {
       Long projectedVersion = mapper.findResourceVersion(identity);
       if (projectedVersion == null || projectedVersion < version) {
         // Registration and actor persistence use separate transactions. Do not lose an early event.

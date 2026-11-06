@@ -9,5 +9,7 @@ import org.apache.ibatis.annotations.Param;
 public interface FloatingIpMapper {
     int insert(FloatingIpEntity entity);
 
+    FloatingIpEntity findById(@Param("id") String id);
+
     List<FloatingIpEntity> findByRegionId(@Param("regionId") String regionId);
 }

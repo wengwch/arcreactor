@@ -12,6 +12,7 @@
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
 @extNetId = 2e2d09dd-7f09-4d69-866d-4d4b06062383
+@floatingIpId = replace-with-created-business-id
 
 ### 创建用于端口转发的浮动 IP，返回 HTTP 201 和浮动 IP 记录
 # 默认 initOpenstack=true，在 OpenStack 中分配地址，不绑定实例端口。
@@ -40,3 +41,30 @@ Content-Type: application/json
   "portMask": "MA8AAAAAwMA=",
   "initOpenstack": false
 }
+
+### 禁用浮动 IP：停止接受新 claim，已有创建和清理继续，返回 HTTP 202
+PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/disable
+
+### 启用并保留现有位图；已启用时重复调用成功，返回 HTTP 202
+PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
+
+### 禁用后，使用当前完整转发列表更新位图并启用
+# 已启用时携带列表会被拒绝。ID 为 OpenStack 转发规则 ID，不是浮动 IP ID。
+# externalPort 也接受 external_port；协议等其他 OpenStack 字段可以一并传入。
+# 只记录 10000–40000 内的占用；已有 claim 持有的端口不会被列表清除。
+PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
+Content-Type: application/json
+
+{
+  "forwardings": [
+    {"id": "existing-tcp-rule-id", "externalPort": 12022},
+    {"id": "existing-udp-rule-id", "externalPort": 12022},
+    {"id": "another-rule-id", "externalPort": 18888}
+  ]
+}
+
+### 禁用后，清空导入占用并启用；保留仍被 claim 持有的端口
+PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
+Content-Type: application/json
+
+{"forwardings": []}

@@ -529,7 +529,10 @@ public final class InstanceWorkflowActor
     return state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
   }
   private static String forwardingClaimId(InstanceWorkflowState state) {
-    return "fip:" + state.instanceId() + ":" + state.requestId() + ":" + state.currentForwardingPort();
+    return forwardingClaimId(state, state.currentForwardingPort());
+  }
+  private static String forwardingClaimId(InstanceWorkflowState state, int internalPort) {
+    return "fip:" + state.instanceId() + ":" + state.requestId() + ":" + internalPort;
   }
   private static boolean matchesForwarding(InstanceWorkflowState state, long generation) {
     return state.phase() == InstancePhase.PREPARING_FORWARDING && state.pollingGeneration() == generation;
@@ -823,9 +826,7 @@ public final class InstanceWorkflowActor
                 .handle((ignored, error) -> error == null);
     CompletionStage<Boolean> forwardingCleanup = delete.thenCompose(deleted -> {
       if (!deleted) return CompletableFuture.completedFuture(false);
-      return state.spec().forwarding() == null ? CompletableFuture.completedFuture(true)
-          : floatingIpForwardings.deleteInstance(state.spec().region(), state.spec().forwarding().floatingIpIds(), instanceId)
-              .handle((done, error) -> error == null && Boolean.TRUE.equals(done));
+      return deleteForwardings(state);
     });
     CompletionStage<Boolean> networkCleanup = forwardingCleanup.thenCompose(deleted -> {
       if (!deleted) return CompletableFuture.completedFuture(false);
@@ -861,6 +862,23 @@ public final class InstanceWorkflowActor
                 state.pollingGeneration(),
                 error == null && Boolean.TRUE.equals(success),
                 error == null ? "compensation complete" : rootCause(error).toString()));
+  }
+
+  private CompletionStage<Boolean> deleteForwardings(InstanceWorkflowState state) {
+    if (state.spec().forwarding() == null) return CompletableFuture.completedFuture(true);
+    List<CompletableFuture<Boolean>> deletions = new ArrayList<>();
+    // Include every candidate and service port: a create may have been accepted without a reply.
+    // Deleting an unknown claim records a tombstone that also rejects delayed create requests.
+    for (String floatingIpId : state.spec().forwarding().floatingIpIds()) {
+      for (int internalPort : state.spec().forwarding().internalPorts()) {
+        deletions.add(floatingIpForwardings.delete(state.spec().region(), floatingIpId,
+                forwardingClaimId(state, internalPort))
+            .handle((reply, error) -> error == null && reply != null && reply.status() == ForwardingReply.Status.DELETED)
+            .toCompletableFuture());
+      }
+    }
+    return CompletableFuture.allOf(deletions.toArray(CompletableFuture[]::new))
+        .thenApply(ignored -> deletions.stream().allMatch(CompletableFuture::join));
   }
 
   private void scheduleProvisioningPoll(InstanceWorkflowState state) {
