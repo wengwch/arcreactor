@@ -25,12 +25,12 @@ public record ForwardingOutcome(String specFingerprint, Phase phase,
         || claim.phase() != Phase.FAILED && claim.phase() != Phase.DELETED) {
       throw new IllegalArgumentException("only terminal forwardings without retained resources can be compacted");
     }
-    return new ForwardingOutcome(fingerprint(claim.spec()),
-        claim.deleteRequested() ? Phase.DELETED : claim.phase(), claim.failure(), completedAt);
+    return new ForwardingOutcome(fingerprint(claim.spec()), claim.phase(), claim.failure(), completedAt);
   }
 
-  public static ForwardingOutcome cancelled(Instant cancelledAt) {
-    return new ForwardingOutcome(null, Phase.DELETED, null, cancelledAt);
+  /** Records deletion before any create was accepted, blocking delayed creates during retention. */
+  public static ForwardingOutcome tombstone(Instant deletedAt) {
+    return new ForwardingOutcome(null, Phase.DELETED, null, deletedAt);
   }
 
   public boolean matches(ForwardingSpec spec) {

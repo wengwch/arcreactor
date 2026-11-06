@@ -28,7 +28,7 @@ public final class FloatingIpForwardings {
     this.sharding = ClusterSharding.get(system);
     Config config = system.settings().config().getConfig("cloud.fip");
     askTimeout = config.getDuration("ask-timeout");
-    FloatingIpSettings settings = new FloatingIpSettings(config.getDuration("operation-timeout"),
+    FloatingIpSettings settings = new FloatingIpSettings(
         config.getDuration("outcome-retention"), config.getDuration("outcome-cleanup-interval"));
     sharding.init(Entity.of(FloatingIpActor.TYPE_KEY,
         context -> FloatingIpActor.create(context.getEntityId(), client, settings)));
@@ -57,7 +57,7 @@ public final class FloatingIpForwardings {
         replyTo -> new GetPortForwarding(claimId, replyTo), askTimeout, system.scheduler());
   }
 
-  /** Repeat while pending: a create already in flight records deletion intent without starting cleanup. */
+  /** CREATING claims reject deletion; retry after creation completes and until the reply is DELETED. */
   public CompletionStage<ForwardingReply> delete(String region, String floatingIpId, String claimId) {
     return AskPattern.<FloatingIpCommand, ForwardingReply>ask(entity(region, floatingIpId),
         replyTo -> new DeletePortForwarding(claimId, replyTo), askTimeout, system.scheduler());

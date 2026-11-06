@@ -8,7 +8,6 @@ public record ForwardingReply(Status status, ForwardingClaim claim, String detai
   public enum Status { IN_PROGRESS, READY, FAILED, DELETED, NEEDS_RECONCILIATION, NOT_FOUND, REJECTED }
   public static ForwardingReply from(ForwardingClaim claim) {
     Status status = claim.paused() ? Status.NEEDS_RECONCILIATION
-        : claim.deleteRequested() && claim.phase() != ForwardingClaim.Phase.DELETED ? Status.IN_PROGRESS
         : switch (claim.phase()) {
       case READY -> Status.READY;
       case FAILED -> Status.FAILED;

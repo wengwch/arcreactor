@@ -448,7 +448,7 @@ public final class InstanceWorkflowActor
     return switch (reply.status()) {
       case READY -> {
         ForwardingClaim claim = reply.claim();
-        if (claim == null || claim.phase() != ForwardingClaim.Phase.READY || claim.deleteRequested()
+        if (claim == null || claim.phase() != ForwardingClaim.Phase.READY
             || !forwardingClaimId(state).equals(claim.claimId()) || !forwardingSpec(state).equals(claim.spec())
             || !forwardingFloatingIpId(state).equals(claim.floatingIpId())
             || !hasText(claim.resources().tcpForwardingId()) || !hasText(claim.resources().udpForwardingId())
@@ -869,6 +869,7 @@ public final class InstanceWorkflowActor
     List<CompletableFuture<Boolean>> deletions = new ArrayList<>();
     // Include every candidate and service port: a create may have been accepted without a reply.
     // Deleting an unknown claim records a tombstone that also rejects delayed create requests.
+    // CREATING rejects deletion; only DELETED completes cleanup, so compensation keeps retrying.
     for (String floatingIpId : state.spec().forwarding().floatingIpIds()) {
       for (int internalPort : state.spec().forwarding().internalPorts()) {
         deletions.add(floatingIpForwardings.delete(state.spec().region(), floatingIpId,

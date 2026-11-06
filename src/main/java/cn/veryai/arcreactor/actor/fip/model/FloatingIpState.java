@@ -90,7 +90,12 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
   }
 
   public FloatingIpState deleted(String claimId, Instant deletedAt) {
-    return completed(claims.get(claimId).deleted(), deletedAt);
+    ForwardingClaim claim = claims.get(claimId);
+    if (claim != null) return completed(claim.deleted(), deletedAt);
+    Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);
+    nextOutcomes.compute(claimId, (id, previous) -> previous == null
+        ? ForwardingOutcome.tombstone(deletedAt) : previous.deleted(deletedAt));
+    return new FloatingIpState(enabled, identity, claims, nextOutcomes, usedPorts, importedPortMask);
   }
 
   private FloatingIpState completed(ForwardingClaim claim, Instant completedAt) {
@@ -101,13 +106,6 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
     Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);
     nextOutcomes.put(claim.claimId(), ForwardingOutcome.from(claim, completedAt));
     return new FloatingIpState(enabled, identity, remaining, nextOutcomes, next.usedPorts, importedPortMask);
-  }
-
-  public FloatingIpState cancelled(String claimId, Instant cancelledAt) {
-    Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);
-    nextOutcomes.compute(claimId, (id, previous) -> previous == null
-        ? ForwardingOutcome.cancelled(cancelledAt) : previous.deleted(cancelledAt));
-    return new FloatingIpState(enabled, identity, claims, nextOutcomes, usedPorts, importedPortMask);
   }
 
   public Set<String> expiredOutcomes(Instant cutoff) {

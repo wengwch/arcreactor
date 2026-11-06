@@ -169,6 +169,35 @@ CREATE TABLE IF NOT EXISTS instance_view (
   INDEX idx_instance_request (request_id)
 ) ENGINE=InnoDB;
 
+-- One lifecycle record per claim on a floating IP, including failed and deleted mappings.
+CREATE TABLE IF NOT EXISTS port_forwarding (
+  region_id VARCHAR(255) NOT NULL,
+  os_floating_ip_id VARCHAR(255) NOT NULL,
+  claim_id VARCHAR(255) NOT NULL,
+  instance_id VARCHAR(255),
+  user_id VARCHAR(255),
+  os_project_id VARCHAR(255),
+  floating_ip VARCHAR(45) NOT NULL,
+  internal_port_id VARCHAR(255),
+  fixed_ip VARCHAR(45),
+  internal_port INT,
+  external_port INT,
+  tcp_forwarding_id VARCHAR(255),
+  udp_forwarding_id VARCHAR(255),
+  phase VARCHAR(64) NOT NULL,
+  paused BOOLEAN NOT NULL DEFAULT FALSE,
+  failure_message TEXT,
+  resource_version BIGINT NOT NULL,
+  created_at TIMESTAMP(6) NOT NULL,
+  updated_at TIMESTAMP(6) NOT NULL,
+  deleted_at TIMESTAMP(6) NULL,
+  PRIMARY KEY (region_id, os_floating_ip_id, claim_id),
+  INDEX idx_port_forwarding_instance (instance_id, internal_port),
+  INDEX idx_port_forwarding_user_region (user_id, region_id),
+  INDEX idx_port_forwarding_region_phase (region_id, phase),
+  INDEX idx_port_forwarding_external (region_id, os_floating_ip_id, external_port)
+) ENGINE=InnoDB;
+
 -- One confirmed mapping per internal service port; an instance may use multiple floating IPs.
 CREATE TABLE IF NOT EXISTS instance_port_forwarding (
   instance_id VARCHAR(255) NOT NULL,

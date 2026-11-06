@@ -60,10 +60,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
-import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Service
@@ -350,7 +348,7 @@ public class OpenStackClient {
         NETWORK_EXECUTOR);
   }
 
-  /** Directly creates TCP and UDP rules; markers are retained for subsequent cleanup. */
+  /** Directly creates TCP and UDP rules; markers are retained for creation recovery. */
   public CompletionStage<ForwardingResources> createPortForwardings(FloatingIpIdentity identity,
       String claimId, ForwardingSpec spec, int externalPort) {
     return CompletableFuture.supplyAsync(() -> {
@@ -418,12 +416,6 @@ public class OpenStackClient {
   private static String forwardingMarker(FloatingIpIdentity identity, String claimId, NetProtocol protocol) {
     String key = identity.regionId() + ":" + claimId + ":" + identity.floatingIpId() + ":" + protocol;
     return "veryai:pf:" + UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private static void requireForwardingDeletionDeadline(Instant deadline) {
-    if (!Instant.now().isBefore(deadline)) {
-      throw new CompletionException(new TimeoutException("Forwarding deletion deadline exceeded"));
-    }
   }
 
   /** Resume the instance's own group and missing rules after recovery, before creating any ports. */
@@ -509,56 +501,49 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
-  /** Discovers both protocol rules by marker, including resources created before a lost response. */
-  public CompletionStage<Boolean> deletePortForwardings(FloatingIpIdentity identity, String claimId,
-      ForwardingResources resources, Instant deadline) {
+  /** Queries recorded rule IDs before deletion; missing IDs leave deletion incomplete. */
+  public CompletionStage<Boolean> deletePortForwardings(FloatingIpIdentity identity, ForwardingResources resources) {
     return CompletableFuture.supplyAsync(() -> {
-      requireForwardingDeletionDeadline(deadline);
       var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
-      try {
-        boolean tcpDeleted = deleteManagedPortForwarding(service, identity.floatingIpId(), resources.tcpForwardingId(),
-            forwardingMarker(identity, claimId, NetProtocol.TCP), deadline);
-        boolean udpDeleted = deleteManagedPortForwarding(service, identity.floatingIpId(), resources.udpForwardingId(),
-            forwardingMarker(identity, claimId, NetProtocol.UDP), deadline);
-        return tcpDeleted && udpDeleted;
-      } catch (ResponseException error) {
-        // Listing the rules returns 404 when the floating IP itself has already been removed.
-        if (error.getStatus() == 404) return true;
-        throw error;
+      boolean tcpDeleted = deleteManagedPortForwarding(service, identity.floatingIpId(), resources.tcpForwardingId());
+      boolean udpDeleted = deleteManagedPortForwarding(service, identity.floatingIpId(), resources.udpForwardingId());
+      return tcpDeleted && udpDeleted;
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** Independently resumes interrupted deletion by checking each recorded rule before removing it. */
+  public CompletionStage<Boolean> recoverPortForwardingDeletion(FloatingIpIdentity identity,
+      ForwardingResources resources) {
+    return CompletableFuture.supplyAsync(() -> {
+      var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
+      boolean complete = true;
+      for (String ruleId : new String[] {resources.tcpForwardingId(), resources.udpForwardingId()}) {
+        if (ruleId == null || ruleId.isBlank()) {
+          complete = false;
+          continue;
+        }
+        try {
+          if (service.get(identity.floatingIpId(), ruleId) != null) {
+            requireDeleteResponse(service.delete(identity.floatingIpId(), ruleId));
+          }
+        } catch (ResponseException error) {
+          if (error.getStatus() != 404) throw error;
+        }
       }
+      return complete;
     }, NETWORK_EXECUTOR);
   }
 
   private boolean deleteManagedPortForwarding(PortForwardingService service, String floatingIpId,
-      String ruleId, String marker, Instant deadline) {
-    requireForwardingDeletionDeadline(deadline);
-    Set<String> ids = new HashSet<>();
-    for (PortForwarding rule : service.list(floatingIpId)) {
-      if (marker.equals(rule.getDescription())) ids.add(rule.getId());
+      String ruleId) {
+    if (ruleId == null || ruleId.isBlank()) return false;
+    try {
+      if (service.get(floatingIpId, ruleId) == null) return true;
+      requireDeleteResponse(service.delete(floatingIpId, ruleId));
+    } catch (ResponseException error) {
+      if (error.getStatus() != 404) throw error;
     }
-    if (ruleId != null) {
-      try {
-        PortForwarding known = service.get(floatingIpId, ruleId);
-        if (known != null) {
-          if (!marker.equals(known.getDescription())) {
-            throw new OpenStackOperationException("Refusing to delete an unowned forwarding rule", null);
-          }
-          ids.add(ruleId);
-        }
-      } catch (ResponseException error) {
-        if (error.getStatus() != 404) throw error;
-      }
-    }
-    for (String id : ids) {
-      requireForwardingDeletionDeadline(deadline);
-      if (id == null || id.isBlank()) throw new IllegalStateException("Missing forwarding ID");
-      try {
-        requireDeleteResponse(service.delete(floatingIpId, id));
-      } catch (ResponseException error) {
-        if (error.getStatus() != 404) throw error;
-      }
-    }
-    return service.list(floatingIpId).stream().noneMatch(rule -> marker.equals(rule.getDescription()));
+    return true;
   }
 
   private OSClient.OSClientV3 getOsForwardingClient(String region) {
