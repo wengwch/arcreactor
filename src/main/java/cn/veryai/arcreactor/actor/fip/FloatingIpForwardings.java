@@ -34,12 +34,11 @@ public final class FloatingIpForwardings {
         context -> FloatingIpActor.create(context.getEntityId(), client, settings)));
   }
 
-  /** Port usage can be replaced only while disabled; omitted inputs preserve current reservations. */
-  public CompletionStage<Boolean> enable(FloatingIpIdentity identity, byte[] portMask,
-      List<PortForwardingSnapshot> forwardings) {
+  /** Rules are merged into current usage only while disabled; null and empty lists preserve usage. */
+  public CompletionStage<Boolean> enable(FloatingIpIdentity identity, List<PortForwardingSnapshot> forwardings) {
     Objects.requireNonNull(identity, "identity");
     return AskPattern.<FloatingIpCommand, Boolean>ask(entity(identity.regionId(), identity.floatingIpId()),
-        replyTo -> new EnableFloatingIp(identity, portMask, forwardings, replyTo), askTimeout, system.scheduler());
+        replyTo -> new EnableFloatingIp(identity, forwardings, replyTo), askTimeout, system.scheduler());
   }
 
   public CompletionStage<Boolean> disable(String region, String floatingIpId) {

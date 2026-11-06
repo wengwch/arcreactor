@@ -63,15 +63,22 @@ LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路
 将其 OpenStack ID 作为候选列表随创建事件持久化；不会在 HTTP 请求期间调用 OpenStack 创建转发。
 没有候选地址时返回业务错误 `11718`，不提交实例工作流。
 新建或登记浮动 IP 时发送 `EnableFloatingIp`，持久化 `FloatingIpEnabled` 保存启用状态、身份和初始端口位图后返回。
+创建参数不再接收 `portMask`。`initOpenstack=true` 时新建地址并使用空占用启用；
+`initOpenstack=false` 时，服务端在登记和自动启用前通过 `OpenStackClient.listPortForwardings()`
+查询该浮动 IP 的现有转发规则，将规则 ID 和公网端口列表传给 Actor 计算占用。
+查询失败则中止登记和启用；初始记录及创建响应的 `portMask` 根据查询结果生成，只记录 10000–40000 内的占用。
+内部 `enable(identity, forwardings)` 和 `EnableFloatingIp` 命令只接收转发列表，由 Actor 生成启用事件中的位图。
 创建响应的 `enabled=true` 表示 Actor 已确认启用；数据库字段由投影异步更新，投影完成后地址才进入实例候选列表。
 `FloatingIpState.enabled` 初始为 `false`，收到 `FloatingIpEnabled` 后变为 `true`，收到 `FloatingIpDisabled` 后变为 `false`。
 `PUT /api/v1/floating-ips/{id}/disable` 禁止受理新的 claim，已有创建、查询、删除和恢复继续处理，当前位图保留。
 `PUT /api/v1/floating-ips/{id}/enable` 可不带请求体，沿用当前位图；已启用时重复调用同样成功。
 启用请求可携带 `forwardings` 列表，每项包含规则 `id` 和 `externalPort`（也接受 OpenStack 的 `external_port`）。
 只有 Actor 当前为禁用状态时才能携带列表更新端口占用；已启用时携带列表会被拒绝，即使列表与已有占用一致。
-省略列表或传 `null` 保留已导入占用，`[]` 清空已导入占用；已有 claim 持有的端口始终保留。
-列表中已知的 claim 规则按规则 ID 和端口归属 claim，删除 claim 后可以释放；其余规则作为外部占用导入。
-尚未记录规则 ID 的占用按外部规则保留，可在后续禁用、重新同步时刷新。TCP/UDP 共用同一端口位，范围外的端口不进入位图。
+非 `null` 列表根据 OpenStack 转发规则生成位图，与当前 `usedPorts` 做 OR 合并，既有占用全部保留。
+省略列表、传 `null` 或 `[]` 均不清除端口位；启用操作只增加占用。位图不区分占用来源，
+TCP/UDP 共用同一端口位，范围外的端口不进入位图。
+同步前由操作人员先禁用浮动 IP，确认没有在途创建、删除或恢复请求，再查询完整 OpenStack 规则列表并提交启用请求。
+无在途请求由人工保证，Actor 不自动等待或增加在途请求冲突校验。
 启用和禁用接口均在事件持久化后返回 HTTP `202`，读模型随后更新；`{id}` 是登记表业务 ID。
 Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStash` 等待启用。
 禁用时提交新 claim 立即返回 `REJECTED`；相同 claim 的重复提交返回已有状态，查询和清理已有 claim 正常进行。
@@ -199,7 +206,7 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
 
 FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETED`。
-`CreatePortForwarding` 根据 Actor 当前 `portMask` 选择端口，将 `ForwardingCreationRequested` 和
+`CreatePortForwarding` 根据 Actor 当前总位图 `usedPorts` 选择端口，将 `ForwardingCreationRequested` 和
 `ForwardingPortAllocated` 一起持久化，然后返回 `IN_PROGRESS` 并立即调用 `OpenStackClient.createPortForwardings()`；
 端口耗尽时持久化创建和失败事件并返回 `FAILED`，不调用 OpenStack。
 不再保存 `order` 或通过全局 `Drive` 排队，不同 claim 的 OpenStack 异步操作可以并行执行。
@@ -253,7 +260,8 @@ FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级�
 `deletePortForwardings()` 按已保存的 TCP/UDP 规则 ID 先查询规则详情，存在时才调用删除接口。
 查询返回空或 404 时直接视为已删除；删除成功或返回 404 同样视为完成。
 不查询列表、不校验操作标识，也不在删除后复查。
-只有两条规则都删除完成后才释放端口。若任一规则 ID 缺失，仍尝试删除有 ID 的规则，
+两条规则都删除完成后，通过 `ForwardingDeleted` 直接清除该 claim 的端口位，不再区分占用来源。
+若任一规则 ID 缺失，仍尝试删除有 ID 的规则，
 整体返回未完成并保留端口占用；创建结果丢失的规则需要另行核对，删除流程不再自动发现这些规则。
 删除流程不额外设置超时，事件和 claim 不保存删除截止时间；Actor 直接等待 OpenStackClient 的异步结果，
 底层 HTTP 超时仍按 SDK 配置执行。删除失败后暂停，等待外部删除命令重试；
@@ -412,10 +420,12 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 名称、描述、外部网络和地址等字段仍由登记流程维护。
 
 `FloatingIpEnabled`、`FloatingIpDisabled`、`ForwardingPortAllocated` 和 `ForwardingDeleted`
-携带事件生效后的完整端口位图 `usedPortMask`，包含已导入占用和所有 claim 当前持有的端口。
+携带事件生效后的完整端口位图 `usedPortMask`，投影直接使用该总位图更新 `floating_ip.port_mask`。
+`FloatingIpEnabled` 只包含 `identity` 和合并后的完整 `usedPortMask`，恢复和投影使用事件中的合并结果；
+状态中不再保存占用来源或单独的导入位图。
 分配公网端口时置位，TCP/UDP 清理完成、Actor 释放端口后清位；暂停或清理未完成时继续保留占用。
 claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新版本而不释放任何端口。
-已导入占用只能在禁用后的启用请求中替换；禁用本身不释放任何端口。
+禁用后的启用请求将查询到的占用并入总位图，同步前由人工确认无在途请求；启用和禁用均不释放任何端口。
 位图第 0 位对应公网端口 10000，使用 `BitSet.toByteArray()` 编码。
 分配和释放事件同时携带当时的 `enabled`，与位图共用版本保护；禁用期间的清理不会重新启用浮动 IP。
 
@@ -440,12 +450,12 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 实例已确认的映射仍由 `InstanceProjection` 写入 `instance_port_forwarding`。
 
 创建请求、就绪、失败和删除开始等事件不改变位图。claim 状态和已删除结果继续保存在 Actor 事件及快照中。
-快照保存 `enabled`、`identity`、`importedPortMask` 和 `usedPorts`；启用状态必须包含身份，
-缺少端口位图时直接拒绝加载，不再从 claim 重建位图。
-任意命令都能触发 Actor 的日志恢复；Actor 从事件和快照恢复身份、导入占用及转发状态，
+快照保存 `enabled`、`identity`、`claims`、`outcomes` 和总位图 `usedPorts`，不再包含 `importedPortMask`。
+启用状态必须包含身份，缺少端口位图时直接拒绝加载；恢复使用快照和事件中的完整位图，不从 claim 重建或补入占用。
+任意命令都能触发 Actor 的日志恢复；Actor 从事件和快照恢复身份、总位图及转发状态，
 恢复完成后继续处理未暂停的 `CREATING`、`DELETING`，禁用状态也不跳过这些已受理的操作；
 删除失败并暂停的 claim 等待外部删除命令重试。
-不要把投影后的动态 `port_mask` 再作为初始预留导入。
+同步总位图时使用当次查询的完整 OpenStack 规则列表。
 
 `resource_version` 默认是 0，随后保存最近一次启停或端口位图事件的日志序号，只有更新的事件才能覆盖启用状态和位图。
 `port_forwarding.resource_version` 保存该 claim 最近消费的事件序号，重复或旧事件不会覆盖较新状态。

@@ -1,7 +1,6 @@
 package cn.veryai.arcreactor.web.params;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -21,9 +20,5 @@ public class SaveFloatingIpParam {
     private String osFloatingIpId;
     @Size(max = 255)
     private String floatingIp;
-    @NotNull
-    @Size(max = 65535)
-    private byte[] portMask = new byte[0];
-
     private boolean initOpenstack = true;
 }

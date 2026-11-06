@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.openstack;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingResources;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
+import cn.veryai.arcreactor.actor.fip.model.PortForwardingSnapshot;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
@@ -318,6 +319,14 @@ public class OpenStackClient {
                 .portRangeMax(port)
                 .remoteIpPrefix("0.0.0.0/0")
                 .build());
+  }
+
+  /** Reads existing rule IDs and external ports for floating IP activation. */
+  public CompletionStage<List<PortForwardingSnapshot>> listPortForwardings(String region, String floatingIpId) {
+    return CompletableFuture.supplyAsync(() -> getOsForwardingClient(region).networking().floatingip()
+        .portForwarding().list(floatingIpId).stream()
+        .map(rule -> new PortForwardingSnapshot(rule.getId(), rule.getExternalPort()))
+        .toList(), NETWORK_EXECUTOR);
   }
 
   public CompletionStage<Void> deletePortForwarding(String region, String floatingIpId, String portForwardingId) {

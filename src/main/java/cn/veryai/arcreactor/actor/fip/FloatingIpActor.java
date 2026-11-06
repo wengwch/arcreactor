@@ -87,13 +87,14 @@ public final class FloatingIpActor
       return Effect().none();
     }
     if (state.enabled()) {
-      command.replyTo().tell(command.portMask() == null && command.forwardings() == null);
+      command.replyTo().tell(command.forwardings() == null);
       return Effect().none();
     }
-    byte[] portMask = command.forwardings() != null ? state.importedMask(command.forwardings())
-        : command.portMask() != null ? command.portMask() : state.importedPortMask();
-    return Effect().persist(new FloatingIpEnabled(
-            command.identity(), portMask, state.enabled(command.identity(), portMask).usedPorts().toByteArray()))
+    BitSet ports = state.usedPorts();
+    if (command.forwardings() != null) {
+      ports.or(BitSet.valueOf(PortForwardingSnapshot.portMask(command.forwardings())));
+    }
+    return Effect().persist(new FloatingIpEnabled(command.identity(), ports.toByteArray()))
         .thenRun(next -> command.replyTo().tell(true));
   }
 
@@ -332,7 +333,7 @@ public final class FloatingIpActor
 
   @Override public EventHandler<FloatingIpState, FloatingIpEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
-        .onEvent(FloatingIpEnabled.class, (state, event) -> state.enabled(event.identity(), event.portMask()))
+        .onEvent(FloatingIpEnabled.class, (state, event) -> state.enabled(event.identity(), event.usedPortMask()))
         .onEvent(FloatingIpDisabled.class, (state, event) -> state.disabled())
         .onEvent(ForwardingCreationRequested.class, (state, event) ->
             state.updated(ForwardingClaim.requested(event.claimId(), event.identity().floatingIpId(),

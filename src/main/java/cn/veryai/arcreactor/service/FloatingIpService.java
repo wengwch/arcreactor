@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.service;
 
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
+import cn.veryai.arcreactor.actor.fip.model.PortForwardingSnapshot;
 import cn.veryai.arcreactor.entity.FloatingIpEntity;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
@@ -15,6 +16,7 @@ import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import cn.veryai.arcreactor.web.params.SaveFloatingIpParam;
 import cn.veryai.arcreactor.web.params.EnableFloatingIpParam;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
@@ -74,9 +76,9 @@ public class FloatingIpService {
         entity.setOsProjectId(projectId);
         entity.setOsFloatingIpId(param.getOsFloatingIpId());
         entity.setFloatingIp(param.getFloatingIp());
-        entity.setPortMask(param.getPortMask());
 
         try {
+            List<PortForwardingSnapshot> forwardings = List.of();
             if (param.isInitOpenstack()) {
                 NetFloatingIP floatingIp = openStackClient.createPortForwardingFloatingIP(
                         entity.getRegionId(), projectId, entity.getOsExtNetId());
@@ -86,11 +88,15 @@ public class FloatingIpService {
                 }
                 entity.setOsFloatingIpId(floatingIp.getId());
                 entity.setFloatingIp(floatingIp.getFloatingIpAddress());
+            } else {
+                forwardings = openStackClient.listPortForwardings(entity.getRegionId(), entity.getOsFloatingIpId())
+                        .toCompletableFuture().get();
             }
+            entity.setPortMask(PortForwardingSnapshot.portMask(forwardings));
             floatingIpRepo.insert(entity);
             Boolean enabled = floatingIpForwardings.enable(
                     new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
-                            entity.getFloatingIp(), entity.getOsProjectId()), entity.getPortMask(), null)
+                            entity.getFloatingIp(), entity.getOsProjectId()), forwardings)
                     .toCompletableFuture().get();
             if (!Boolean.TRUE.equals(enabled)) {
                 throw new IllegalStateException("Floating IP actor identity conflicts or it is already enabled");
@@ -114,7 +120,7 @@ public class FloatingIpService {
         FloatingIpEntity entity = requireFloatingIp(id);
         boolean accepted = awaitControl(floatingIpForwardings.enable(
                 new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
-                        entity.getFloatingIp(), entity.getOsProjectId()), null,
+                        entity.getFloatingIp(), entity.getOsProjectId()),
                 param == null ? null : param.getForwardings()), ErrorCode.FLOATING_IP_ENABLE_FAILED);
         if (!accepted) throw new BaseException(ErrorCode.FLOATING_IP_ENABLE_REJECTED);
     }

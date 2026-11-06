@@ -8,7 +8,7 @@ import lombok.Data;
 
 @Data
 public class EnableFloatingIpParam {
-    /** Omitted preserves imported usage; an empty list clears it while retaining claim reservations. */
+    /** Rules add occupied ports to current usage; omitted, null and empty lists preserve usage. */
     @Valid
     private List<@NotNull PortForwardingSnapshot> forwardings;
 }

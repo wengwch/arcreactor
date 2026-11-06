@@ -8,7 +8,6 @@ import java.time.Instant;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -16,54 +15,27 @@ import java.util.Set;
 public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
     Map<String, ForwardingClaim> claims, Map<String, ForwardingOutcome> outcomes,
     @JsonSerialize(using = PortUsageJson.Serializer.class)
-    @JsonDeserialize(using = PortUsageJson.Deserializer.class) BitSet usedPorts,
-    byte[] importedPortMask) implements Serializable {
+    @JsonDeserialize(using = PortUsageJson.Deserializer.class) BitSet usedPorts) implements Serializable {
   public FloatingIpState {
     if (enabled) Objects.requireNonNull(identity, "identity");
     claims = Map.copyOf(claims);
     outcomes = Map.copyOf(outcomes);
-    importedPortMask = Objects.requireNonNull(importedPortMask, "importedPortMask").clone();
     usedPorts = (BitSet) Objects.requireNonNull(usedPorts, "usedPorts").clone();
-    usedPorts.or(BitSet.valueOf(importedPortMask));
   }
 
   public static FloatingIpState empty() {
-    return new FloatingIpState(false, null, Map.of(), Map.of(), new BitSet(), new byte[0]);
+    return new FloatingIpState(false, null, Map.of(), Map.of(), new BitSet());
   }
 
   @Override public BitSet usedPorts() { return (BitSet) usedPorts.clone(); }
-  @Override public byte[] importedPortMask() { return importedPortMask.clone(); }
 
+  /** Applies the complete port usage persisted by the enable event. */
   public FloatingIpState enabled(FloatingIpIdentity identity, byte[] portMask) {
-    BitSet ports = BitSet.valueOf(portMask);
-    for (ForwardingClaim claim : claims.values()) {
-      if (claim.ownsPort()) ports.set(claim.resources().externalPort() - FloatingIpSettings.FIRST_PORT);
-    }
-    return new FloatingIpState(true, identity, claims, outcomes, ports, portMask);
+    return new FloatingIpState(true, identity, claims, outcomes, BitSet.valueOf(portMask));
   }
 
   public FloatingIpState disabled() {
-    return new FloatingIpState(false, identity, claims, outcomes, usedPorts, importedPortMask);
-  }
-
-  /** Known managed rules stay owned by their claim, so deleting that claim can release its port. */
-  public byte[] importedMask(List<PortForwardingSnapshot> forwardings) {
-    Map<String, Integer> managedRules = new HashMap<>();
-    for (ForwardingClaim claim : claims.values()) {
-      if (!claim.ownsPort()) continue;
-      ForwardingResources resources = claim.resources();
-      if (resources.tcpForwardingId() != null) managedRules.put(resources.tcpForwardingId(), resources.externalPort());
-      if (resources.udpForwardingId() != null) managedRules.put(resources.udpForwardingId(), resources.externalPort());
-    }
-    BitSet ports = new BitSet();
-    for (PortForwardingSnapshot forwarding : forwardings) {
-      int port = forwarding.externalPort();
-      if (port >= FloatingIpSettings.FIRST_PORT && port <= FloatingIpSettings.LAST_PORT
-          && !Objects.equals(managedRules.get(forwarding.id()), port)) {
-        ports.set(port - FloatingIpSettings.FIRST_PORT);
-      }
-    }
-    return ports.toByteArray();
+    return new FloatingIpState(false, identity, claims, outcomes, usedPorts);
   }
 
   public FloatingIpState updated(ForwardingClaim claim) {
@@ -82,7 +54,7 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
       }
       ports.set(newPort - FloatingIpSettings.FIRST_PORT);
     }
-    return new FloatingIpState(enabled, identity, next, outcomes, ports, importedPortMask);
+    return new FloatingIpState(enabled, identity, next, outcomes, ports);
   }
 
   public FloatingIpState creationFailed(String claimId, String failure, boolean uncertain, Instant failedAt) {
@@ -95,7 +67,7 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
     Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);
     nextOutcomes.compute(claimId, (id, previous) -> previous == null
         ? ForwardingOutcome.tombstone(deletedAt) : previous.deleted(deletedAt));
-    return new FloatingIpState(enabled, identity, claims, nextOutcomes, usedPorts, importedPortMask);
+    return new FloatingIpState(enabled, identity, claims, nextOutcomes, usedPorts);
   }
 
   private FloatingIpState completed(ForwardingClaim claim, Instant completedAt) {
@@ -105,7 +77,7 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
     remaining.remove(claim.claimId());
     Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);
     nextOutcomes.put(claim.claimId(), ForwardingOutcome.from(claim, completedAt));
-    return new FloatingIpState(enabled, identity, remaining, nextOutcomes, next.usedPorts, importedPortMask);
+    return new FloatingIpState(enabled, identity, remaining, nextOutcomes, next.usedPorts);
   }
 
   public Set<String> expiredOutcomes(Instant cutoff) {
@@ -119,6 +91,6 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
   public FloatingIpState cleanOutcomes(Set<String> claimIds) {
     Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);
     claimIds.forEach(nextOutcomes::remove);
-    return new FloatingIpState(enabled, identity, claims, nextOutcomes, usedPorts, importedPortMask);
+    return new FloatingIpState(enabled, identity, claims, nextOutcomes, usedPorts);
   }
 }
