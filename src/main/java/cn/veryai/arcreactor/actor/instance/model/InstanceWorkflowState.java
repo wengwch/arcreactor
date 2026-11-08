@@ -117,16 +117,25 @@ public record InstanceWorkflowState(
                 networkPreparation, candidateIndex, dependencies, dependencyPreparationDeadline, securityGroupPreparation);
     }
 
-    public InstanceWorkflowState preparingNetwork(Instant deadline) {
-        return withNetwork(new NetworkPreparation(deadline, PreparedNetwork.empty()));
+    public InstanceWorkflowState preparingParentPort(Instant deadline) {
+        return withNetwork(InstancePhase.PREPARING_PARENT_PORT,
+                new NetworkPreparation(deadline, PreparedNetwork.empty()));
+    }
+
+    public InstanceWorkflowState preparingSubPort() {
+        return withNetwork(InstancePhase.PREPARING_SUB_PORT, networkPreparation);
+    }
+
+    public InstanceWorkflowState preparingTrunk() {
+        return withNetwork(InstancePhase.PREPARING_TRUNK, networkPreparation);
     }
 
     public InstanceWorkflowState networkPrepared(PreparedNetwork resources) {
-        return withNetwork(new NetworkPreparation(networkPreparation.deadline(), resources));
+        return withNetwork(phase, new NetworkPreparation(networkPreparation.deadline(), resources));
     }
 
-    private InstanceWorkflowState withNetwork(NetworkPreparation preparation) {
-        return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_NETWORK, spec, hypervisorId, reservationId,
+    private InstanceWorkflowState withNetwork(InstancePhase nextPhase, NetworkPreparation preparation) {
+        return new InstanceWorkflowState(instanceId, requestId, nextPhase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage, version + 1,
                 forwardingPreparationDeadline, preparedForwardings, preparation, forwardingCandidateIndex, dependencies,

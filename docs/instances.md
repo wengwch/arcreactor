@@ -128,7 +128,8 @@ ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时
 准备过程共用 `dependency-preparation-timeout`，绝对截止时间随 `InstanceCreationRequested` 持久化。
 结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
-再开始创建实例端口、QoS 和 Trunk。原始请求规格保持不变，重复请求仍按原始规格判断幂等。
+再创建专属安全组，随后依次进入父端口、子端口和 Trunk 三个阶段。
+原始请求规格保持不变，重复请求仍按原始规格判断幂等。
 准备失败或超时直接持久化实例 `FAILED` 及失败码；此时还没有实例专用资源，无需进入补偿。
 若 Actor 恢复时仍处于 `PREPARING_DEPENDENCIES`，使用原始规格和原截止时间重新执行准备器：
 同规格创建命令只返回已持久化的资源状态，已有 `READY` 资源直接复用，未完成资源继续查询。
@@ -191,8 +192,10 @@ Share、用户网络和路由的投影见下方“用户资源读模型”。
 InstanceActor 包含以下主要阶段：
 
 ```text
-PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP → PREPARING_NETWORK → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
-    依赖准备失败 → FAILED                                                    后续阶段失败 → COMPENSATING → FAILED
+PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP
+  → PREPARING_PARENT_PORT → PREPARING_SUB_PORT → PREPARING_TRUNK
+  → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
+依赖准备失败 → FAILED；后续阶段失败 → COMPENSATING → FAILED
 ```
 
 HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 22、8888 两个内部端口的映射。
@@ -301,13 +304,25 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 准备阶段沿用已持久化的截止时间，时长使用 `cloud.instance.provisioning-timeout`。
 查找与创建并非原子操作，旧请求在远端继续执行时仍可能出现重复创建窗口。
 
-`prepareInstanceNetwork()` 在一个操作内完成父端口和 QoS、子端口和 QoS、Trunk；
-Actor 只记录创建意图和整套网络就绪结果，不再持久化每个网络子步骤。
+网络创建拆分为三个持久化阶段，每个阶段只执行当前资源的 OpenStack 操作：
+
+| 阶段 | 创建意图事件 | 就绪事件 | OpenStack 调用 |
+| --- | --- | --- | --- |
+| `PREPARING_PARENT_PORT` | `ParentPortPreparationStarted` | `ParentPortPrepared` | `prepareInstanceParentPort()`，创建父端口及其 QoS |
+| `PREPARING_SUB_PORT` | `SubPortPreparationStarted` | `SubPortPrepared` | `prepareInstanceSubPort()`，沿用父端口 MAC 创建子端口及其 QoS |
+| `PREPARING_TRUNK` | `TrunkPreparationStarted` | `TrunkPrepared` | `prepareInstanceTrunk()`，使用父子端口 ID 创建 Trunk 并关联 VLAN |
+
+当前阶段的就绪事件和下一阶段的创建意图一起持久化，之后才调用下一阶段。
+父端口就绪时保存 ID、MAC 和固定 IP；子端口就绪时追加其 ID 和固定 IP；Trunk 就绪时追加 Trunk ID。
+状态查询和数据库投影随每个阶段更新，网络尚未全部完成时也能看到已完成的资源。
+三个阶段共用 `ParentPortPreparationStarted` 持久化的网络截止时间，时长为
+`cloud.instance.provisioning-timeout`；切换阶段和重启都不会重置截止时间，过期后不再启动下一阶段的创建。
 Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询不产生事件；
 阶段变化和资源 ID、状态变化才持久化，数据库投影使用相同阶段。
 
-实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。发生超时或 Actor 恢复时只查询已有资源，
-不会盲目重发创建请求。若网络只完成一部分，超时后进入补偿；
+实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。网络调用结果不确定或 Actor 恢复时，
+只按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；当前阶段确认就绪后再进入下一阶段。
+不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时等待至网络截止时间后进入补偿。
 Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补偿。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。
 
@@ -472,12 +487,14 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 `InstanceProjection` 将实例状态写入 `instance_view`，每个内部端口的已确认映射写入
 `instance_port_forwarding`，建表定义均位于 `sql/read-model.sql`。
 `instance_view.security_group_id` 保存实例专属安全组 ID；本次状态和事件结构调整不提供历史数据兼容转换。
+网络三阶段替换旧的 `PREPARING_NETWORK` 及整套网络开始、就绪事件，不提供旧网络事件或快照的兼容转换。
 
 创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和
 `PREPARING_DEPENDENCIES` 状态，项目及父子网络/子网 ID 暂为空。
 `DependenciesPrepared` 补齐项目 ID、实际复用的逻辑 Share ID、父子网络和子网 ID；
 `SecurityGroupPreparationStarted` 更新安全组准备阶段，`SecurityGroupPrepared` 写入专属安全组 ID；
-网络就绪事件补齐端口、IP 和 Trunk；每条 `ForwardingPrepared` 按
+`ParentPortPrepared`、`SubPortPrepared`、`TrunkPrepared` 依次补齐父端口、子端口和 Trunk，
+各阶段的开始事件更新对应阶段；每条 `ForwardingPrepared` 按
 `(instance_id, internal_port)` upsert `instance_port_forwarding`，22 和 8888 不会相互覆盖。
 映射保存 claim ID、浮动 IP ID 和地址、内部/公网端口、TCP/UDP 转发 ID 及日志版本。
 映射 upsert、实例阶段更新和投影偏移量在同一个 JDBC 事务内提交。

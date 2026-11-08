@@ -10,15 +10,19 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
-import cn.veryai.arcreactor.actor.instance.event.NetworkPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.NetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
 import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
+import cn.veryai.arcreactor.actor.instance.event.ParentPortPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ParentPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
+import cn.veryai.arcreactor.actor.instance.event.SubPortPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
+import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.TrunkPrepared;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -47,10 +51,18 @@ public final class InstanceProjectionHandler
             mapper.updateSecurityGroup(instanceId, "PREPARING_SECURITY_GROUP", prepared.securityGroupId(), version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
-        } else if (event instanceof NetworkPreparationStarted) {
-            mapper.updatePhase(instanceId, "PREPARING_NETWORK", version, timestamp);
-        } else if (event instanceof NetworkPrepared prepared) {
-            mapper.updateNetwork(instanceId, "PREPARING_NETWORK", prepared.resources(), version, timestamp);
+        } else if (event instanceof ParentPortPreparationStarted) {
+            mapper.updatePhase(instanceId, "PREPARING_PARENT_PORT", version, timestamp);
+        } else if (event instanceof ParentPortPrepared prepared) {
+            mapper.updateNetwork(instanceId, "PREPARING_PARENT_PORT", prepared.resources(), version, timestamp);
+        } else if (event instanceof SubPortPreparationStarted) {
+            mapper.updatePhase(instanceId, "PREPARING_SUB_PORT", version, timestamp);
+        } else if (event instanceof SubPortPrepared prepared) {
+            mapper.updateNetwork(instanceId, "PREPARING_SUB_PORT", prepared.resources(), version, timestamp);
+        } else if (event instanceof TrunkPreparationStarted) {
+            mapper.updatePhase(instanceId, "PREPARING_TRUNK", version, timestamp);
+        } else if (event instanceof TrunkPrepared prepared) {
+            mapper.updateNetwork(instanceId, "PREPARING_TRUNK", prepared.resources(), version, timestamp);
         } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof ForwardingPrepared prepared) {

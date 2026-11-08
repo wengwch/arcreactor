@@ -37,15 +37,19 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
-import cn.veryai.arcreactor.actor.instance.event.NetworkPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.NetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
 import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
+import cn.veryai.arcreactor.actor.instance.event.ParentPortPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ParentPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
+import cn.veryai.arcreactor.actor.instance.event.SubPortPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
+import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.TrunkPrepared;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
@@ -332,7 +336,7 @@ public final class InstanceWorkflowActor
           command.failure() == null ? "Missing instance security group ID" : command.failure());
     }
     return Effect().persist(List.of(new SecurityGroupPrepared(instanceId, command.securityGroupId()),
-            new NetworkPreparationStarted(instanceId, clock.instant().plus(settings.provisioningTimeout()))))
+            new ParentPortPreparationStarted(instanceId, clock.instant().plus(settings.provisioningTimeout()))))
         .thenRun(next -> {
           timers.cancel(SECURITY_GROUP_TIMER);
           requestNetwork(next, true);
@@ -374,19 +378,36 @@ public final class InstanceWorkflowActor
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckNetwork(
       InstanceWorkflowState state, CheckNetwork command) {
-    if (state.phase() != InstancePhase.PREPARING_NETWORK || state.pollingGeneration() != command.generation()) return Effect().none();
-    if (networkRequestToken == null) requestNetwork(state, false);
-    else scheduleNetworkPoll(state);
+    if (!state.phase().isPreparingNetwork() || state.pollingGeneration() != command.generation()) return Effect().none();
+    if (networkRequestToken != null) {
+      scheduleNetworkPoll(state);
+      return Effect().none();
+    }
+    if (!clock.instant().isBefore(state.networkPreparation().deadline())) {
+      return networkPreparationTimedOut(state);
+    }
+    requestNetwork(state, false);
     return Effect().none();
   }
 
   private void requestNetwork(InstanceWorkflowState state, boolean allowCreate) {
+    if (!clock.instant().isBefore(state.networkPreparation().deadline())) {
+      context.getSelf().tell(new CheckNetwork(state.pollingGeneration()));
+      return;
+    }
     String token = UUID.randomUUID().toString();
     networkRequestToken = token;
     CompletionStage<PreparedNetwork> request;
     try {
-      request = openStackClient.prepareInstanceNetwork(target(state), networkOperationId(state),
-          state.dependencies().network(), state.securityGroupId(), allowCreate);
+      request = switch (state.phase()) {
+        case PREPARING_PARENT_PORT -> openStackClient.prepareInstanceParentPort(target(state), networkOperationId(state),
+            state.dependencies().network(), state.securityGroupId(), allowCreate);
+        case PREPARING_SUB_PORT -> openStackClient.prepareInstanceSubPort(target(state), networkOperationId(state),
+            state.dependencies().network(), state.securityGroupId(), state.networkPreparation().resources(), allowCreate);
+        case PREPARING_TRUNK -> openStackClient.prepareInstanceTrunk(target(state), networkOperationId(state),
+            state.dependencies().network(), state.networkPreparation().resources(), allowCreate);
+        default -> throw new IllegalStateException("Not preparing instance network: " + state.phase());
+      };
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
@@ -399,19 +420,35 @@ public final class InstanceWorkflowActor
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onNetworkPreparationCompleted(
       InstanceWorkflowState state, NetworkPreparationCompleted command) {
-    if (state.phase() != InstancePhase.PREPARING_NETWORK || state.pollingGeneration() != command.generation()
+    if (!state.phase().isPreparingNetwork() || state.pollingGeneration() != command.generation()
         || !Objects.equals(networkRequestToken, command.requestToken())) return Effect().none();
     networkRequestToken = null;
     if (command.rejected()) return beginCompensation("NETWORK_PREPARATION_FAILED", command.detail());
     if (!clock.instant().isBefore(state.networkPreparation().deadline())) {
-      return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out preparing instance ports, QoS and trunk");
+      return networkPreparationTimedOut(state);
     }
     if (command.resources() == null) {
       scheduleNetworkPoll(state);
       return Effect().none();
     }
-    return Effect().persist(List.of(new NetworkPrepared(instanceId, command.resources()), afterNetworkStage(state, clock.instant())))
-        .thenRun(next -> { timers.cancel(NETWORK_TIMER); startAfterNetwork(next); });
+    List<InstanceWorkflowEvent> events = switch (state.phase()) {
+      case PREPARING_PARENT_PORT -> List.of(new ParentPortPrepared(instanceId, command.resources()),
+          new SubPortPreparationStarted(instanceId));
+      case PREPARING_SUB_PORT -> List.of(new SubPortPrepared(instanceId, command.resources()),
+          new TrunkPreparationStarted(instanceId));
+      case PREPARING_TRUNK -> List.of(new TrunkPrepared(instanceId, command.resources()),
+          afterNetworkStage(state, clock.instant()));
+      default -> throw new IllegalStateException("Not preparing instance network: " + state.phase());
+    };
+    return Effect().persist(events).thenRun(next -> {
+      timers.cancel(NETWORK_TIMER);
+      if (next.phase().isPreparingNetwork()) requestNetwork(next, true);
+      else startAfterNetwork(next);
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> networkPreparationTimedOut(InstanceWorkflowState state) {
+    return beginCompensation("NETWORK_PREPARATION_TIMEOUT", "Timed out preparing instance network: " + state.phase());
   }
 
   private void scheduleNetworkPoll(InstanceWorkflowState state) {
@@ -936,8 +973,12 @@ public final class InstanceWorkflowActor
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(SecurityGroupPreparationStarted.class, (state, event) -> state.preparingSecurityGroup(event.deadline()))
         .onEvent(SecurityGroupPrepared.class, (state, event) -> state.securityGroupPrepared(event.securityGroupId()))
-        .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork(event.deadline()))
-        .onEvent(NetworkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
+        .onEvent(ParentPortPreparationStarted.class, (state, event) -> state.preparingParentPort(event.deadline()))
+        .onEvent(ParentPortPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
+        .onEvent(SubPortPreparationStarted.class, (state, event) -> state.preparingSubPort())
+        .onEvent(SubPortPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
+        .onEvent(TrunkPreparationStarted.class, (state, event) -> state.preparingTrunk())
+        .onEvent(TrunkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding(event.deadline()))
         .onEvent(ForwardingCandidateSelected.class, (state, event) -> state.forwardingCandidateSelected(event.candidateIndex()))
         .onEvent(ForwardingPrepared.class, (state, event) -> state.forwardingPrepared(event.forwarding()))
@@ -994,7 +1035,7 @@ public final class InstanceWorkflowActor
               switch (state.phase()) {
                 case PREPARING_DEPENDENCIES -> requestDependencies(state);
                 case PREPARING_SECURITY_GROUP -> startSecurityGroupPreparation(state);
-                case PREPARING_NETWORK -> requestNetwork(state, false);
+                case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> requestNetwork(state, false);
                 case PREPARING_FORWARDING -> {
                   scheduleForwardingDeadline(state);
                   context.getSelf().tell(new CheckForwardingStatus(state.pollingGeneration(), 1));

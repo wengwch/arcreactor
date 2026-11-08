@@ -957,25 +957,54 @@ public class OpenStackClient {
 
   private enum InstanceNetworkStep { PARENT_PORT, SUB_PORT, TRUNK }
 
-  /** One instance operation. Recovery passes allowCreate=false and only discovers completed resources. */
-  public CompletionStage<PreparedNetwork> prepareInstanceNetwork(ServerTarget target,
+  /** Prepares only the parent port and its QoS policy. */
+  public CompletionStage<PreparedNetwork> prepareInstanceParentPort(ServerTarget target,
       String operationId, NetworkRequirement requirement, String securityGroupId, boolean allowCreate) {
+    return prepareInstanceNetworkStep(target, operationId, requirement, securityGroupId,
+        InstanceNetworkStep.PARENT_PORT, PreparedNetwork.empty(), allowCreate);
+  }
+
+  /** Prepares only the subport and its QoS policy, using the persisted parent MAC address. */
+  public CompletionStage<PreparedNetwork> prepareInstanceSubPort(ServerTarget target,
+      String operationId, NetworkRequirement requirement, String securityGroupId, PreparedNetwork prepared,
+      boolean allowCreate) {
+    return prepareInstanceNetworkStep(target, operationId, requirement, securityGroupId,
+        InstanceNetworkStep.SUB_PORT, prepared, allowCreate);
+  }
+
+  /** Prepares only the trunk, using the persisted parent and subport IDs. */
+  public CompletionStage<PreparedNetwork> prepareInstanceTrunk(ServerTarget target,
+      String operationId, NetworkRequirement requirement, PreparedNetwork prepared, boolean allowCreate) {
+    return prepareInstanceNetworkStep(target, operationId, requirement, null,
+        InstanceNetworkStep.TRUNK, prepared, allowCreate);
+  }
+
+  /** Recovery passes allowCreate=false and only discovers the resource for the current durable stage. */
+  private CompletionStage<PreparedNetwork> prepareInstanceNetworkStep(ServerTarget target,
+      String operationId, NetworkRequirement requirement, String securityGroupId, InstanceNetworkStep step,
+      PreparedNetwork prepared, boolean allowCreate) {
     if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    requireServerText(securityGroupId, "securityGroupId");
+    Objects.requireNonNull(prepared, "prepared");
+    if (step != InstanceNetworkStep.TRUNK) requireServerText(securityGroupId, "securityGroupId");
+    if (step != InstanceNetworkStep.PARENT_PORT) {
+      requireServerText(prepared.parentPortId(), "parentPortId");
+      requireServerText(prepared.parentMacAddress(), "parentMacAddress");
+      requireServerText(prepared.parentFixedIp(), "parentFixedIp");
+    }
+    if (step == InstanceNetworkStep.TRUNK) {
+      requireServerText(prepared.subPortId(), "subPortId");
+      requireServerText(prepared.subFixedIp(), "subFixedIp");
+    }
     return CompletableFuture.supplyAsync(() -> {
       try {
         OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
-        PreparedNetwork prepared = PreparedNetwork.empty();
-        for (InstanceNetworkStep step : InstanceNetworkStep.values()) {
-          prepared = ensureInstanceNetworkStep(target, operationId, requirement, securityGroupId,
-              step, prepared, allowCreate, client);
-          if (prepared == null) return null;
-        }
-        return prepared;
+        return ensureInstanceNetworkStep(target, operationId, requirement, securityGroupId,
+            step, prepared, allowCreate, client);
       } catch (ResponseException error) {
         int status = error.getStatus();
         if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance network preparation", error);
+          throw new OpenStackOperationException("Neutron rejected instance "
+              + step.name().toLowerCase(Locale.ROOT) + " preparation", error);
         }
         throw error;
       }
