@@ -31,7 +31,7 @@
         INSERT INTO port_forwarding (
           region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id,
           floating_ip, internal_port_id, fixed_ip, internal_port, external_port,
-          tcp_forwarding_id, udp_forwarding_id, phase, paused, failure_message,
+          tcp_forwarding_id, udp_forwarding_id, phase, failure_message,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
           #{event.identity.regionId,jdbcType=VARCHAR},
@@ -44,7 +44,7 @@
           #{event.spec.internalPortId,jdbcType=VARCHAR},
           #{event.spec.fixedIp,jdbcType=VARCHAR},
           #{event.spec.internalPort,jdbcType=INTEGER},
-          NULL, NULL, NULL, 'CREATING', FALSE, NULL,
+          NULL, NULL, NULL, 'CREATING', NULL,
           #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP}, #{updatedAt,jdbcType=TIMESTAMP}, NULL)
         ON DUPLICATE KEY UPDATE
           instance_id = IF(resource_version &lt; VALUES(resource_version), VALUES(instance_id), instance_id),
@@ -58,7 +58,6 @@
           tcp_forwarding_id = IF(resource_version &lt; VALUES(resource_version), VALUES(tcp_forwarding_id), tcp_forwarding_id),
           udp_forwarding_id = IF(resource_version &lt; VALUES(resource_version), VALUES(udp_forwarding_id), udp_forwarding_id),
           phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
-          paused = IF(resource_version &lt; VALUES(resource_version), VALUES(paused), paused),
           failure_message = IF(resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
           created_at = IF(resource_version &lt; VALUES(resource_version), VALUES(created_at), created_at),
           updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
@@ -70,7 +69,6 @@
         UPDATE port_forwarding SET
           external_port = #{event.externalPort,jdbcType=INTEGER},
           phase = 'CREATING',
-          paused = FALSE,
           failure_message = NULL,
           updated_at = #{updatedAt,jdbcType=TIMESTAMP},
           resource_version = #{version,jdbcType=BIGINT}
@@ -84,7 +82,6 @@
           tcp_forwarding_id = #{event.resources.tcpForwardingId,jdbcType=VARCHAR},
           udp_forwarding_id = #{event.resources.udpForwardingId,jdbcType=VARCHAR},
           phase = 'READY',
-          paused = FALSE,
           failure_message = NULL,
           updated_at = #{updatedAt,jdbcType=TIMESTAMP},
           resource_version = #{version,jdbcType=BIGINT}
@@ -94,7 +91,6 @@
     <update id="updateForwardingCreationFailed">
         UPDATE port_forwarding SET
           phase = 'FAILED',
-          paused = (#{event.uncertain,jdbcType=BOOLEAN} AND external_port IS NOT NULL),
           failure_message = #{event.failure,jdbcType=LONGVARCHAR},
           updated_at = #{updatedAt,jdbcType=TIMESTAMP},
           resource_version = #{version,jdbcType=BIGINT}
@@ -104,7 +100,6 @@
     <update id="updateForwardingDeletionStarted">
         UPDATE port_forwarding SET
           phase = 'DELETING',
-          paused = FALSE,
           updated_at = #{updatedAt,jdbcType=TIMESTAMP},
           resource_version = #{version,jdbcType=BIGINT}
         <include refid="newerForwarding"/>
@@ -112,8 +107,7 @@
 
     <update id="updateForwardingDeletionFailed">
         UPDATE port_forwarding SET
-          phase = 'DELETING',
-          paused = TRUE,
+          phase = 'DELETE_FAILED',
           failure_message = #{event.failure,jdbcType=LONGVARCHAR},
           updated_at = #{updatedAt,jdbcType=TIMESTAMP},
           resource_version = #{version,jdbcType=BIGINT}
@@ -123,18 +117,17 @@
     <!-- Deleting an unknown claim also creates a terminal row. Existing rows retain their mapping details. -->
     <insert id="upsertForwardingDeleted">
         INSERT INTO port_forwarding (
-          region_id, os_floating_ip_id, claim_id, floating_ip, phase, paused,
+          region_id, os_floating_ip_id, claim_id, floating_ip, phase,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
           #{event.identity.regionId,jdbcType=VARCHAR},
           #{event.identity.floatingIpId,jdbcType=VARCHAR},
           #{event.claimId,jdbcType=VARCHAR},
           #{event.identity.floatingIp,jdbcType=VARCHAR},
-          'DELETED', FALSE, #{version,jdbcType=BIGINT},
+          'DELETED', #{version,jdbcType=BIGINT},
           #{updatedAt,jdbcType=TIMESTAMP}, #{updatedAt,jdbcType=TIMESTAMP}, #{deletedAt,jdbcType=TIMESTAMP})
         ON DUPLICATE KEY UPDATE
           phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
-          paused = IF(resource_version &lt; VALUES(resource_version), VALUES(paused), paused),
           updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
           deleted_at = IF(resource_version &lt; VALUES(resource_version), VALUES(deleted_at), deleted_at),
           resource_version = GREATEST(resource_version, VALUES(resource_version))

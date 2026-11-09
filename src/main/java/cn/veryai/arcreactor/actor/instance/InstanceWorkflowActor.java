@@ -505,7 +505,7 @@ public final class InstanceWorkflowActor
           }
         });
       }
-      case FAILED, REJECTED, DELETED -> {
+      case FAILED, DELETE_FAILED, REJECTED, DELETED -> {
         if (reply.claim() != null && reply.claim().ownsPort()) {
           // A failed create may have left rules behind even without confirmed resource IDs.
           yield failCreation("FORWARDING_PREPARATION_FAILED", reply.detail());
@@ -525,11 +525,7 @@ public final class InstanceWorkflowActor
         requestForwarding(state, command.attempt(), true);
         yield Effect().none();
       }
-      case IN_PROGRESS, NEEDS_RECONCILIATION -> {
-        if (reply.claim() != null && (reply.claim().phase() == ForwardingClaim.Phase.FAILED
-            || reply.claim().deleting() && reply.claim().failure() != null)) {
-          yield failCreation("FORWARDING_PREPARATION_FAILED", reply.detail());
-        }
+      case IN_PROGRESS -> {
         scheduleForwardingPoll(state, command.attempt() + 1); yield Effect().none();
       }
     };

@@ -57,8 +57,8 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
     return new FloatingIpState(enabled, identity, next, outcomes, ports);
   }
 
-  public FloatingIpState creationFailed(String claimId, String failure, boolean uncertain, Instant failedAt) {
-    return completed(claims.get(claimId).creationFailed(failure, uncertain), failedAt);
+  public FloatingIpState creationFailed(String claimId, String failure, Instant failedAt) {
+    return completed(claims.get(claimId).creationFailed(failure), failedAt);
   }
 
   public FloatingIpState deleted(String claimId, Instant deletedAt) {
@@ -72,7 +72,7 @@ public record FloatingIpState(boolean enabled, FloatingIpIdentity identity,
 
   private FloatingIpState completed(ForwardingClaim claim, Instant completedAt) {
     FloatingIpState next = updated(claim);
-    if (claim.ownsPort() || claim.paused()) return next;
+    if (claim.ownsPort()) return next;
     Map<String, ForwardingClaim> remaining = new HashMap<>(next.claims);
     remaining.remove(claim.claimId());
     Map<String, ForwardingOutcome> nextOutcomes = new HashMap<>(outcomes);

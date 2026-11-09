@@ -40,7 +40,7 @@ public final class FloatingIpActor
 
   public record ForwardingReady(String claimId, String token, long generation, ForwardingResources resources)
       implements FloatingIpCommand {}
-  public record ForwardingFailed(String claimId, String token, long generation, String failure, boolean uncertain)
+  public record ForwardingFailed(String claimId, String token, long generation, String failure)
       implements FloatingIpCommand {}
   public record DeletionCompleted(String claimId, String token, long generation) implements FloatingIpCommand {}
   public record DeletionFailed(String claimId, String token, long generation, String failure) implements FloatingIpCommand {}
@@ -145,7 +145,7 @@ public final class FloatingIpActor
     int port = availablePort(state);
     if (port == 0) {
       events.add(new ForwardingCreationFailed(state.identity(), command.claimId(),
-          "Floating IP port range exhausted", false, Instant.now()));
+          "Floating IP port range exhausted", Instant.now()));
       return Effect().persist(events)
           .thenRun(next -> command.replyTo().tell(reply(next, command.claimId())));
     }
@@ -207,7 +207,7 @@ public final class FloatingIpActor
             claim.resources().externalPort()),
         (resources, error) -> error == null
             ? new ForwardingReady(claim.claimId(), token, claim.generation(), resources)
-            : new ForwardingFailed(claim.claimId(), token, claim.generation(), failure(error), !definitive(error)));
+            : new ForwardingFailed(claim.claimId(), token, claim.generation(), failure(error)));
   }
 
   private Effect<FloatingIpEvent, FloatingIpState> onReady(FloatingIpState state, ForwardingReady command) {
@@ -216,7 +216,7 @@ public final class FloatingIpActor
     if (!matches(claim, command.generation(), Phase.CREATING)) return Effect().none();
     if (!completeResources(state.identity(), claim, command.resources())) {
       return Effect().persist(new ForwardingCreationFailed(state.identity(), claim.claimId(), failure(null),
-          true, Instant.now()));
+          Instant.now()));
     }
     return Effect().persist(new ForwardingBecameReady(state.identity(), claim.claimId(), command.resources()));
   }
@@ -226,7 +226,7 @@ public final class FloatingIpActor
     ForwardingClaim claim = state.claims().get(command.claimId());
     if (!matches(claim, command.generation(), Phase.CREATING)) return Effect().none();
     return Effect().persist(new ForwardingCreationFailed(state.identity(), claim.claimId(), command.failure(),
-        command.uncertain(), Instant.now()));
+        Instant.now()));
   }
 
   private void executeDeletion(FloatingIpIdentity identity, ForwardingClaim claim) {
@@ -288,13 +288,6 @@ public final class FloatingIpActor
     return error;
   }
 
-  private static boolean definitive(Throwable error) {
-    Throwable cause = rootCause(error);
-    return cause instanceof OpenStackOperationException && cause.getCause() == null
-        || cause instanceof ResponseException response && response.getStatus() >= 400 && response.getStatus() < 500
-            && response.getStatus() != 408 && response.getStatus() != 429;
-  }
-
   private static String failure(Throwable error) {
     Throwable cause = rootCause(error);
     if (cause == null) return "Forwarding operation returned incomplete resources";
@@ -343,7 +336,7 @@ public final class FloatingIpActor
         .onEvent(ForwardingBecameReady.class, (state, event) ->
             state.updated(state.claims().get(event.claimId()).ready(event.resources())))
         .onEvent(ForwardingCreationFailed.class, (state, event) ->
-            state.creationFailed(event.claimId(), event.failure(), event.uncertain(), event.failedAt()))
+            state.creationFailed(event.claimId(), event.failure(), event.failedAt()))
         .onEvent(ForwardingDeletionStarted.class, (state, event) ->
             state.updated(state.claims().get(event.claimId()).startDeletion()))
         .onEvent(ForwardingDeleted.class, (state, event) ->
@@ -369,9 +362,9 @@ public final class FloatingIpActor
     state.claims().values().forEach(claim -> recoverClaim(state, claim));
   }
 
-  /** Resume interrupted operations; paused failures still require an external command. */
+  /** Resume interrupted operations; failed operations still require an external delete command. */
   private void recoverClaim(FloatingIpState state, ForwardingClaim claim) {
-    if (claim.paused() || operationTokens.containsKey(claim.claimId())) return;
+    if (operationTokens.containsKey(claim.claimId())) return;
     switch (claim.phase()) {
       case CREATING -> recoverCreation(state.identity(), claim);
       case DELETING -> recoverDeletion(state.identity(), claim);
@@ -386,7 +379,7 @@ public final class FloatingIpActor
             claim.resources().externalPort()),
         (resources, error) -> error == null
             ? new ForwardingReady(claim.claimId(), token, claim.generation(), resources)
-            : new ForwardingFailed(claim.claimId(), token, claim.generation(), failure(error), !definitive(error)));
+            : new ForwardingFailed(claim.claimId(), token, claim.generation(), failure(error)));
   }
 
   private void recoverDeletion(FloatingIpIdentity identity, ForwardingClaim claim) {

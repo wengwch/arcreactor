@@ -21,7 +21,7 @@ public record ForwardingOutcome(String specFingerprint, Phase phase,
   }
 
   public static ForwardingOutcome from(ForwardingClaim claim, Instant completedAt) {
-    if (claim.ownsPort() || claim.paused()
+    if (claim.ownsPort()
         || claim.phase() != Phase.FAILED && claim.phase() != Phase.DELETED) {
       throw new IllegalArgumentException("only terminal forwardings without retained resources can be compacted");
     }

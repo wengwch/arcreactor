@@ -209,7 +209,8 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 重启后沿用已持久化的候选、内部端口、已完成映射和截止时间，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
 
-FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETED`。
+FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED`。
+创建失败使用 `FAILED`，删除失败使用 `DELETE_FAILED`，不再保存 `paused` 标记。
 `CreatePortForwarding` 根据 Actor 当前总位图 `usedPorts` 选择端口，将 `ForwardingCreationRequested` 和
 `ForwardingPortAllocated` 一起持久化，然后返回 `IN_PROGRESS` 并立即调用 `OpenStackClient.createPortForwardings()`；
 端口耗尽时持久化创建和失败事件并返回 `FAILED`，不调用 OpenStack。
@@ -238,16 +239,16 @@ Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
 恢复先查询一次当前浮动 IP 的转发列表，按 claim 和协议对应的操作标识定位 TCP、UDP，
 校验公网端口、内部端口、目标 Neutron 端口、固定 IP、协议和规则 ID。
 两条规则均存在时直接复用并返回就绪；只存在一条时只补建另一条，都不存在时才创建两条。
-两种协议均完成校验后才补建；操作标识重复、参数不一致或规则 ID 缺失时暂停并保留端口，等待核对。
+两种协议均完成校验后才补建；操作标识重复、参数不一致或规则 ID 缺失时进入 `FAILED` 并保留端口，等待核对。
 恢复沿用已预留端口、不增加创建超时；结果通过同一套 Ready/Failed 消息和事件记录。
 `DELETING` 通过独立的 `recoverDeletion → OpenStackClient.recoverPortForwardingDeletion()` 恢复，
 不调用正常删除的 `executeDeletion` 或 `deletePortForwardings()`。
 恢复按持久化的 TCP、UDP 规则 ID 逐条查询，已不存在的跳过，仍存在的继续删除；
-两条规则均确认删除后通过 `ForwardingDeleted` 释放端口并更新投影，失败则通过 `ForwardingDeletionFailed` 暂停。
+两条规则均确认删除后通过 `ForwardingDeleted` 释放端口并更新投影，失败则通过 `ForwardingDeletionFailed` 进入 `DELETE_FAILED`。
 恢复不增加超时；缺少规则 ID 时保留端口，等待外部核对。
 禁用浮动 IP 不阻止已受理创建、删除的恢复，也不阻止外部删除命令。
 中断前已在远端创建但尚未持久化结果的规则，也能通过操作标识发现并复用。
-已完成或暂停的 claim 不会启动操作，已失败的创建不会自动重做。
+恢复只处理 `CREATING` 和 `DELETING`；`FAILED`、`DELETE_FAILED` 不会自动重试。
 
 删除使用 `ForwardingDeletionStarted`、`ForwardingDeleted` 和 `ForwardingDeletionFailed`
 分别记录开始、完成和失败。
@@ -268,13 +269,14 @@ FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级�
 若任一规则 ID 缺失，仍尝试删除有 ID 的规则，
 整体返回未完成并保留端口占用；创建结果丢失的规则需要另行核对，删除流程不再自动发现这些规则。
 删除流程不额外设置超时，事件和 claim 不保存删除截止时间；Actor 直接等待 OpenStackClient 的异步结果，
-底层 HTTP 超时仍按 SDK 配置执行。删除失败后暂停，等待外部删除命令重试；
-应用重启时，未暂停的 `DELETING` claim 自动恢复删除，无需再次发送删除命令。
+底层 HTTP 超时仍按 SDK 配置执行。删除失败后进入 `DELETE_FAILED`，保留资源、端口占用和失败原因；
+外部再次发送删除命令时，通过 `ForwardingDeletionStarted` 回到 `DELETING` 并重试。
+应用重启时，`DELETING` claim 自动恢复删除，`DELETE_FAILED` 等待外部命令。
 删除完成后进入 `DELETED`；创建失败时保留 `FAILED`、失败原因和已占用端口，等待外部决定是否删除。
 
 `claims` 仅保留仍需处理的完整记录。端口耗尽等未分配资源的失败，以及确认删除完成的 claim，
 立即移入精简的 `outcomes`，只保存请求参数指纹、`FAILED`／`DELETED`、失败原因和完成时间。
-仍占用端口、暂停等待核对或处于创建、就绪、删除中的 claim 不会被清理。
+仍占用端口或处于创建、就绪、删除中的 claim 不会被清理，`DELETE_FAILED` 保留完整记录等待重试。
 保留期内查询和相同参数的重复创建仍返回原终态，但终态回复的 `claim` 为 `null`；
 相同 claim ID 携带不同参数会被拒绝。尚未创建就收到删除命令的 claim 也保存在 `outcomes` 中，阻止迟到创建。
 已压缩的无资源失败结果收到删除命令时，也通过 `ForwardingDeleted` 转为 `DELETED`，保留参数指纹和失败原因。
@@ -285,9 +287,9 @@ Actor 恢复后立即检查一次，之后定期将过期记录 ID 持久化为 
 过期清理后查询返回 `NOT_FOUND`，旧 claim ID 不再保证幂等；保留期应覆盖调用方可能重试的时间范围。
 清理终态记录不改变 `portmask`，不发起 OpenStack 删除，也不删除 journal 历史事件，已有 projection 可以继续消费。
 
-超时或响应丢失等不确定结果保留端口，并返回 `NEEDS_RECONCILIATION`，表示需要外部核对或清理。
-不提供显式恢复命令；重启恢复继续未暂停的 `CREATING`、`DELETING`，已失败的创建不会重新执行。
-失败资源由外部删除命令清理；删除失败也会暂停，通过再次发送删除命令重试。
+创建失败统一返回 `FAILED`，删除失败返回 `DELETE_FAILED`；超时或响应丢失等结果仍保留已占用端口，等待外部核对或清理。
+不提供显式恢复命令；重启恢复继续 `CREATING`、`DELETING`，已失败的操作不会重新执行。
+失败资源由外部删除命令清理；删除失败后通过再次发送删除命令重试。
 失败且仍持有端口时，实例工作流进入 `FAILED`，不切换浮动 IP，也不自动发送删除命令。
 人工发送 `DeleteInstance` 后，实例删除流程才向 FloatingIpActor 发送外部删除命令。
 只有没有占用端口的失败才允许继续尝试其他候选。
@@ -448,7 +450,7 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 携带事件生效后的完整端口位图 `usedPortMask`，投影直接使用该总位图更新 `floating_ip.port_mask`。
 `FloatingIpEnabled` 只包含 `identity` 和合并后的完整 `usedPortMask`，恢复和投影使用事件中的合并结果；
 状态中不再保存占用来源或单独的导入位图。
-分配公网端口时置位，TCP/UDP 清理完成、Actor 释放端口后清位；暂停或清理未完成时继续保留占用。
+分配公网端口时置位，TCP/UDP 清理完成、Actor 释放端口后清位；失败或清理未完成时继续保留占用。
 claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新版本而不释放任何端口。
 禁用后的启用请求将查询到的占用并入总位图，同步前由人工确认无在途请求；启用和禁用均不释放任何端口。
 位图第 0 位对应公网端口 10000，使用 `BitSet.toByteArray()` 编码。
@@ -457,17 +459,17 @@ claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新
 同一投影同时将端口转发生命周期写入 `port_forwarding`，主键为
 `(region_id, os_floating_ip_id, claim_id)`，同一 claim 在不同候选浮动 IP 上的尝试分别保存。
 记录包含用户、实例、项目、目标 Neutron 端口、固定 IP、内部/公网端口、浮动 IP 地址、
-TCP/UDP 规则 ID、阶段、暂停标记、失败原因、版本和创建/更新/删除时间。
+TCP/UDP 规则 ID、阶段、失败原因、版本和创建/更新/删除时间。
 
 | 事件 | 端口转发记录 |
 | --- | --- |
 | `ForwardingCreationRequested` | 写入请求规格，阶段为 `CREATING` |
 | `ForwardingPortAllocated` | 写入预留的公网端口 |
 | `ForwardingBecameReady` | 写入 TCP/UDP 规则 ID，阶段为 `READY` |
-| `ForwardingCreationFailed` | 阶段为 `FAILED`；不确定且持有端口时标记暂停 |
-| `ForwardingDeletionStarted` | 阶段为 `DELETING`，清除暂停标记 |
-| `ForwardingDeletionFailed` | 保持 `DELETING`，记录暂停和失败原因 |
-| `ForwardingDeleted` | 阶段为 `DELETED`，清除暂停标记并记录删除时间 |
+| `ForwardingCreationFailed` | 阶段为 `FAILED`，记录失败原因 |
+| `ForwardingDeletionStarted` | 阶段为 `DELETING` |
+| `ForwardingDeletionFailed` | 阶段为 `DELETE_FAILED`，记录失败原因 |
+| `ForwardingDeleted` | 阶段为 `DELETED`，记录删除时间 |
 
 删除后保留已知的映射参数和规则 ID，供查询历史；这些字段不表示仍然占用端口，端口分配以 Actor 位图为准。
 删除尚未创建的 claim 也写入 `DELETED` 记录，请求规格字段为空。
@@ -478,8 +480,8 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 快照保存 `enabled`、`identity`、`claims`、`outcomes` 和总位图 `usedPorts`，不再包含 `importedPortMask`。
 启用状态必须包含身份，缺少端口位图时直接拒绝加载；恢复使用快照和事件中的完整位图，不从 claim 重建或补入占用。
 任意命令都能触发 Actor 的日志恢复；Actor 从事件和快照恢复身份、总位图及转发状态，
-恢复完成后继续处理未暂停的 `CREATING`、`DELETING`，禁用状态也不跳过这些已受理的操作；
-删除失败并暂停的 claim 等待外部删除命令重试。
+恢复完成后继续处理 `CREATING`、`DELETING`，禁用状态也不跳过这些已受理的操作；
+`DELETE_FAILED` claim 等待外部删除命令重试。
 同步总位图时使用当次查询的完整 OpenStack 规则列表。
 
 `resource_version` 默认是 0，随后保存最近一次启停或端口位图事件的日志序号，只有更新的事件才能覆盖启用状态和位图。

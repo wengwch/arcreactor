@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS port_forwarding (
   tcp_forwarding_id VARCHAR(255),
   udp_forwarding_id VARCHAR(255),
   phase VARCHAR(64) NOT NULL,
-  paused BOOLEAN NOT NULL DEFAULT FALSE,
   failure_message TEXT,
   resource_version BIGINT NOT NULL,
   created_at TIMESTAMP(6) NOT NULL,
