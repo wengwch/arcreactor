@@ -182,10 +182,16 @@ public record InstanceWorkflowState(
                 schedulingAttempts, failureCode, failureMessage);
     }
 
-    public InstanceWorkflowState compensating(String code, String message) {
-        return copy(requestId, InstancePhase.COMPENSATING, spec, hypervisorId, reservationId,
+    public InstanceWorkflowState deleting() {
+        return copy(requestId, InstancePhase.DELETING, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
-                pollingGeneration + 1, schedulingAttempts, code, message);
+                pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage);
+    }
+
+    public InstanceWorkflowState deleted() {
+        return copy(requestId, InstancePhase.DELETED, spec, hypervisorId, reservationId,
+                novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
+                pollingGeneration + 1, schedulingAttempts, failureCode, failureMessage);
     }
 
     public InstanceWorkflowState active() {
@@ -198,7 +204,7 @@ public record InstanceWorkflowState(
     public InstanceWorkflowState failed(String code, String message) {
         return copy(requestId, InstancePhase.FAILED, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
-                pollingGeneration, schedulingAttempts, code, message);
+                pollingGeneration + 1, schedulingAttempts, code, message);
     }
 
     public InstanceWorkflowState touch() {

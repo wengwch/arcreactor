@@ -9,7 +9,6 @@ import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.user.model.NetworkResources;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
-import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.entity.SysNetworkEntity;
@@ -150,8 +149,6 @@ public class OpenStackClient {
   @Autowired private HypervisorHostRepo hypervisorHostRepo;
 
   @Autowired private SysNetworkRepo sysNetworkRepo;
-
-  @Autowired private InstanceCreationProperties instanceCreationProperties;
 
   public OSClient.OSClientV3 getOsAdminClient(String region, String projectId) {
     return getOsClusterAdminClient(getOpenstackCluster(region), projectId).useRegion(region);
@@ -882,7 +879,7 @@ public class OpenStackClient {
             error.addSuppressed(cleanupError);
           }
         } else {
-          log.warn("Instance port cleanup disabled; QoS retained: projectId={} portName={} policyId={} status={}",
+          log.warn("Instance port creation failed; QoS retained for manual deletion: projectId={} portName={} policyId={} status={}",
               request.getTenantId(), request.getName(), policy.getId(), status);
         }
       }
@@ -1058,8 +1055,7 @@ public class OpenStackClient {
           .networkId(networkId).fixedIp(null, subnetId).adminState(true)
           .portSecurityEnabled(true).securityGroup(securityGroupId);
       if (!parent) builder.macAddress(prepared.parentMacAddress());
-      port = createPortWithQos(client, builder.build(), bandwidthLimit,
-          instanceCreationProperties.isCleanupOnFailure());
+      port = createPortWithQos(client, builder.build(), bandwidthLimit, false);
     }
     if (port == null) return null;
     if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null

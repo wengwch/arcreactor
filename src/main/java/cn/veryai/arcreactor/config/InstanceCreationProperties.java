@@ -14,8 +14,6 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "instance.creation")
 public class InstanceCreationProperties {
-    /** Keep failed instance resources for diagnosis unless cleanup is explicitly enabled. */
-    private boolean cleanupOnFailure = false;
     private Duration dependencyPreparationTimeout = Duration.ofMinutes(10);
     private Duration dependencyPollInterval = Duration.ofSeconds(2);
     /** Each internal service receives its own external TCP/UDP port. */

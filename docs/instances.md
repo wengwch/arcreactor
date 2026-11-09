@@ -109,7 +109,7 @@ NetworkRequirement network = new NetworkRequirement(segmentationId, userNetworkS
 YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，排查空 policy 时先检查是否被配置为 `0 / 0`。
 调整配置仅影响之后提交的实例；已有工作流会继续使用创建事件中持久化的限速值，重启不会为旧 policy 自动补规则。
 已存在的规则会校验方向、带宽和突发值，避免重复创建或复用不匹配的限速配置。
-工作流按操作标记查找资源；创建失败的补偿会先删除端口，再清理对应 QoS，包括未绑定端口的残留 policy。
+工作流按操作标记查找资源；人工触发实例删除后，先删除端口，再清理对应 QoS，包括未绑定端口的残留 policy。
 
 ## 创建流程与恢复
 
@@ -130,7 +130,7 @@ ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
 再创建专属安全组，随后依次进入父端口、子端口和 Trunk 三个阶段。
 原始请求规格保持不变，重复请求仍按原始规格判断幂等。
-准备失败或超时直接持久化实例 `FAILED` 及失败码；此时还没有实例专用资源，无需进入补偿。
+准备失败或超时直接持久化实例 `FAILED` 及失败码，用户级依赖资源继续保留。
 若 Actor 恢复时仍处于 `PREPARING_DEPENDENCIES`，使用原始规格和原截止时间重新执行准备器：
 同规格创建命令只返回已持久化的资源状态，已有 `READY` 资源直接复用，未完成资源继续查询。
 停机时间计入准备超时，重启不会延长截止时间；已记录的失败不会自动重试。
@@ -195,7 +195,8 @@ InstanceActor 包含以下主要阶段：
 PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP
   → PREPARING_PARENT_PORT → PREPARING_SUB_PORT → PREPARING_TRUNK
   → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
-依赖准备失败 → FAILED；后续阶段失败 → COMPENSATING → FAILED
+任一创建阶段失败 → FAILED
+FAILED → 人工发送 DeleteInstance → DELETING → DELETED
 ```
 
 HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 22、8888 两个内部端口的映射。
@@ -255,7 +256,7 @@ Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
 不写事件、不记录删除意图，也不改变创建状态；调用方需在创建进入 `READY` 或 `FAILED` 后重新发送删除命令。
 因此不再保存删除意图字段；重启后仍按 `CREATING` 恢复创建。
 实例工作流根据本次请求的所有候选浮动 IP 和内部端口还原 claim ID，逐个调用 `delete`，
-全部返回 `DELETED` 后才继续删除实例网络；未完成时由补偿重试再次发送删除命令。
+人工触发实例删除后，全部返回 `DELETED` 才继续删除实例网络；未完成时由删除流程轮询并再次发送删除命令。
 删除范围包含创建结果尚未收到的 claim；尚未创建的 claim 同样记录 `ForwardingDeleted`，
 在 `outcomes` 中保存已删除标记，阻止保留期内的迟到创建，不调用 OpenStack，也不改变端口位图。
 FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级取消记录。
@@ -287,8 +288,8 @@ Actor 恢复后立即检查一次，之后定期将过期记录 ID 持久化为 
 超时或响应丢失等不确定结果保留端口，并返回 `NEEDS_RECONCILIATION`，表示需要外部核对或清理。
 不提供显式恢复命令；重启恢复继续未暂停的 `CREATING`、`DELETING`，已失败的创建不会重新执行。
 失败资源由外部删除命令清理；删除失败也会暂停，通过再次发送删除命令重试。
-失败且仍持有端口时，实例工作流进入补偿，不切换浮动 IP；是否发出删除命令由实例工作流的 `cleanup-on-failure` 控制。
-FloatingIpActor 不再根据该配置自行清理，收到外部删除命令后按删除流程执行。
+失败且仍持有端口时，实例工作流进入 `FAILED`，不切换浮动 IP，也不自动发送删除命令。
+人工发送 `DeleteInstance` 后，实例删除流程才向 FloatingIpActor 发送外部删除命令。
 只有没有占用端口的失败才允许继续尝试其他候选。
 
 Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_retries=0`，
@@ -298,7 +299,7 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 
 依赖就绪后先持久化 `SecurityGroupPreparationStarted`，再异步创建实例专属安全组和入站规则。
 整组规则就绪后持久化 `SecurityGroupPrepared`，记录安全组 ID，再开始创建端口；失败使用
-`CompensationStarted` 记录失败原因，不重新提交失败的安全组创建流程。
+`InstanceProvisioningFailed` 记录失败原因并进入 `FAILED`，不重新提交失败的安全组创建流程。
 安全组名称和描述包含由实例 ID、请求 ID 生成的操作标识，重启恢复时先查询匹配的安全组，
 复用已有组并补齐缺失规则；找到多个匹配组则失败，避免任意选择。
 准备阶段沿用已持久化的截止时间，时长使用 `cloud.instance.provisioning-timeout`。
@@ -322,19 +323,28 @@ Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询
 
 实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。网络调用结果不确定或 Actor 恢复时，
 只按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；当前阶段确认就绪后再进入下一阶段。
-不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时等待至网络截止时间后进入补偿。
-Nova 超时后确认资源存在但未就绪，或确认不存在时，进入补偿。
+不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时等待至网络截止时间后进入 `FAILED`。
+Nova 超时后确认资源存在但未就绪，或确认不存在时，进入 `FAILED`，保留资源等待人工处理。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。
 
-当前排查模式默认设置 `instance.creation.cleanup-on-failure=false`
-（环境变量 `INSTANCE_CLEANUP_ON_FAILURE`），创建失败后暂停自动清理：
-保留 Nova、专属安全组、父子端口、Trunk、QoS 和端口转发，并保留失败原因；端口创建失败时也不自动删除专用 QoS。
-实例停留在 `COMPENSATING`，不执行清理或安排清理重试，Actor 恢复后同样暂停。
-实例工作流暂停发送端口转发删除命令，其他转发请求可继续处理；直接发送给 FloatingIpActor 的删除命令仍会执行。
+创建失败统一持久化 `InstanceProvisioningFailed`，保留失败原因以及 Nova、专属安全组、父子端口、
+Trunk、QoS 和端口转发等已创建资源；端口创建失败时也不自动删除专用 QoS。
+进入 `FAILED` 后停止实例创建的定时任务，忽略迟到的创建结果，重启恢复也不会发起删除。
+已提交到其他 Actor 或 OpenStack 的请求可能继续完成，实例失败不会取消用户级项目、Share 或网络准备。
+不再提供创建失败后自动清理的配置开关，也不会因为修改配置或重启应用而启动清理。
 
-排查完成后设置 `INSTANCE_CLEANUP_ON_FAILURE=true` 并重启应用，恢复中的工作流按
-Nova、端口转发、实例网络/QoS、专属安全组、资源预留的顺序继续补偿，清理失败后继续重试，完成后进入 `FAILED`。
+排查完成后，人工调用 `DELETE /api/v1/instances/{instanceId}`，服务层发送 `DeleteInstance`。
+该入口只允许对 `FAILED` 实例开始删除；创建中或 `ACTIVE` 的实例会拒绝，业务错误码为 `11721`。
+`InstanceDeletionStarted` 持久化后进入 `DELETING` 并返回 HTTP `202`，重复请求在 `DELETING`、`DELETED` 下幂等受理。
+清理按 Nova、端口转发、实例网络/QoS、专属安全组、资源预留的顺序执行，未进入的资源创建阶段直接跳过。
+先查询 Nova，确认服务器消失后才继续删除其他资源；本进程中尚未完成的安全组请求会在删除安全组前等待结束。
+删除未完成或调用失败时按 `cloud.instance.poll.max-delay` 继续检查、重试，保持 `DELETING`；
+已受理的删除在重启后继续，只有全部清理成功才持久化 `InstanceDeleted` 并进入 `DELETED`。
+宿主机预留的原有 TTL 机制继续生效，失败后不由实例工作流主动取消预留；人工删除时取消仍存在的预留。
 专属安全组按项目和操作标识查找并删除，包含创建成功但响应未持久化的组；删除组时一并删除其规则。
+用户级项目、Share 和网络由多个实例复用，实例删除不会删除这些资源。
+查询接口及 `instance_view` 投影展示 `FAILED`、`DELETING`、`DELETED`，保留已知资源 ID 和原创建失败原因供排查。
+删除接口等待受理超时返回 `11719`，未能确认受理返回 `11720`；这些错误不等于删除已撤销，应先查询实例状态。
 
 ## 返回值
 
@@ -514,5 +524,5 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 每次状态更新以日志序号 `workflow_version` 判断新旧，忽略相同或更早的事件，
 避免重放时覆盖较新的状态和资源信息。进入 `ACTIVE` 时清除失败信息。
 未就绪资源的字段为空，只有创建事件和相应资源就绪事件投影后才有值。
-转发表记录最后确认成功的映射；后续补偿后应结合实例阶段判断可用性，不能仅凭表中有记录就认为实例可连接。
+转发表记录最后确认成功的映射；人工删除后应结合实例阶段判断可用性，不能仅凭表中有记录就认为实例可连接。
 读模型与事件投影进度一致，HTTP `202` 返回时记录及最终状态可能尚未可见。

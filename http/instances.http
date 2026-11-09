@@ -66,3 +66,12 @@ Accept: application/json
 # Jupyter: http://<8888 对应的 floatingIp>:<8888 对应的 externalPort>/lab?token=<jupyterToken>
 GET {{baseUrl}}/api/v1/instances/{{instanceId}}
 Accept: application/json
+
+### 6. 人工删除创建失败的实例
+# 创建失败停留在 FAILED，保留资源和失败原因，不自动清理；先排查，再单独执行此请求。
+# 仅允许 FAILED 开始删除，创建中或 ACTIVE 返回业务 code=11721。
+# 返回 HTTP 202 表示删除意图已持久化；通过上方 GET 查询 DELETING / DELETED。
+# DELETING、DELETED 下重复删除幂等；已受理的删除在重启后继续。
+# 未完成的删除会继续检查和重试，用户级项目、Share 和网络保持不变。
+DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}
+Accept: application/json

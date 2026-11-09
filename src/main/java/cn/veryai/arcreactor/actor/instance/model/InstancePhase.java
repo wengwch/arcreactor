@@ -12,7 +12,8 @@ public enum InstancePhase {
     PROVISIONING,
     CONFIRMING,
     ACTIVE,
-    COMPENSATING,
+    DELETING,
+    DELETED,
     FAILED;
 
     public boolean isPreparingNetwork() {

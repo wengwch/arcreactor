@@ -12,7 +12,6 @@ import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
 import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.fip.projection.FloatingIpProjection;
-import cn.veryai.arcreactor.config.InstanceCreationProperties;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
 import com.typesafe.config.Config;
@@ -41,7 +40,6 @@ public final class PekkoRuntime {
       CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
       InstanceDependencyPreparer dependencyPreparer,
-      InstanceCreationProperties creationProperties,
       DataSource dataSource,
       SqlSessionFactory sqlSessionFactory,
       HypervisorPlacement hypervisorPlacement)
@@ -56,8 +54,7 @@ public final class PekkoRuntime {
             duration(config, "cloud.instance.provisioning-timeout"),
             duration(config, "cloud.instance.poll.initial-delay"),
             duration(config, "cloud.instance.poll.max-delay"),
-            duration(config, "cloud.instance.forwarding-preparation-timeout"),
-            creationProperties.isCleanupOnFailure());
+            duration(config, "cloud.instance.forwarding-preparation-timeout"));
 
     try {
       sharding = ClusterSharding.get(actorSystem);

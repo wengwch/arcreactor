@@ -8,8 +8,7 @@ public record InstanceWorkflowSettings(
         Duration provisioningTimeout,
         Duration pollInitialDelay,
         Duration pollMaxDelay,
-        Duration forwardingPreparationTimeout,
-        boolean cleanupOnFailure) {
+        Duration forwardingPreparationTimeout) {
     public InstanceWorkflowSettings {
         requirePositive(reservationTtl, "reservationTtl");
         requirePositive(provisioningTimeout, "provisioningTimeout");

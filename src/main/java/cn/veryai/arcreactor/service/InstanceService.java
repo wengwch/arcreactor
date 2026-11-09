@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.service;
 import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
+import cn.veryai.arcreactor.actor.instance.command.DeleteInstance;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
@@ -104,6 +105,28 @@ public class InstanceService {
                     if (state.requestId() == null) throw new BaseException(ErrorCode.RESOURCE_NOT_FOUND);
                     return InstanceView.from(state);
                 });
+    }
+
+    public CompletionStage<Void> delete(String instanceId) {
+        return get(instanceId).thenCompose(ignored -> AskPattern.<WorkflowCommand, InstanceReply>ask(
+                pekkoRuntime.instanceActor(instanceId), DeleteInstance::new,
+                pekkoRuntime.getInstanceAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
+                .<Void>handle((reply, error) -> {
+                    if (error != null) {
+                        Throwable cause = error;
+                        while ((cause instanceof CompletionException || cause instanceof ExecutionException)
+                                && cause.getCause() != null) {
+                            cause = cause.getCause();
+                        }
+                        throw new BaseException(cause instanceof TimeoutException
+                                ? ErrorCode.INSTANCE_DELETE_TIMEOUT : ErrorCode.INSTANCE_DELETE_UNCONFIRMED, cause);
+                    }
+                    if (!reply.accepted()) {
+                        log.warn("Instance deletion rejected: instanceId={}, detail={}", instanceId, reply.detail());
+                        throw new BaseException(ErrorCode.INSTANCE_DELETE_REJECTED);
+                    }
+                    return null;
+                }));
     }
 
     private CompletionStage<CreateInstanceResult> submit(String requestId, String instanceId, InstanceSpec spec) {

@@ -37,7 +37,6 @@ mybatis:
 
 instance:
   creation:
-    cleanup-on-failure: "${INSTANCE_CLEANUP_ON_FAILURE:false}"
     dependency-preparation-timeout: "${INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT:10m}"
     dependency-poll-interval: "${INSTANCE_DEPENDENCY_POLL_INTERVAL:2s}"
     forwarding-ports: "${INSTANCE_FORWARDING_PORTS:22,8888}"

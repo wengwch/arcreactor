@@ -8,5 +8,4 @@ public interface InstanceMetrics {
     default void workflowActive() {}
     default void workflowFailed() {}
     default void reconciliation() {}
-    default void compensation() {}
 }

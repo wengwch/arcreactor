@@ -1,6 +1,5 @@
 package cn.veryai.arcreactor.actor.instance.projection;
 
-import cn.veryai.arcreactor.actor.instance.event.CompensationStarted;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
@@ -8,6 +7,8 @@ import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
 import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceDeletionStarted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
@@ -81,9 +82,10 @@ public final class InstanceProjectionHandler
                     "ACTIVE", version, timestamp);
         } else if (event instanceof ReservationConfirmedForInstance) {
             mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
-        } else if (event instanceof CompensationStarted compensation) {
-            mapper.updateFailure(instanceId, "COMPENSATING", compensation.failureCode(),
-                    compensation.failureMessage(), version, timestamp);
+        } else if (event instanceof InstanceDeletionStarted) {
+            mapper.updatePhase(instanceId, "DELETING", version, timestamp);
+        } else if (event instanceof InstanceDeleted) {
+            mapper.updatePhase(instanceId, "DELETED", version, timestamp);
         } else if (event instanceof InstanceActivated) {
             mapper.updateFailure(instanceId, "ACTIVE", null, null, version, timestamp);
         } else if (event instanceof InstanceProvisioningFailed failed) {
