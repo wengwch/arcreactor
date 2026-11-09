@@ -230,7 +230,7 @@ Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
 
 创建直接依次提交 TCP、UDP 规则，不调用规则列表接口，也不查询或复用已有规则。
 创建事件不保存截止时间，SDK 方法和 Actor 均不额外设置创建超时；底层 HTTP 超时和实例整体转发阶段超时仍按各自配置执行。
-规则描述保留由区域、claim ID、浮动 IP ID 和协议生成的操作标识，供创建恢复时定位资源。
+规则描述中的操作标识为 `veryai:pf:<claimId>:<protocol>`，协议为 `TCP` 或 `UDP`，供创建恢复时定位资源。
 `signalHandler` 收到 `RecoveryCompleted` 后通过独立的 `recoverState → recoverClaim` 按持久化状态分流。
 `CREATING` 通过 `recoverCreation → OpenStackClient.recoverPortForwardings()` 恢复；恢复入口和远端操作编排
 均独立于正常创建的 `executeCreation` 和 `createPortForwardings()`，后续可以单独调整恢复策略。

@@ -363,9 +363,9 @@ public class OpenStackClient {
     return CompletableFuture.supplyAsync(() -> {
       var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
       String tcpId = createPortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.TCP,
-          forwardingMarker(identity, claimId, NetProtocol.TCP));
+          forwardingMarker(claimId, NetProtocol.TCP));
       String udpId = createPortForwarding(service, identity.floatingIpId(), externalPort, spec, NetProtocol.UDP,
-          forwardingMarker(identity, claimId, NetProtocol.UDP));
+          forwardingMarker(claimId, NetProtocol.UDP));
       return new ForwardingResources(identity.floatingIp(), externalPort, tcpId, udpId);
     }, NETWORK_EXECUTOR);
   }
@@ -376,8 +376,8 @@ public class OpenStackClient {
     return CompletableFuture.supplyAsync(() -> {
       var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
       List<? extends PortForwarding> forwardings = service.list(identity.floatingIpId());
-      String tcpMarker = forwardingMarker(identity, claimId, NetProtocol.TCP);
-      String udpMarker = forwardingMarker(identity, claimId, NetProtocol.UDP);
+      String tcpMarker = forwardingMarker(claimId, NetProtocol.TCP);
+      String udpMarker = forwardingMarker(claimId, NetProtocol.UDP);
       // Validate both protocols before creating anything during recovery.
       String tcpId = findExistingForwardingId(forwardings, externalPort, spec, NetProtocol.TCP, tcpMarker);
       String udpId = findExistingForwardingId(forwardings, externalPort, spec, NetProtocol.UDP, udpMarker);
@@ -422,9 +422,9 @@ public class OpenStackClient {
     return created.getId();
   }
 
-  private static String forwardingMarker(FloatingIpIdentity identity, String claimId, NetProtocol protocol) {
-    String key = identity.regionId() + ":" + claimId + ":" + identity.floatingIpId() + ":" + protocol;
-    return "veryai:pf:" + UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
+  private static String forwardingMarker(String claimId, NetProtocol protocol) {
+    String key = claimId + ":" + protocol;
+    return "veryai:pf:" + key;
   }
 
   /** Resume the instance's own group and missing rules after recovery, before creating any ports. */
