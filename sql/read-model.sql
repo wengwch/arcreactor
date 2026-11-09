@@ -79,47 +79,7 @@ CREATE TABLE IF NOT EXISTS user_region_router (
   INDEX idx_user_router_os_id (region_id, os_router_id)
 ) ENGINE=InnoDB;
 
-CREATE TABLE IF NOT EXISTS hypervisor_resource (
-  hypervisor_id VARCHAR(255) PRIMARY KEY,
-  status VARCHAR(32) NOT NULL,
-  availability_zone VARCHAR(255) NOT NULL DEFAULT 'default',
-  total_vcpu INT NOT NULL DEFAULT 0,
-  reserved_vcpu INT NOT NULL DEFAULT 0,
-  allocated_vcpu INT NOT NULL DEFAULT 0,
-  available_vcpu INT GENERATED ALWAYS AS (total_vcpu - reserved_vcpu - allocated_vcpu) STORED,
-  total_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
-  reserved_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
-  allocated_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
-  available_memory_gb BIGINT GENERATED ALWAYS AS
-    (total_memory_gb - reserved_memory_gb - allocated_memory_gb) STORED,
-  total_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
-  reserved_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
-  allocated_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
-  available_disk_gb BIGINT GENERATED ALWAYS AS
-    (total_disk_gb - reserved_disk_gb - allocated_disk_gb) STORED,
-  total_gpu INT NOT NULL DEFAULT 0,
-  reserved_gpu INT NOT NULL DEFAULT 0,
-  allocated_gpu INT NOT NULL DEFAULT 0,
-  available_gpu INT GENERATED ALWAYS AS (total_gpu - reserved_gpu - allocated_gpu) STORED,
-  resource_version BIGINT NOT NULL DEFAULT 0,
-  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  INDEX idx_hypervisor_candidate (
-    status, availability_zone, available_vcpu, available_memory_gb, available_disk_gb, available_gpu)
-) ENGINE=InnoDB;
-
-CREATE TABLE IF NOT EXISTS instance_allocation (
-  instance_id VARCHAR(255) PRIMARY KEY,
-  hypervisor_id VARCHAR(255) NOT NULL,
-  reservation_id VARCHAR(255) NOT NULL,
-  vcpus INT NOT NULL,
-  memory_gb BIGINT NOT NULL COMMENT 'GB',
-  disk_gb BIGINT NOT NULL COMMENT 'GB',
-  gpu_count INT NOT NULL,
-  allocation_status VARCHAR(32) NOT NULL,
-  resource_version BIGINT NOT NULL,
-  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  INDEX idx_allocation_hypervisor_status (hypervisor_id, allocation_status)
-) ENGINE=InnoDB;
+-- Hypervisor resources and confirmed instance counts are part of hypervisor_host; create it with sql/hypervisors.sql.
 
 CREATE TABLE IF NOT EXISTS instance_view (
   instance_id VARCHAR(255) PRIMARY KEY,
@@ -195,21 +155,4 @@ CREATE TABLE IF NOT EXISTS port_forwarding (
   INDEX idx_port_forwarding_user_region (user_id, region_id),
   INDEX idx_port_forwarding_region_phase (region_id, phase),
   INDEX idx_port_forwarding_external (region_id, os_floating_ip_id, external_port)
-) ENGINE=InnoDB;
-
--- One confirmed mapping per internal service port; an instance may use multiple floating IPs.
-CREATE TABLE IF NOT EXISTS instance_port_forwarding (
-  instance_id VARCHAR(255) NOT NULL,
-  internal_port INT NOT NULL,
-  forwarding_claim_id VARCHAR(255) NOT NULL,
-  floating_ip_id VARCHAR(255) NOT NULL,
-  floating_ip VARCHAR(45) NOT NULL,
-  external_port INT NOT NULL,
-  tcp_forwarding_id VARCHAR(255) NOT NULL,
-  udp_forwarding_id VARCHAR(255) NOT NULL,
-  workflow_version BIGINT NOT NULL,
-  created_at TIMESTAMP(6) NOT NULL,
-  updated_at TIMESTAMP(6) NOT NULL,
-  PRIMARY KEY (instance_id, internal_port),
-  INDEX idx_instance_forwarding_floating_ip (floating_ip_id, external_port)
 ) ENGINE=InnoDB;

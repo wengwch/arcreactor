@@ -91,7 +91,7 @@ public class InstanceService {
                 image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getDisk(), flavor.getGpus(),
                 StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
                 new ShareRequirement(param.getUserId(), defaults.resourceId(), defaults.share()),
-                defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType());
+                defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType(), param.getHostname());
         return submit(requestId, instanceId, spec);
     }
 

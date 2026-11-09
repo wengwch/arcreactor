@@ -15,5 +15,6 @@ public interface HypervisorReadMapper {
             @Param("gpuCount") int gpuCount,
             @Param("regionId") String regionId,
             @Param("hypervisorType") String hypervisorType,
+            @Param("hostname") String hostname,
             @Param("limit") int limit);
 }

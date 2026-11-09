@@ -2,7 +2,6 @@ package cn.veryai.arcreactor.actor.instance.projection.mybatis;
 
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
-import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import java.sql.Timestamp;
 import org.apache.ibatis.annotations.Mapper;
@@ -51,12 +50,6 @@ public interface InstanceProjectionMapper {
             @Param("instanceId") String instanceId,
             @Param("phase") String phase,
             @Param("network") PreparedNetwork network,
-            @Param("version") long version,
-            @Param("updatedAt") Timestamp updatedAt);
-
-    int upsertForwarding(
-            @Param("instanceId") String instanceId,
-            @Param("forwarding") PreparedForwarding forwarding,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

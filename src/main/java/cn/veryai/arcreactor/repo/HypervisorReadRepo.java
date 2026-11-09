@@ -15,7 +15,8 @@ public class HypervisorReadRepo {
 
     public List<HypervisorResourceRow> findCandidates(
             int vcpus, long memoryGb, long diskGb, String availabilityZone, int gpuCount,
-            String regionId, String hypervisorType, int limit) {
-        return mapper.findCandidates(vcpus, memoryGb, diskGb, availabilityZone, gpuCount, regionId, hypervisorType, limit);
+            String regionId, String hypervisorType, String hostname, int limit) {
+        return mapper.findCandidates(vcpus, memoryGb, diskGb, availabilityZone, gpuCount,
+                regionId, hypervisorType, hostname, limit);
     }
 }

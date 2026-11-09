@@ -4,5 +4,5 @@ import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import java.time.Instant;
 
 public record InstanceCreationRequested(String instanceId, String requestId, InstanceSpec spec,
-        Instant requestedAt, Instant dependencyPreparationDeadline) implements InstanceWorkflowEvent {
+        Instant requestedAt) implements InstanceWorkflowEvent {
 }

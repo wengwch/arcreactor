@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.actor.instance.projection;
 
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
+import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
@@ -42,8 +43,10 @@ public final class InstanceProjectionHandler
         String instanceId = entityId(envelope.persistenceId());
 
         if (event instanceof InstanceCreationRequested created) {
-            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), "PREPARING_DEPENDENCIES", version,
+            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), "SCHEDULING", version,
                     Timestamp.from(created.requestedAt()), timestamp);
+        } else if (event instanceof DependencyPreparationStarted) {
+            mapper.updatePhase(instanceId, "PREPARING_DEPENDENCIES", version, timestamp);
         } else if (event instanceof DependenciesPrepared prepared) {
             mapper.updateDependencies(instanceId, "PREPARING_DEPENDENCIES", prepared.dependencies(), version, timestamp);
         } else if (event instanceof SecurityGroupPreparationStarted) {
@@ -64,10 +67,8 @@ public final class InstanceProjectionHandler
             mapper.updatePhase(instanceId, "PREPARING_TRUNK", version, timestamp);
         } else if (event instanceof TrunkPrepared prepared) {
             mapper.updateNetwork(instanceId, "PREPARING_TRUNK", prepared.resources(), version, timestamp);
-        } else if (event instanceof ForwardingPreparationStarted || event instanceof ForwardingCandidateSelected) {
-            mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
-        } else if (event instanceof ForwardingPrepared prepared) {
-            mapper.upsertForwarding(instanceId, prepared.forwarding(), version, timestamp);
+        } else if (event instanceof ForwardingPreparationStarted
+                || event instanceof ForwardingCandidateSelected || event instanceof ForwardingPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
             mapper.updateHypervisor(instanceId, "SCHEDULING", selected.hypervisorId(),

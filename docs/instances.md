@@ -9,22 +9,30 @@
   "flavorId": "demo-flavor-t4",
   "imageId": "demo-image-ubuntu",
   "hypervisorType": "demo-hv-t4",
+  "hostname": "demo-gpu-01",
   "regionId": "demo-region",
   "userId": "demo-user"
 }
 ```
 
-除 `description` 外其余字段必填，各字段最多 255 个字符。`flavorId`、`imageId`、
+除 `description`、`hostname` 外其余字段必填，各字段最多 255 个字符。`flavorId`、`imageId`、
 `hypervisorType` 是本地数据库中的 ID。区域、镜像、规格和宿主机类型必须启用，
 镜像和规格必须属于所选区域，规格的宿主机类型必须与请求一致。
 示例中的 ID 需要替换为已配置并启用的实际资源。
 
+`hostname` 可选，使用宿主机记录 `hypervisor_host.hostname` 的值。省略、传 `null` 或空白字符串时自动调度；
+指定时去除首尾空白并按大小写精确匹配，只在匹配的主机上预留资源。
+主机仍需满足请求的区域、宿主机类型、ACTIVE 状态及 CPU、内存、磁盘、GPU 资源要求；
+指定主机不存在、不符合条件或预留被拒绝时，实例创建以 `NO_VALID_HOST` 失败。
+hostname 约束保存在创建事件的 `InstanceSpec` 中，重启恢复调度时继续生效。
+
 服务端从规格读取 vCPU、内存（GB）、磁盘（GB）和 GPU 数量，使用镜像和规格对应的 OpenStack ID
 提交 Actor 创建流程。调度候选宿主机限定在所选区域和宿主机类型内，
-并且必须处于 ACTIVE 状态且有足够资源。
-磁盘需求取规格的 `disk`，以 `diskGb` 随创建请求和调度请求传递；宿主机启用时将
-`disk` 写入 `ResourceCapacity.totalDiskGb`。候选查询和 Actor 最终预留都会检查剩余磁盘，
-预留、确认、取消、过期和释放均同步更新磁盘占用；容量不能缩减到已预留与已分配磁盘总量以下。
+并且必须处于 ACTIVE 状态且有足够资源；指定 hostname 时，数据库在候选数量限制之前完成筛选，
+调度器的 `HostnameFilter` 再校验匹配结果。
+磁盘需求取规格的 `disk`，以 `diskGb` 随创建请求和调度请求传递；宿主机在维护状态下人工同步
+OpenStack 数据，启用时先向 Actor 提交容量和基础占用。候选查询和 Actor 最终预留都会检查剩余磁盘，
+预留、确认、取消、过期和释放均同步更新资源计数，可用磁盘等于 `disk - used_disk - reserved_disk_gb`。
 `description` 保存在实例工作流的 metadata 中，并作为 Nova metadata 提交。
 
 ## 服务端默认配置
@@ -117,21 +125,25 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 通过 `PekkoRuntime.instanceActor(instanceId)` 直接 ask `CreateInstance`。
 查询同样向 Actor 发送 `GetInstanceState`，将返回状态转换成 `InstanceView`；
 创建和查询均使用 `cloud.instance.ask-timeout`。
-InstanceActor 持久化 `InstanceCreationRequested`，进入 `PREPARING_DEPENDENCIES` 并立即回复受理；
-然后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
+InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，进入 `SCHEDULING` 并立即回复受理；
+先根据区域、宿主机类型和 CPU、内存、磁盘、GPU 规格选择宿主机并预留资源。
+调度失败直接进入 `FAILED`，不启动依赖和实例专属资源的创建。
+调度成功后持久化 `HypervisorSelected` 和 `DependencyPreparationStarted`，保存宿主机、预留 ID 和依赖准备截止时间，
+进入 `PREPARING_DEPENDENCIES` 后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
 再等待 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createShare()`、`createNetwork()`，
 创建请求持久化后即返回当前状态，首次受理为 `IN_PROGRESS`，已有资源直接返回其当前状态。
 准备器每隔 `dependency-poll-interval` 调用对应的 `getProject()`、`getShare()`、`getNetwork()`；
 仅 `READY` 才继续下一步，`FAILED`、`REJECTED` 直接结束准备。
 ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时才重新提交幂等创建命令。
 准备器向 UserActor 发送的创建和查询 ask 均使用 `cloud.user.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
-准备过程共用 `dependency-preparation-timeout`，绝对截止时间随 `InstanceCreationRequested` 持久化。
+准备过程共用 `dependency-preparation-timeout`，从调度成功后开始计时，绝对截止时间随 `DependencyPreparationStarted` 持久化。
 结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
 再创建专属安全组，随后依次进入父端口、子端口和 Trunk 三个阶段。
 原始请求规格保持不变，重复请求仍按原始规格判断幂等。
 准备失败或超时直接持久化实例 `FAILED` 及失败码，用户级依赖资源继续保留。
-若 Actor 恢复时仍处于 `PREPARING_DEPENDENCIES`，使用原始规格和原截止时间重新执行准备器：
+若 Actor 恢复时仍处于 `SCHEDULING`，使用原请求和预留 ID 继续调度；宿主机选定并进入后续阶段后不再调度。
+若仍处于 `PREPARING_DEPENDENCIES`，保留选定的宿主机和资源预留，使用原始规格和原截止时间重新执行准备器：
 同规格创建命令只返回已持久化的资源状态，已有 `READY` 资源直接复用，未完成资源继续查询。
 停机时间计入准备超时，重启不会延长截止时间；已记录的失败不会自动重试。
 当前 `pekko.cluster.sharding.remember-entities = off`，应用启动不会主动唤醒所有历史实例。
@@ -192,9 +204,9 @@ Share、用户网络和路由的投影见下方“用户资源读模型”。
 InstanceActor 包含以下主要阶段：
 
 ```text
-PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP
+SCHEDULING → PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP
   → PREPARING_PARENT_PORT → PREPARING_SUB_PORT → PREPARING_TRUNK
-  → PREPARING_FORWARDING → SCHEDULING → PROVISIONING → CONFIRMING → ACTIVE
+  → PREPARING_FORWARDING → PROVISIONING → CONFIRMING → ACTIVE
 任一创建阶段失败 → FAILED
 FAILED → 人工发送 DeleteInstance → DELETING → DELETED
 ```
@@ -204,7 +216,8 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 范围内的公网端口，同时创建 TCP/UDP 转发，目标为实例父端口的 IPv4 地址。
 每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
-每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后才进入调度。
+每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。
+未配置端口转发时，Trunk 就绪后直接进入 `PROVISIONING`；两条路径都使用第一步已选定的宿主机。
 整个转发阶段共用 `cloud.instance.forwarding-preparation-timeout`（默认 5 分钟）。
 重启后沿用已持久化的候选、内部端口、已完成映射和截止时间，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
@@ -343,6 +356,9 @@ Trunk、QoS 和端口转发等已创建资源；端口创建失败时也不自�
 删除未完成或调用失败时按 `cloud.instance.poll.max-delay` 继续检查、重试，保持 `DELETING`；
 已受理的删除在重启后继续，只有全部清理成功才持久化 `InstanceDeleted` 并进入 `DELETED`。
 宿主机预留的原有 TTL 机制继续生效，失败后不由实例工作流主动取消预留；人工删除时取消仍存在的预留。
+`cloud.reservation.ttl` 从第一步预留资源时开始计时，默认调整为 50 分钟，覆盖依赖准备、安全组、
+实例网络、端口转发、Nova 创建和资源确认。当前各创建阶段的默认超时合计为 45 分钟，额外预留 5 分钟给调度返回和确认。
+调整各准备超时时应同步调整 TTL；重启不会自动延长已有预留。
 专属安全组按项目和操作标识查找并删除，包含创建成功但响应未持久化的组；删除组时一并删除其规则。
 用户级项目、Share 和网络由多个实例复用，实例删除不会删除这些资源。
 查询接口及 `instance_view` 投影展示 `FAILED`、`DELETING`、`DELETED`，保留已知资源 ID 和原创建失败原因供排查。
@@ -474,7 +490,7 @@ TCP/UDP 规则 ID、阶段、失败原因、版本和创建/更新/删除时间�
 删除后保留已知的映射参数和规则 ID，供查询历史；这些字段不表示仍然占用端口，端口分配以 Actor 位图为准。
 删除尚未创建的 claim 也写入 `DELETED` 记录，请求规格字段为空。
 Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim ID 在保留期后重新创建时，较新的创建事件重置该记录。
-实例已确认的映射仍由 `InstanceProjection` 写入 `instance_port_forwarding`。
+实例关联的端口转发统一从 `port_forwarding` 按 `instance_id` 查询。
 
 创建请求、就绪、失败和删除开始等事件不改变位图。claim 状态和已删除结果继续保存在 Actor 事件及快照中。
 快照保存 `enabled`、`identity`、`claims`、`outcomes` 和总位图 `usedPorts`，不再包含 `importedPortMask`。
@@ -496,35 +512,83 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 
 ## 实例读模型
 
-`InstanceProjection` 将实例状态写入 `instance_view`，每个内部端口的已确认映射写入
-`instance_port_forwarding`，建表定义均位于 `sql/read-model.sql`。
+`InstanceProjection` 将实例状态写入 `instance_view`；端口转发记录统一由 `FloatingIpProjection`
+写入 `port_forwarding`，建表定义均位于 `sql/read-model.sql`。
 `instance_view.security_group_id` 保存实例专属安全组 ID；本次状态和事件结构调整不提供历史数据兼容转换。
 网络三阶段替换旧的 `PREPARING_NETWORK` 及整套网络开始、就绪事件，不提供旧网络事件或快照的兼容转换。
 
 创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和
-`PREPARING_DEPENDENCIES` 状态，项目及父子网络/子网 ID 暂为空。
+`SCHEDULING` 状态，项目及父子网络/子网 ID 暂为空。
+`HypervisorSelected` 写入宿主机和预留 ID，`DependencyPreparationStarted` 更新为 `PREPARING_DEPENDENCIES`；
 `DependenciesPrepared` 补齐项目 ID、实际复用的逻辑 Share ID、父子网络和子网 ID；
 `SecurityGroupPreparationStarted` 更新安全组准备阶段，`SecurityGroupPrepared` 写入专属安全组 ID；
 `ParentPortPrepared`、`SubPortPrepared`、`TrunkPrepared` 依次补齐父端口、子端口和 Trunk，
-各阶段的开始事件更新对应阶段；每条 `ForwardingPrepared` 按
-`(instance_id, internal_port)` upsert `instance_port_forwarding`，22 和 8888 不会相互覆盖。
-映射保存 claim ID、浮动 IP ID 和地址、内部/公网端口、TCP/UDP 转发 ID 及日志版本。
-映射 upsert、实例阶段更新和投影偏移量在同一个 JDBC 事务内提交。
+各阶段的开始事件更新对应阶段；`ForwardingPrepared` 在实例投影中只更新 `PREPARING_FORWARDING` 阶段。
+该事件和实例 Actor 中的已确认映射继续保留，用于创建进度、重启恢复和删除流程。
+实例阶段更新和实例投影偏移量在同一个 JDBC 事务内提交。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。
-`memory_gb` 和 `disk_gb` 单位为 GB，`external_port` 是浮动 IP 的外部转发端口。
-宿主机资源投影保存 `total_disk_gb`、`reserved_disk_gb`、`allocated_disk_gb`，
-`available_disk_gb` 由总量减去预留和已分配容量计算；实例分配记录同时保存 `disk_gb`。
-旧数据库缺少磁盘列时，停止应用后执行 `sql/migrations/add-disk-resource-fields.sql`。
-`sql/read-model.sql` 使用 `CREATE TABLE IF NOT EXISTS`，再次执行不会修改已存在的表。
-升级脚本补齐磁盘列和候选索引，已有字段值、事件日志和投影偏移量保持原样。
-恢复应用后调用 `PUT /api/v1/hypervisor-hosts/{id}/enable`，该接口会发送 `CapacityUpdated`，
-即使宿主机已启用也会刷新包含磁盘的容量；等待投影更新后再调度。
-新加的磁盘计数初始为 0，脚本不推算历史占用；已有预留或分配时，需要从 Actor 事件重建对应磁盘记账。
+`memory_gb` 和 `disk_gb` 单位为 GB。
 密码、Jupyter token 和共享存储访问凭据不写入此表。
 
 每次状态更新以日志序号 `workflow_version` 判断新旧，忽略相同或更早的事件，
 避免重放时覆盖较新的状态和资源信息。进入 `ACTIVE` 时清除失败信息。
 未就绪资源的字段为空，只有创建事件和相应资源就绪事件投影后才有值。
-转发表记录最后确认成功的映射；人工删除后应结合实例阶段判断可用性，不能仅凭表中有记录就认为实例可连接。
+查询实例的就绪映射时，从 `port_forwarding` 按 `instance_id` 和 `phase = 'READY'` 筛选，
+并结合实例阶段判断可用性；删除和失败记录仍保留在该表中。
 读模型与事件投影进度一致，HTTP `202` 返回时记录及最终状态可能尚未可见。
+原有 `instance_port_forwarding` 表可通过 `sql/migrations/remove-instance-port-forwarding.sql` 删除；
+该脚本保留 `port_forwarding`、Actor 持久化数据和投影进度。
+
+## 宿主机资源读模型
+
+宿主机元数据和资源账目统一保存在 `hypervisor_host`，调度直接查询该表。
+`hypervisor_status` 表示 Actor 的 `ACTIVE`、`DRAINING`、`MAINTENANCE` 状态；
+原有 `status`、`state` 仍表示 OpenStack 服务状态。
+总容量只保留 `vcpus`、`ram`、`disk`、`gpus`；占用只保留 `used_vcpus`、`used_ram`、
+`used_disk`、`used_gpus`，包含维护时导入的基础占用和随后由本系统确认的分配。
+`reserved_*` 表示实例创建中的临时预留，与 OpenStack 的宿主机保留资源不同；
+后者已包含在同步的基础占用中。`available_*` 是生成列，等于总容量减去 `used_*` 和 `reserved_*`。
+内存和磁盘统一使用 GB，主机查询返回这些字段及 `resourceVersion`、`updatedAt`。
+
+| 操作 | `reserved_*` | `used_*` | `running_vms` |
+| --- | --- | --- | --- |
+| 预留 | 增加请求资源 | 不变 | 不变 |
+| 确认 | 扣减预留 | 增加确认分配 | +1 |
+| 取消或过期 | 扣减预留 | 不变 | 不变 |
+| 释放 | 不变 | 扣减该实例的分配，保留基础占用 | -1 |
+
+维护操作按以下顺序执行：
+
+1. 人工同步 OpenStack 数据，将 CPU、内存、磁盘的总量和占用写入维护中的 `hypervisor_host`。
+2. 人工修改主机类型和 GPU 数量，直接保存到主机表。
+3. 调用 `PUT /api/v1/hypervisor-hosts/{id}/enable`，服务读取主机记录，先发送 `UpdateCapacity`，
+   收到成功回复后再发送 `EnableHypervisor`。
+
+人工同步和修改 GPU 数量不发送 Actor 更新命令。Actor 仅在 `MAINTENANCE` 且没有预留、分配时
+接受 `UpdateCapacity`，通过 `CapacityUpdated` 一并持久化总容量和基础占用，投影更新主机资源及版本。
+基础占用取提交时主机表的 `used_*`，保存为 Actor 的 `baselineUsage`；重启从事件或快照恢复，
+不会重新查询 OpenStack 并重复叠加。内存总量和占用均按 MB 除以 1024 换算为 GB，使用整数除法。
+Nova 的主机接口不提供 GPU 容量、占用，同步时保留主机表中的 GPU 数值，GPU 数量由人工配置。
+
+进入维护前必须释放全部预留及分配；同步前还需确认没有在途的 Nova 创建、删除请求，
+尤其是预留已过期但云端操作仍未结束的情况。Actor 的计数为空不能证明外部操作已经结束。
+区域同步在获取数据后通过同一个数据库事务写入，写入失败时整体回滚；非维护状态的主机跳过同步，
+上游列表中缺失的主机不会自动删除。新主机也按上述顺序同步、配置并启用。
+候选查询按区域、宿主机类型、可选 hostname、状态和可用资源过滤，最终仍由 Actor 原子校验资源并预留。
+
+`resource_version` 保存最近一次资源或状态事件的日志序号，同一行内的容量、资源增减、
+维护状态和维护计划共用该版本保护，重复或旧事件不会重复计数或覆盖新状态。
+`running_vms` 只统计 Actor 已确认且未释放的实例分配，与资源增减在同一条 SQL 中更新，
+并与 projection offset 在同一事务中提交。`CapacityUpdated` 将预留计数和 `running_vms` 置零，
+此时 Actor 已保证没有预留和分配；人工同步、修改 GPU 数量及单独更新状态不修改这些计数。
+分配明细保留在 Actor 的 `allocations` 中，用于释放、幂等判断和重启恢复。
+主机必须先登记；若更新事件对应的主机记录不存在，投影报错并停止推进 offset，避免丢失资源账目。
+
+新库执行 `sql/hypervisors.sql` 创建包含资源字段的主机表，再执行 `sql/read-model.sql` 创建实例、用户等读模型表。
+本次按开发阶段直接调整表和 Actor 状态，不提供旧资源计数、事件或快照的兼容转换。
+已有开发数据需在停止应用后重建宿主机资源读模型，并清理对应 Hypervisor 的旧日志、快照及投影进度；
+恢复应用后重新同步主机、配置 GPU 并启用，不能只重置表里的计数而保留旧 Actor 状态。
+`CREATE TABLE IF NOT EXISTS` 不会修改已有表结构，旧 `hypervisor_resource` 表不再使用。
+原有 `instance_allocation` 表可通过 `sql/migrations/remove-instance-allocation.sql` 删除；
+该脚本只删除旧表，不重置主机计数、事件版本或投影进度。

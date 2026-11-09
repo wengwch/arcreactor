@@ -103,15 +103,22 @@ public class DataSyncService {
     }
 
     private HypervisorSyncResult syncHosts(String regionId, List<HypervisorHostEntity> hosts) {
-        // Fetch and validate the entire snapshot before opening the database transaction.
+        // Stage the full OpenStack snapshot in maintenance; enabling later submits UpdateCapacity.
         // A failed write rolls back the entire region; missing upstream hosts are retained.
         try {
             return new TransactionTemplate(transactionManager).execute(status -> {
                 int synced = 0;
                 for (HypervisorHostEntity host : hosts) {
-                    if (hypervisorHostRepo.upsertFromOpenstack(host)) {
-                        synced++;
+                    var existing = hypervisorHostRepo.findByOpenstackIdForUpdate(regionId, host.getOsHypervisorId());
+                    if (existing == null) {
+                        hypervisorHostRepo.insert(host);
+                    } else if (existing.getHypervisorStatus() == HypervisorStatus.MAINTENANCE) {
+                        host.setId(existing.getId());
+                        hypervisorHostRepo.upsertFromOpenstack(host);
+                    } else {
+                        continue;
                     }
+                    synced++;
                 }
                 return new HypervisorSyncResult(regionId, synced);
             });
@@ -124,6 +131,11 @@ public class DataSyncService {
         if (hypervisor == null || hypervisor.getId() == null || hypervisor.getId().isBlank()
                 || hypervisor.getHypervisorHostname() == null || hypervisor.getHypervisorHostname().isBlank()) {
             throw new BaseException(ErrorCode.OPENSTACK_HYPERVISOR_INVALID);
+        }
+        if (hypervisor.getVirtualCPU() < 0 || hypervisor.getVirtualUsedCPU() < 0
+                || hypervisor.getLocalMemory() < 0 || hypervisor.getLocalMemoryUsed() < 0
+                || hypervisor.getLocalDisk() < 0 || hypervisor.getLocalDiskUsed() < 0) {
+            throw new BaseException(ErrorCode.HYPERVISOR_CAPACITY_INVALID);
         }
         HypervisorHostEntity host = new HypervisorHostEntity();
         host.setId(hypervisor.getId());

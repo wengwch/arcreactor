@@ -108,18 +108,18 @@ VALUES ('demo-flavor-small', 'demo.c4.r16', 'Example general purpose flavor.',
         'demo-region', FALSE, 'REPLACE_WITH_T4_NOVA_FLAVOR_ID')
 ON DUPLICATE KEY UPDATE id = flavor.id;
 
+-- Register host metadata only. Manually sync OpenStack data and configure the GPU count before enabling.
 INSERT INTO hypervisor_host (id, name, description, hostname, ip, os_hypervisor_id,
                              hypervisor_type, cpu_type, ram_type, disk_type, gpu_type,
-                             vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus,
                              status, state, enabled, region_id)
 VALUES ('demo-host-general-01', 'General compute 01', 'Disabled example compute host.',
         'demo-compute-01', '192.0.2.11', 'REPLACE_WITH_GENERAL_NOVA_HYPERVISOR_ID',
         'demo-hv-general', 'demo-cpu-32c', 'demo-ram-ddr4-32g', 'demo-disk-ssd', NULL,
-        64, 256, 2000, 0, 0, 0, 0, 0, 'disabled', 'down', FALSE, 'demo-region'),
+        'disabled', 'down', FALSE, 'demo-region'),
        ('demo-host-t4-01', 'GPU compute 01', 'Disabled example GPU compute host.',
         'demo-gpu-01', '192.0.2.12', 'REPLACE_WITH_T4_NOVA_HYPERVISOR_ID',
         'demo-hv-t4', 'demo-cpu-64c', 'demo-ram-ddr4-64g', 'demo-disk-nvme', 'demo-gpu-t4',
-        128, 512, 4000, 4, 0, 0, 0, 0, 'disabled', 'down', FALSE, 'demo-region')
+        'disabled', 'down', FALSE, 'demo-region')
 ON DUPLICATE KEY UPDATE id = hypervisor_host.id;
 
 -- Enum values match SysNetworkType and OpenStack4j NetworkType names.

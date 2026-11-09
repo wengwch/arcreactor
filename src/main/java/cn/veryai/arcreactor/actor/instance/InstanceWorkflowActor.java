@@ -29,6 +29,7 @@ import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationCompl
 import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
+import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
@@ -236,13 +237,14 @@ public final class InstanceWorkflowActor
     }
     Instant now = clock.instant();
     return Effect()
-        .persist(new InstanceCreationRequested(instanceId, command.requestId(), command.spec(), now,
-            dependencyPreparer.preparationDeadline(now)))
+        .persist(List.of(
+            new InstanceCreationRequested(instanceId, command.requestId(), command.spec(), now),
+            new SchedulingStarted(instanceId, command.requestId(), 1, now)))
         .thenRun(
             next -> {
               metrics.workflowStarted();
               command.replyTo().tell(InstanceReply.accepted(false));
-              requestDependencies(next);
+              startScheduling(next);
             });
   }
 
@@ -365,13 +367,17 @@ public final class InstanceWorkflowActor
 
   private InstanceWorkflowEvent afterNetworkStage(InstanceWorkflowState state, Instant now) {
     return state.spec().forwarding() == null
-        ? new SchedulingStarted(instanceId, state.requestId(), 1, now)
+        ? novaCreationStarted(state, now)
         : new ForwardingPreparationStarted(instanceId, now.plus(settings.forwardingPreparationTimeout()));
   }
 
   private void startAfterNetwork(InstanceWorkflowState state) {
     if (state.phase() == InstancePhase.PREPARING_FORWARDING) startForwardingPreparation(state);
-    else startScheduling(state);
+    else requestProvisioning(state, true);
+  }
+
+  private NovaCreationStarted novaCreationStarted(InstanceWorkflowState state, Instant now) {
+    return new NovaCreationStarted(instanceId, operationId(state), now, now.plus(settings.provisioningTimeout()));
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckNetwork(
@@ -495,11 +501,11 @@ public final class InstanceWorkflowActor
         List<InstanceWorkflowEvent> events = new ArrayList<>();
         events.add(new ForwardingPrepared(instanceId, PreparedForwarding.from(claim), now));
         boolean complete = state.preparedForwardings().size() + 1 == state.spec().forwarding().internalPorts().size();
-        if (complete) events.add(new SchedulingStarted(instanceId, state.requestId(), 1, now));
+        if (complete) events.add(novaCreationStarted(state, now));
         yield Effect().persist(events).thenRun(next -> {
           if (complete) {
             cancelForwardingTimers();
-            startScheduling(next);
+            requestProvisioning(next, true);
           } else {
             startForwardingPreparation(next);
           }
@@ -594,16 +600,14 @@ public final class InstanceWorkflowActor
       return failCreation("NO_VALID_HOST", result.detail());
     }
     String reservationId = reservationId(state);
-    String operationId = operationId(state);
     Instant now = clock.instant();
     return Effect()
         .persist(
             List.of(
                 new HypervisorSelected(
                     instanceId, result.hypervisorId(), reservationId, result.attempts(), now),
-                new NovaCreationStarted(
-                    instanceId, operationId, now, now.plus(settings.provisioningTimeout()))))
-        .thenRun(next -> requestProvisioning(next, true));
+                new DependencyPreparationStarted(instanceId, dependencyPreparer.preparationDeadline(now))))
+        .thenRun(this::requestDependencies);
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSchedulingFailed(
@@ -788,9 +792,16 @@ public final class InstanceWorkflowActor
             settings.reservationTtl(),
             null,
             spec.region(),
-            spec.hypervisorType());
+            spec.hypervisorType(),
+            spec.hostname());
+    CompletionStage<HypervisorPlacement.ScheduleResult> scheduling;
+    try {
+      scheduling = placement.schedule(request);
+    } catch (RuntimeException error) {
+      scheduling = CompletableFuture.failedFuture(error);
+    }
     context.pipeToSelf(
-        placement.schedule(request),
+        scheduling,
         (result, error) ->
             error == null
                 ? new SchedulingSucceeded(result)
@@ -979,7 +990,8 @@ public final class InstanceWorkflowActor
         .forAnyState()
         .onEvent(
             InstanceCreationRequested.class,
-            (state, event) -> state.created(event.requestId(), event.spec(), event.dependencyPreparationDeadline()))
+            (state, event) -> state.created(event.requestId(), event.spec()))
+        .onEvent(DependencyPreparationStarted.class, (state, event) -> state.preparingDependencies(event.deadline()))
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(SecurityGroupPreparationStarted.class, (state, event) -> state.preparingSecurityGroup(event.deadline()))
         .onEvent(SecurityGroupPrepared.class, (state, event) -> state.securityGroupPrepared(event.securityGroupId()))
@@ -1045,6 +1057,7 @@ public final class InstanceWorkflowActor
                       state.novaOperationId(),
                       state.novaServerId());
               switch (state.phase()) {
+                case SCHEDULING -> startScheduling(state);
                 case PREPARING_DEPENDENCIES -> requestDependencies(state);
                 case PREPARING_SECURITY_GROUP -> startSecurityGroupPreparation(state);
                 case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> requestNetwork(state, false);
@@ -1052,7 +1065,6 @@ public final class InstanceWorkflowActor
                   scheduleForwardingDeadline(state);
                   context.getSelf().tell(new CheckForwardingStatus(state.pollingGeneration(), 1));
                 }
-                case SCHEDULING -> startScheduling(state);
                 case PROVISIONING -> requestProvisioning(state, false);
                 case CONFIRMING -> scheduleConfirmRetry(state);
                 case DELETING -> scheduleDeletionCheck(state);

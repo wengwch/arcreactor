@@ -35,7 +35,8 @@ public final class DefaultHypervisorPlacement implements HypervisorPlacement {
                 new ResourceRequest(resources.vcpus(), resources.memoryGb(), resources.diskGb(),
                         resources.gpuCount()),
                 request.reservationTtl(),
-                new PlacementConstraints(request.availabilityZone(), request.regionId(), request.hypervisorType()));
+                new PlacementConstraints(request.availabilityZone(), request.regionId(),
+                        request.hypervisorType(), request.hostname()));
         return schedulerService.schedule(schedulingRequest).thenApply(this::toPublicResult);
     }
 

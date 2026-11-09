@@ -200,7 +200,8 @@ public final class HypervisorActor
         }
         List<HypervisorEvent> events = new ArrayList<>();
         events.add(new ResourcesReleased(allocation, clock.instant()));
-        if (state.status() == HypervisorStatus.DRAINING && state.runningVms() == 1) {
+        if (state.status() == HypervisorStatus.DRAINING && state.runningVms() == 1
+                && state.reservations().isEmpty()) {
             events.add(new HypervisorMaintenanceEntered(clock.instant()));
         }
         return Effect().persist(events).thenRun(next -> {
@@ -211,20 +212,25 @@ public final class HypervisorActor
         });
     }
 
-    private Effect<HypervisorEvent, HypervisorState> onUpdateCapacity(HypervisorState state, UpdateCapacity command) {
+    private Effect<HypervisorEvent, HypervisorState> onUpdateCapacity(
+            HypervisorState state, UpdateCapacity command) {
         try {
-            state.withCapacity(command.capacity());
+            state.withCapacity(command.capacity(), command.baselineUsage());
         } catch (IllegalStateException invalid) {
             command.replyTo().tell(ActionReply.rejected(invalid.getMessage()));
             return Effect().none();
         }
-        return Effect().persist(new CapacityUpdated(command.capacity(), clock.instant()))
+        return Effect().persist(new CapacityUpdated(command.capacity(), command.baselineUsage(), clock.instant()))
                 .thenRun(next -> command.replyTo().tell(ActionReply.succeeded(false)));
     }
 
     private Effect<HypervisorEvent, HypervisorState> onEnable(HypervisorState state, EnableHypervisor command) {
         if (state.status() == HypervisorStatus.ACTIVE) {
             command.replyTo().tell(ActionReply.succeeded(true));
+            return Effect().none();
+        }
+        if (state.capacity().totalVcpus() <= 0 || state.capacity().totalMemoryGb() <= 0) {
+            command.replyTo().tell(ActionReply.rejected("update host capacity before enabling"));
             return Effect().none();
         }
         return Effect().persist(new HypervisorEnabled(clock.instant()))
@@ -243,12 +249,12 @@ public final class HypervisorActor
 
     private Effect<HypervisorEvent, HypervisorState> onMaintenance(
             HypervisorState state, EnterMaintenance command) {
-        if (state.status() == HypervisorStatus.MAINTENANCE) {
-            command.replyTo().tell(ActionReply.succeeded(true));
+        if (!state.reservations().isEmpty() || !state.allocations().isEmpty()) {
+            command.replyTo().tell(ActionReply.rejected("reservations and allocations must be released before maintenance"));
             return Effect().none();
         }
-        if (state.runningVms() > 0) {
-            command.replyTo().tell(ActionReply.rejected("allocations must be released before maintenance"));
+        if (state.status() == HypervisorStatus.MAINTENANCE) {
+            command.replyTo().tell(ActionReply.succeeded(true));
             return Effect().none();
         }
         return Effect().persist(new HypervisorMaintenanceEntered(clock.instant()))
@@ -285,7 +291,8 @@ public final class HypervisorActor
                         (state, event) -> state.removeAllocation(event.allocation().instanceId(), event.releasedAt()))
                 .onEvent(ReservationOutcomesCleaned.class,
                         (state, event) -> state.cleanReservationOutcomes(event.reservationIds(), event.cleanedAt()))
-                .onEvent(CapacityUpdated.class, (state, event) -> state.withCapacity(event.capacity()))
+                .onEvent(CapacityUpdated.class,
+                        (state, event) -> state.withCapacity(event.capacity(), event.baselineUsage()))
                 .onEvent(HypervisorEnabled.class, (state, event) -> state.withStatus(HypervisorStatus.ACTIVE))
                 .onEvent(HypervisorDrainStarted.class,
                         (state, event) -> state.withStatus(HypervisorStatus.DRAINING))

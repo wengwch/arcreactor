@@ -14,8 +14,6 @@ BEGIN
     WHERE MOD(total_memory_mb, 1024) <> 0
        OR MOD(reserved_memory_mb, 1024) <> 0
        OR MOD(allocated_memory_mb, 1024) <> 0
-  ) OR EXISTS (
-    SELECT 1 FROM instance_allocation WHERE MOD(memory_mb, 1024) <> 0
   ) THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT = 'Memory values must be divisible by 1024 before converting to whole GB';
@@ -42,9 +40,6 @@ BEGIN
     ADD INDEX idx_hypervisor_candidate (
       status, availability_zone, available_vcpu, available_memory_gb, available_gpu);
 
-  ALTER TABLE instance_allocation
-    CHANGE COLUMN memory_mb memory_gb BIGINT NOT NULL COMMENT 'GB';
-  UPDATE instance_allocation SET memory_gb = memory_gb DIV 1024;
 END//
 DELIMITER ;
 

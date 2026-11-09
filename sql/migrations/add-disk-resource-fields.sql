@@ -45,15 +45,6 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = DATABASE() AND table_name = 'instance_allocation' AND column_name = 'disk_gb'
-  ) THEN
-    ALTER TABLE instance_allocation
-      ADD COLUMN disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB' AFTER memory_gb;
-    ALTER TABLE instance_allocation ALTER COLUMN disk_gb DROP DEFAULT;
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'instance_view' AND column_name = 'disk_gb'
   ) THEN
     ALTER TABLE instance_view ADD COLUMN disk_gb BIGINT COMMENT 'GB';

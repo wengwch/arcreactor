@@ -39,13 +39,15 @@ CREATE TABLE IF NOT EXISTS hypervisor_host (
   ram_type VARCHAR(255),
   disk_type VARCHAR(255),
   gpu_type VARCHAR(255),
+  -- Maintenance sync/configuration stages totals and usage; UpdateCapacity accepts them before enabling.
   vcpus INT NOT NULL DEFAULT 0,
-  ram INT NOT NULL DEFAULT 0 COMMENT 'GB',
-  disk INT NOT NULL DEFAULT 0,
+  ram BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  disk BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
   gpus INT NOT NULL DEFAULT 0,
+  -- Usage includes the synchronized baseline and subsequent confirmed allocations.
   used_vcpus INT NOT NULL DEFAULT 0,
-  used_ram INT NOT NULL DEFAULT 0 COMMENT 'GB',
-  used_disk INT NOT NULL DEFAULT 0,
+  used_ram BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  used_disk BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
   used_gpus INT NOT NULL DEFAULT 0,
   running_vms INT NOT NULL DEFAULT 0,
   status VARCHAR(255),
@@ -54,7 +56,23 @@ CREATE TABLE IF NOT EXISTS hypervisor_host (
   expected_maintenance_time DATETIME(6),
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   region_id VARCHAR(255) NOT NULL,
+  availability_zone VARCHAR(255) NOT NULL DEFAULT 'default',
+  reserved_vcpu INT NOT NULL DEFAULT 0,
+  available_vcpu INT GENERATED ALWAYS AS (vcpus - used_vcpus - reserved_vcpu) STORED,
+  reserved_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  available_memory_gb BIGINT GENERATED ALWAYS AS
+    (ram - used_ram - reserved_memory_gb) STORED,
+  reserved_disk_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',
+  available_disk_gb BIGINT GENERATED ALWAYS AS
+    (disk - used_disk - reserved_disk_gb) STORED,
+  reserved_gpu INT NOT NULL DEFAULT 0,
+  available_gpu INT GENERATED ALWAYS AS (gpus - used_gpus - reserved_gpu) STORED,
+  resource_version BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (id),
   UNIQUE KEY uk_hypervisor_host_region_os_id (region_id, os_hypervisor_id),
-  INDEX idx_hypervisor_host_region_name (region_id, name)
+  INDEX idx_hypervisor_host_region_name (region_id, name),
+  INDEX idx_hypervisor_host_candidate (
+    hypervisor_status, region_id, hypervisor_type,
+    available_vcpu, available_memory_gb, available_disk_gb, available_gpu)
 ) ENGINE=InnoDB;

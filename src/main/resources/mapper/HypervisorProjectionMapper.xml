@@ -6,81 +6,57 @@
 
     <!-- Duplicate journal events must not apply resource deltas or regress status. -->
     <sql id="newerResource">
-        WHERE hypervisor_id = #{hypervisorId} AND resource_version &lt; #{version}
+        WHERE id = #{hypervisorId} AND resource_version &lt; #{version}
     </sql>
 
-    <insert id="upsertCapacity">
-        INSERT INTO hypervisor_resource(
-          hypervisor_id, status, availability_zone, total_vcpu, total_memory_gb, total_disk_gb,
-          total_gpu, resource_version, updated_at)
-        VALUES (#{hypervisorId}, 'MAINTENANCE', #{capacity.availabilityZone}, #{capacity.totalVcpus},
-          #{capacity.totalMemoryGb}, #{capacity.totalDiskGb}, #{capacity.gpus}, #{version}, #{updatedAt})
-        ON DUPLICATE KEY UPDATE
-          availability_zone = IF(resource_version &lt; VALUES(resource_version), VALUES(availability_zone), availability_zone),
-          total_vcpu = IF(resource_version &lt; VALUES(resource_version), VALUES(total_vcpu), total_vcpu),
-          total_memory_gb = IF(resource_version &lt; VALUES(resource_version), VALUES(total_memory_gb), total_memory_gb),
-          total_disk_gb = IF(resource_version &lt; VALUES(resource_version), VALUES(total_disk_gb), total_disk_gb),
-          total_gpu = IF(resource_version &lt; VALUES(resource_version), VALUES(total_gpu), total_gpu),
-          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
-          resource_version = GREATEST(resource_version, VALUES(resource_version))
-    </insert>
+    <update id="updateCapacity">
+        UPDATE hypervisor_host SET
+          availability_zone = #{capacity.availabilityZone},
+          vcpus = #{capacity.totalVcpus},
+          ram = #{capacity.totalMemoryGb},
+          disk = #{capacity.totalDiskGb},
+          gpus = #{capacity.gpus},
+          used_vcpus = #{usage.vcpus},
+          used_ram = #{usage.memoryGb},
+          used_disk = #{usage.diskGb},
+          used_gpus = #{usage.gpus},
+          reserved_vcpu = 0,
+          reserved_memory_gb = 0,
+          reserved_disk_gb = 0,
+          reserved_gpu = 0,
+          running_vms = 0,
+          updated_at = #{updatedAt},
+          resource_version = #{version}
+        <include refid="newerResource"/>
+    </update>
 
     <update id="applyResourceDelta">
-        UPDATE hypervisor_resource SET
+        UPDATE hypervisor_host SET
           reserved_vcpu = reserved_vcpu + #{resources.vcpus} * #{reservationMultiplier},
-          allocated_vcpu = allocated_vcpu + #{resources.vcpus} * #{allocationMultiplier},
+          used_vcpus = used_vcpus + #{resources.vcpus} * #{usedMultiplier},
           reserved_memory_gb = reserved_memory_gb + #{resources.memoryGb} * #{reservationMultiplier},
-          allocated_memory_gb = allocated_memory_gb + #{resources.memoryGb} * #{allocationMultiplier},
+          used_ram = used_ram + #{resources.memoryGb} * #{usedMultiplier},
           reserved_disk_gb = reserved_disk_gb + #{resources.diskGb} * #{reservationMultiplier},
-          allocated_disk_gb = allocated_disk_gb + #{resources.diskGb} * #{allocationMultiplier},
+          used_disk = used_disk + #{resources.diskGb} * #{usedMultiplier},
           reserved_gpu = reserved_gpu + #{resources.gpuRequest} * #{reservationMultiplier},
-          allocated_gpu = allocated_gpu + #{resources.gpuRequest} * #{allocationMultiplier},
+          used_gpus = used_gpus + #{resources.gpuRequest} * #{usedMultiplier},
+          running_vms = running_vms + #{usedMultiplier},
           updated_at = #{updatedAt},
           resource_version = #{version}
         <include refid="newerResource"/>
     </update>
 
     <update id="updateStatus">
-        UPDATE hypervisor_resource
-        SET status = #{status}, updated_at = #{updatedAt}, resource_version = #{version}
+        UPDATE hypervisor_host
+        SET hypervisor_status = #{status},
+            expected_maintenance_time = COALESCE(#{expectedMaintenanceTime,jdbcType=TIMESTAMP}, expected_maintenance_time),
+            updated_at = #{updatedAt},
+            resource_version = #{version}
         <include refid="newerResource"/>
     </update>
 
-    <!-- Called only after updateStatus accepts the event in this transaction. -->
-    <update id="updateHostStatus">
-        UPDATE hypervisor_host
-        SET hypervisor_status = #{status},
-            expected_maintenance_time = COALESCE(#{expectedMaintenanceTime,jdbcType=TIMESTAMP}, expected_maintenance_time)
-        WHERE id = #{hypervisorId}
-    </update>
-
-    <update id="refreshHostRunningVms">
-        UPDATE hypervisor_host
-        SET running_vms = (
-            SELECT COUNT(*) FROM instance_allocation
-            WHERE hypervisor_id = #{hypervisorId} AND allocation_status = 'ALLOCATED'
-        )
-        WHERE id = #{hypervisorId}
-    </update>
-
-    <insert id="upsertAllocation">
-        INSERT INTO instance_allocation(
-          instance_id, hypervisor_id, reservation_id, vcpus, memory_gb, disk_gb, gpu_count,
-          allocation_status, resource_version, updated_at)
-        VALUES (#{allocation.instanceId}, #{hypervisorId}, #{allocation.reservationId},
-          #{allocation.resources.vcpus}, #{allocation.resources.memoryGb}, #{allocation.resources.diskGb},
-          #{allocation.resources.gpuRequest},
-          #{status}, #{version}, #{updatedAt})
-        ON DUPLICATE KEY UPDATE
-          hypervisor_id = IF(resource_version &lt; VALUES(resource_version), VALUES(hypervisor_id), hypervisor_id),
-          reservation_id = IF(resource_version &lt; VALUES(resource_version), VALUES(reservation_id), reservation_id),
-          vcpus = IF(resource_version &lt; VALUES(resource_version), VALUES(vcpus), vcpus),
-          memory_gb = IF(resource_version &lt; VALUES(resource_version), VALUES(memory_gb), memory_gb),
-          disk_gb = IF(resource_version &lt; VALUES(resource_version), VALUES(disk_gb), disk_gb),
-          gpu_count = IF(resource_version &lt; VALUES(resource_version), VALUES(gpu_count), gpu_count),
-          allocation_status = IF(resource_version &lt; VALUES(resource_version), VALUES(allocation_status), allocation_status),
-          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
-          resource_version = GREATEST(resource_version, VALUES(resource_version))
-    </insert>
+    <select id="findResourceVersion" resultType="java.lang.Long">
+        SELECT resource_version FROM hypervisor_host WHERE id = #{hypervisorId}
+    </select>
 
 </mapper>

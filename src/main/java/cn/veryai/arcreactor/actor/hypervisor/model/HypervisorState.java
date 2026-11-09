@@ -10,6 +10,7 @@ public record HypervisorState(
     String hypervisorId,
     HypervisorStatus status,
     ResourceCapacity capacity,
+    ResourceUsage baselineUsage,
     Map<String, Reservation> reservations,
     Map<String, Allocation> allocations,
     Map<String, ReservationOutcome> reservationOutcomes,
@@ -23,6 +24,7 @@ public record HypervisorState(
       throw new IllegalArgumentException("hypervisorId is required");
     Objects.requireNonNull(status, "status");
     Objects.requireNonNull(capacity, "capacity");
+    Objects.requireNonNull(baselineUsage, "baselineUsage");
     reservations = Map.copyOf(Objects.requireNonNull(reservations, "reservations"));
     allocations = Map.copyOf(Objects.requireNonNull(allocations, "allocations"));
     if (runningVms != allocations.size()) {
@@ -32,7 +34,7 @@ public record HypervisorState(
         Map.copyOf(Objects.requireNonNull(reservationOutcomes, "reservationOutcomes"));
     reservationOutcomeTimes =
         Map.copyOf(Objects.requireNonNullElse(reservationOutcomeTimes, Map.of()));
-    validate(capacity, reservations, allocations);
+    validate(capacity, baselineUsage, reservations, allocations);
   }
 
   public static HypervisorState empty(String hypervisorId) {
@@ -40,6 +42,7 @@ public record HypervisorState(
         hypervisorId,
         HypervisorStatus.MAINTENANCE,
         ResourceCapacity.empty(),
+        ResourceUsage.empty(),
         Map.of(),
         Map.of(),
         Map.of(),
@@ -52,48 +55,48 @@ public record HypervisorState(
     return reservations.values().stream().mapToInt(r -> r.resources().vcpus()).sum();
   }
 
-  public int allocatedVcpus() {
-    return allocations.values().stream().mapToInt(a -> a.resources().vcpus()).sum();
+  public int usedVcpus() {
+    return baselineUsage.vcpus() + allocations.values().stream().mapToInt(a -> a.resources().vcpus()).sum();
   }
 
   public long reservedMemoryGb() {
     return reservations.values().stream().mapToLong(r -> r.resources().memoryGb()).sum();
   }
 
-  public long allocatedMemoryGb() {
-    return allocations.values().stream().mapToLong(a -> a.resources().memoryGb()).sum();
+  public long usedMemoryGb() {
+    return baselineUsage.memoryGb() + allocations.values().stream().mapToLong(a -> a.resources().memoryGb()).sum();
   }
 
   public long reservedDiskGb() {
     return reservations.values().stream().mapToLong(r -> r.resources().diskGb()).sum();
   }
 
-  public long allocatedDiskGb() {
-    return allocations.values().stream().mapToLong(a -> a.resources().diskGb()).sum();
+  public long usedDiskGb() {
+    return baselineUsage.diskGb() + allocations.values().stream().mapToLong(a -> a.resources().diskGb()).sum();
   }
 
   public int reservedGpus() {
     return reservations.values().stream().mapToInt(r -> r.resources().gpuRequest()).sum();
   }
 
-  public int allocatedGpus() {
-    return allocations.values().stream().mapToInt(a -> a.resources().gpuRequest()).sum();
+  public int usedGpus() {
+    return baselineUsage.gpus() + allocations.values().stream().mapToInt(a -> a.resources().gpuRequest()).sum();
   }
 
   public int availableVcpus() {
-    return capacity.totalVcpus() - reservedVcpus() - allocatedVcpus();
+    return capacity.totalVcpus() - reservedVcpus() - usedVcpus();
   }
 
   public long availableMemoryGb() {
-    return capacity.totalMemoryGb() - reservedMemoryGb() - allocatedMemoryGb();
+    return capacity.totalMemoryGb() - reservedMemoryGb() - usedMemoryGb();
   }
 
   public long availableDiskGb() {
-    return capacity.totalDiskGb() - reservedDiskGb() - allocatedDiskGb();
+    return capacity.totalDiskGb() - reservedDiskGb() - usedDiskGb();
   }
 
   public int availableGpus() {
-    return capacity.gpus() - reservedGpus() - allocatedGpus();
+    return capacity.gpus() - reservedGpus() - usedGpus();
   }
 
   public boolean canReserve(ResourceRequest request) {
@@ -167,8 +170,16 @@ public record HypervisorState(
     return copy(nextStatus, capacity, reservations, allocations, reservationOutcomes);
   }
 
-  public HypervisorState withCapacity(ResourceCapacity nextCapacity) {
-    return copy(status, nextCapacity, reservations, allocations, reservationOutcomes);
+  public boolean canUpdateCapacity() {
+    return status == HypervisorStatus.MAINTENANCE && reservations.isEmpty() && allocations.isEmpty();
+  }
+
+  public HypervisorState withCapacity(ResourceCapacity nextCapacity, ResourceUsage nextUsage) {
+    if (!canUpdateCapacity()) {
+      throw new IllegalStateException("capacity updates require maintenance with no reservations or allocations");
+    }
+    return new HypervisorState(hypervisorId, status, nextCapacity, nextUsage, reservations, allocations,
+        reservationOutcomes, version + 1, reservationOutcomeTimes, runningVms);
   }
 
   private HypervisorState copy(
@@ -197,6 +208,7 @@ public record HypervisorState(
         hypervisorId,
         nextStatus,
         nextCapacity,
+        baselineUsage,
         nextReservations,
         nextAllocations,
         nextOutcomes,
@@ -239,28 +251,29 @@ public record HypervisorState(
 
   private static void validate(
       ResourceCapacity capacity,
+      ResourceUsage baselineUsage,
       Map<String, Reservation> reservations,
       Map<String, Allocation> allocations) {
-    int cpu =
-        reservations.values().stream().mapToInt(r -> r.resources().vcpus()).sum()
-            + allocations.values().stream().mapToInt(a -> a.resources().vcpus()).sum();
+    long cpu = baselineUsage.vcpus()
+        + reservations.values().stream().mapToLong(r -> r.resources().vcpus()).sum()
+            + allocations.values().stream().mapToLong(a -> a.resources().vcpus()).sum();
     long memory =
-        reservations.values().stream().mapToLong(r -> r.resources().memoryGb()).sum()
+        baselineUsage.memoryGb() + reservations.values().stream().mapToLong(r -> r.resources().memoryGb()).sum()
             + allocations.values().stream().mapToLong(a -> a.resources().memoryGb()).sum();
     if (cpu > capacity.totalVcpus())
-      throw new IllegalStateException("reserved + allocated CPU exceeds capacity");
+      throw new IllegalStateException("reserved + used CPU exceeds capacity");
     if (memory > capacity.totalMemoryGb())
-      throw new IllegalStateException("reserved + allocated memory exceeds capacity");
+      throw new IllegalStateException("reserved + used memory exceeds capacity");
     long disk =
-        reservations.values().stream().mapToLong(r -> r.resources().diskGb()).sum()
+        baselineUsage.diskGb() + reservations.values().stream().mapToLong(r -> r.resources().diskGb()).sum()
             + allocations.values().stream().mapToLong(a -> a.resources().diskGb()).sum();
     if (disk > capacity.totalDiskGb())
-      throw new IllegalStateException("reserved + allocated disk exceeds capacity");
-    int gpus =
-        reservations.values().stream().mapToInt(r -> r.resources().gpuRequest()).sum()
-            + allocations.values().stream().mapToInt(a -> a.resources().gpuRequest()).sum();
+      throw new IllegalStateException("reserved + used disk exceeds capacity");
+    long gpus = baselineUsage.gpus()
+        + reservations.values().stream().mapToLong(r -> r.resources().gpuRequest()).sum()
+            + allocations.values().stream().mapToLong(a -> a.resources().gpuRequest()).sum();
     if (gpus > capacity.gpus())
-      throw new IllegalStateException("reserved + allocated GPU exceeds capacity");
+      throw new IllegalStateException("reserved + used GPU exceeds capacity");
     List<String> instanceIds = new ArrayList<>(allocations.keySet());
     if (new HashSet<>(instanceIds).size() != instanceIds.size())
       throw new IllegalStateException("duplicate allocation");

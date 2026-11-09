@@ -76,6 +76,14 @@ public record InstanceWorkflowState(
         return dependencies == null ? spec.share().spec() : dependencies.share().spec();
     }
 
+    public InstanceWorkflowState preparingDependencies(Instant deadline) {
+        return new InstanceWorkflowState(instanceId, requestId, InstancePhase.PREPARING_DEPENDENCIES, spec,
+                hypervisorId, reservationId, novaOperationId, novaServerId, novaStatus,
+                provisioningStartedAt, provisioningDeadline, pollingGeneration + 1, schedulingAttempts,
+                failureCode, failureMessage, version + 1, forwardingPreparationDeadline, preparedForwardings,
+                networkPreparation, forwardingCandidateIndex, dependencies, deadline, securityGroupPreparation);
+    }
+
     public InstanceWorkflowState dependenciesPrepared(PreparedDependencies prepared) {
         return new InstanceWorkflowState(instanceId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
@@ -142,12 +150,12 @@ public record InstanceWorkflowState(
                 dependencyPreparationDeadline, securityGroupPreparation);
     }
 
-    public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec, Instant deadline) {
-        return new InstanceWorkflowState(instanceId, nextRequestId, InstancePhase.PREPARING_DEPENDENCIES, nextSpec,
+    public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec) {
+        return new InstanceWorkflowState(instanceId, nextRequestId, InstancePhase.SCHEDULING, nextSpec,
                 hypervisorId, reservationId,
                 novaOperationId, novaServerId, novaStatus, provisioningStartedAt, provisioningDeadline,
                 pollingGeneration, schedulingAttempts, null, null, version + 1, forwardingPreparationDeadline,
-                preparedForwardings, networkPreparation, forwardingCandidateIndex, dependencies, deadline, securityGroupPreparation);
+                preparedForwardings, networkPreparation, forwardingCandidateIndex, dependencies, null, securityGroupPreparation);
     }
 
     public InstanceWorkflowState scheduling(int attempts) {

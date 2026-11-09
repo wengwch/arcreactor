@@ -28,13 +28,31 @@
         <result column="expected_maintenance_time" property="expectedMaintenanceTime"/>
         <result column="enabled" property="enabled"/>
         <result column="region_id" property="regionId"/>
+        <result column="availability_zone" property="availabilityZone"/>
+        <result column="reserved_vcpu" property="reservedVcpu"/>
+        <result column="available_vcpu" property="availableVcpu"/>
+        <result column="reserved_memory_gb" property="reservedMemoryGb"/>
+        <result column="available_memory_gb" property="availableMemoryGb"/>
+        <result column="reserved_disk_gb" property="reservedDiskGb"/>
+        <result column="available_disk_gb" property="availableDiskGb"/>
+        <result column="reserved_gpu" property="reservedGpu"/>
+        <result column="available_gpu" property="availableGpu"/>
+        <result column="resource_version" property="resourceVersion"/>
+        <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
-    <sql id="columns">id, name, description, hostname, ip, os_hypervisor_id, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus, running_vms, status, state, hypervisor_status, expected_maintenance_time, enabled, region_id</sql>
+    <sql id="hostColumns">id, name, description, hostname, ip, os_hypervisor_id, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus, status, state, hypervisor_status, expected_maintenance_time, enabled, region_id</sql>
+
+    <sql id="columns">
+        <include refid="hostColumns"/>, availability_zone,
+        running_vms,
+        reserved_vcpu, available_vcpu, reserved_memory_gb, available_memory_gb,
+        reserved_disk_gb, available_disk_gb, reserved_gpu, available_gpu, resource_version, updated_at
+    </sql>
 
     <insert id="insert">
-        INSERT INTO hypervisor_host (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{description}, #{hostname}, #{ip}, #{osHypervisorId}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{usedVcpus}, #{usedRam}, #{usedDisk}, #{usedGpus}, #{runningVms}, #{status}, #{state}, #{hypervisorStatus}, #{expectedMaintenanceTime}, #{enabled}, #{regionId})
+        INSERT INTO hypervisor_host (<include refid="hostColumns"/>)
+        VALUES (#{id}, #{name}, #{description}, #{hostname}, #{ip}, #{osHypervisorId}, #{hypervisorType}, #{cpuType}, #{ramType}, #{diskType}, #{gpuType}, #{vcpus}, #{ram}, #{disk}, #{gpus}, #{usedVcpus}, #{usedRam}, #{usedDisk}, #{usedGpus}, #{status}, #{state}, #{hypervisorStatus}, #{expectedMaintenanceTime}, #{enabled}, #{regionId})
     </insert>
 
     <select id="findById" resultMap="entity">
@@ -49,7 +67,9 @@
         Existing hosts are refreshed only in MAINTENANCE.
         name is initialized only on insert. Refreshes preserve name, description,
         hypervisor_type, cpu_type, ram_type, disk_type, gpu_type and gpus.
-        running_vms is owned by the actor projection; inserts use the database default.
+        Sync stages CPU, memory and disk totals/usage for the next UpdateCapacity command.
+        GPU fields remain locally configured; reservations, running_vms and resource_version
+        are maintained by the actor projection and are not changed by manual sync.
     -->
     <insert id="upsertFromOpenstack">
         INSERT INTO hypervisor_host (
@@ -74,8 +94,8 @@
             state = IF(hypervisor_status = 'MAINTENANCE', VALUES(state), state)
     </insert>
 
-    <select id="findStatusByOpenstackIdForUpdate" resultType="cn.veryai.arcreactor.enums.HypervisorStatus">
-        SELECT hypervisor_status FROM hypervisor_host
+    <select id="findByOpenstackIdForUpdate" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_host
         WHERE region_id = #{regionId} AND os_hypervisor_id = #{osHypervisorId}
         FOR UPDATE
     </select>

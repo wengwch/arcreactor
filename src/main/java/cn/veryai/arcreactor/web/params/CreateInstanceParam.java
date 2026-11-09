@@ -20,6 +20,9 @@ public class CreateInstanceParam {
   @NotBlank
   @Size(max = 255)
   private String hypervisorType;
+  /** 可选的宿主机 hostname，指定后仅在匹配的主机上调度。 */
+  @Size(max = 255)
+  private String hostname;
   @NotBlank
   @Size(max = 255)
   private String regionId;

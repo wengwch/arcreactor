@@ -33,6 +33,7 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
                         request.resources().gpuRequest(),
                         request.constraints().regionId(),
                         request.constraints().hypervisorType(),
+                        request.constraints().hostname(),
                         queryLimit).stream()
                 .map(this::mapCandidate)
                 .toList(), blockingExecutor);
@@ -40,11 +41,11 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
 
     private HypervisorCandidate mapCandidate(HypervisorResourceRow row) {
         return new HypervisorCandidate(row.hypervisorId(), HypervisorStatus.valueOf(row.status()),
-                row.availabilityZone(),
-                row.totalVcpu(), row.reservedVcpu(), row.allocatedVcpu(),
-                row.totalMemoryGb(), row.reservedMemoryGb(), row.allocatedMemoryGb(),
-                row.totalDiskGb(), row.reservedDiskGb(), row.allocatedDiskGb(),
-                row.totalGpu(), row.reservedGpu(), row.allocatedGpu(),
+                row.availabilityZone(), row.hostname(),
+                row.totalVcpu(), row.reservedVcpu(), row.usedVcpu(),
+                row.totalMemoryGb(), row.reservedMemoryGb(), row.usedMemoryGb(),
+                row.totalDiskGb(), row.reservedDiskGb(), row.usedDiskGb(),
+                row.totalGpu(), row.reservedGpu(), row.usedGpu(),
                 row.resourceVersion());
     }
 }

@@ -2,13 +2,13 @@ package cn.veryai.arcreactor.actor.instance.model;
 
 public enum InstancePhase {
     NEW,
+    SCHEDULING,
     PREPARING_DEPENDENCIES,
     PREPARING_SECURITY_GROUP,
     PREPARING_PARENT_PORT,
     PREPARING_SUB_PORT,
     PREPARING_TRUNK,
     PREPARING_FORWARDING,
-    SCHEDULING,
     PROVISIONING,
     CONFIRMING,
     ACTIVE,

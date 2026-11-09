@@ -4,9 +4,11 @@
 # 规格、镜像须属于同一区域且已启用；规格的 hypervisorType 必须与请求一致，类型须启用。
 # sql/init-data.sql 中的 demo 镜像和规格默认禁用、属于 demo-region，不能直接用于本请求。
 # 区域及其集群须配置有效，且区域已启用；需有同区域、同类型、资源充足的 ACTIVE 宿主机。
+# hostname 可选，填宿主机记录中的 hostname 可固定调度目标；null 或空白表示自动调度。
+# 指定 hostname 仍需满足区域、类型、状态及资源要求，目标不可用时返回 NO_VALID_HOST 创建失败状态。
 # Test-SH-01 应已登记 LOCAL 网络，以及唯一的 SHARED 网络和对应 OpenStack 网络/子网。
 # 还需按 http/floating-ip-api.http 登记当前区域的浮动 IP；没有候选地址返回业务 code=11718。
-# 先创建 sql/read-model.sql 中的 instance_port_forwarding 投影表。
+# 先创建 sql/read-model.sql 中的 instance_view 和 port_forwarding 投影表。
 # 服务端需配置 INSTANCE_SHARE_TYPE、MANILA_FS_NAME 及有效的 OpenStack 连接和管理员角色。
 # 存储、网络、SSH 用户等使用服务端 instance.creation 配置，无需增加请求字段。
 # 默认转发内部端口 22 和 8888；INSTANCE_FORWARDING_PORTS 可配置逗号分隔的端口列表。
@@ -54,6 +56,7 @@ Accept: application/json
   "flavorId": "{{flavorId}}",
   "imageId": "{{imageId}}",
   "hypervisorType": "{{hypervisorType}}",
+  "hostname": null,
   "regionId": "{{regionId}}",
   "userId": "{{userId}}"
 }

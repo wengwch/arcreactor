@@ -6,21 +6,19 @@
 
     <select id="findCandidates"
             resultType="cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorResourceRow">
-        SELECT r.hypervisor_id, r.status, r.availability_zone,
-               r.total_vcpu, r.reserved_vcpu, r.allocated_vcpu,
-               r.total_memory_gb, r.reserved_memory_gb, r.allocated_memory_gb,
-               r.total_disk_gb, r.reserved_disk_gb, r.allocated_disk_gb,
-               r.total_gpu, r.reserved_gpu, r.allocated_gpu, r.resource_version
-        FROM hypervisor_resource r
-        JOIN hypervisor_host h ON h.id = r.hypervisor_id
-        WHERE r.status = 'ACTIVE'
-          AND h.hypervisor_status = 'ACTIVE'
-          AND r.available_vcpu &gt;= #{vcpus}
-          AND r.available_memory_gb &gt;= #{memoryGb}
-          AND r.available_disk_gb &gt;= #{diskGb}
-          AND r.available_gpu &gt;= #{gpuCount}
+        SELECT h.id AS hypervisor_id, h.hypervisor_status AS status, h.availability_zone, h.hostname,
+               h.vcpus AS total_vcpu, h.reserved_vcpu, h.used_vcpus AS used_vcpu,
+               h.ram AS total_memory_gb, h.reserved_memory_gb, h.used_ram AS used_memory_gb,
+               h.disk AS total_disk_gb, h.reserved_disk_gb, h.used_disk AS used_disk_gb,
+               h.gpus AS total_gpu, h.reserved_gpu, h.used_gpus AS used_gpu, h.resource_version
+        FROM hypervisor_host h
+        WHERE h.hypervisor_status = 'ACTIVE'
+          AND h.available_vcpu &gt;= #{vcpus}
+          AND h.available_memory_gb &gt;= #{memoryGb}
+          AND h.available_disk_gb &gt;= #{diskGb}
+          AND h.available_gpu &gt;= #{gpuCount}
         <if test="availabilityZone != null and availabilityZone.trim() != ''">
-          AND r.availability_zone = #{availabilityZone}
+          AND h.availability_zone = #{availabilityZone}
         </if>
         <if test="regionId != null and regionId.trim() != ''">
           AND h.region_id = #{regionId}
@@ -28,7 +26,11 @@
         <if test="hypervisorType != null and hypervisorType.trim() != ''">
           AND h.hypervisor_type = #{hypervisorType}
         </if>
-        ORDER BY r.hypervisor_id
+        <!-- Match HostnameFilter's exact comparison before limiting the candidates. -->
+        <if test="hostname != null and hostname.trim() != ''">
+          AND CAST(h.hostname AS BINARY) = CAST(#{hostname} AS BINARY)
+        </if>
+        ORDER BY h.id
         LIMIT #{limit}
     </select>
 

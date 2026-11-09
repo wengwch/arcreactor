@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.actor.instance.model;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Objects;
+import org.apache.commons.lang3.StringUtils;
 
 /** Immutable creation requirements, before dependencies are prepared. Memory and disk are measured in GB. */
 public record InstanceSpec(
@@ -20,7 +21,8 @@ public record InstanceSpec(
         ForwardingRequirement forwarding,
         NetworkRequirement network,
         CloudInitSpec cloudInit,
-        String hypervisorType) implements Serializable {
+        String hypervisorType,
+        String hostname) implements Serializable {
     public InstanceSpec {
         requireText(clusterId, "clusterId");
         requireText(region, "region");
@@ -28,6 +30,7 @@ public record InstanceSpec(
         requireText(imageId, "imageId");
         requireText(flavorId, "flavorId");
         requireText(hypervisorType, "hypervisorType");
+        hostname = StringUtils.trimToNull(hostname);
         if (vcpus <= 0 || memoryGb <= 0 || diskGb < 0 || gpuCount < 0) {
             throw new IllegalArgumentException("invalid instance resources");
         }

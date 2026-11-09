@@ -9,6 +9,7 @@ import cn.veryai.arcreactor.actor.hypervisor.command.EnterMaintenance;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
 import cn.veryai.arcreactor.actor.hypervisor.command.UpdateCapacity;
 import cn.veryai.arcreactor.actor.hypervisor.model.ResourceCapacity;
+import cn.veryai.arcreactor.actor.hypervisor.model.ResourceUsage;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ActionReply;
 import cn.veryai.arcreactor.entity.HypervisorHostEntity;
 import cn.veryai.arcreactor.enums.HypervisorStatus;
@@ -124,9 +125,13 @@ public class HypervisorHostService {
     // The persisted maintenance event updates the host status through the projection.
   }
 
-  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+  @Transactional
   public void enable(String id) {
-    HypervisorHostEntity host = get(id);
+    HypervisorHostEntity host = hypervisorHostRepo.findByIdForUpdate(id);
+    if (host == null) throw new BaseException(ErrorCode.HYPERVISOR_HOST_NOT_FOUND);
+    if (host.getHypervisorStatus() != HypervisorStatus.MAINTENANCE) {
+      throw new BaseException(ErrorCode.HYPERVISOR_HOST_MAINTENANCE_REQUIRED);
+    }
     if (StringUtils.isAnyBlank(
         host.getHypervisorType(), host.getCpuType(), host.getRamType(), host.getDiskType())) {
       throw new BaseException(ErrorCode.HYPERVISOR_ENABLE_TYPES_REQUIRED);
@@ -135,8 +140,12 @@ public class HypervisorHostService {
       throw new BaseException(ErrorCode.HYPERVISOR_ENABLE_GPU_COUNT_INVALID);
     }
     ResourceCapacity capacity;
+    ResourceUsage baselineUsage;
     try {
-      capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getDisk(), host.getGpus());
+      capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getDisk(),
+          host.getGpus(), host.getAvailabilityZone());
+      baselineUsage = new ResourceUsage(host.getUsedVcpus(), host.getUsedRam(),
+          host.getUsedDisk(), host.getUsedGpus());
     } catch (IllegalArgumentException exception) {
       throw new BaseException(ErrorCode.HYPERVISOR_CAPACITY_INVALID, exception);
     }
@@ -147,16 +156,13 @@ public class HypervisorHostService {
       ActionReply capacityReply =
           AskPattern.<HypervisorCommand, ActionReply>ask(
                   hypervisorActor,
-                  replyTo -> new UpdateCapacity(capacity, replyTo),
+                  replyTo -> new UpdateCapacity(capacity, baselineUsage, replyTo),
                   pekkoRuntime.getAskTimeout(),
                   system.scheduler())
               .toCompletableFuture()
               .get();
       if (!capacityReply.success()) {
-        log.warn(
-            "Hypervisor capacity update rejected: hypervisorId={}, detail={}",
-            id,
-            capacityReply.detail());
+        log.warn("Hypervisor capacity update rejected: hypervisorId={}, detail={}", id, capacityReply.detail());
         throw new BaseException(ErrorCode.HYPERVISOR_CAPACITY_UPDATE_REJECTED);
       }
 
