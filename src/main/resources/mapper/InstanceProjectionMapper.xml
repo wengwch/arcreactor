@@ -101,6 +101,7 @@
           parent_subnet_id = #{dependencies.network.parentSubnetId,jdbcType=VARCHAR},
           sub_network_id = #{dependencies.network.subNetworkId,jdbcType=VARCHAR},
           sub_subnet_id = #{dependencies.network.subSubnetId,jdbcType=VARCHAR},
+          sub_floating_network_id = #{dependencies.network.subFloatingNetworkId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>
@@ -123,6 +124,8 @@
           parent_fixed_ip = #{network.parentFixedIp,jdbcType=VARCHAR},
           sub_port_id = #{network.subPortId,jdbcType=VARCHAR},
           sub_fixed_ip = #{network.subFixedIp,jdbcType=VARCHAR},
+          sub_floating_ip_id = #{network.subFloatingIpId,jdbcType=VARCHAR},
+          sub_floating_ip_address = #{network.subFloatingIpAddress,jdbcType=VARCHAR},
           trunk_id = #{network.trunkId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
@@ -143,6 +146,15 @@
           phase = #{phase},
           nova_server_id = #{serverId,jdbcType=VARCHAR},
           nova_status = #{novaStatus,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateNovaDeletion">
+        UPDATE instance_view SET
+          phase = 'DELETING',
+          nova_server_id = #{serverId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

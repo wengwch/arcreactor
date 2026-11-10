@@ -30,6 +30,11 @@ hostname 约束保存在创建事件的 `InstanceSpec` 中，重启恢复调度�
 提交 Actor 创建流程。调度候选宿主机限定在所选区域和宿主机类型内，
 并且必须处于 ACTIVE 状态且有足够资源；指定 hostname 时，数据库在候选数量限制之前完成筛选，
 调度器的 `HostnameFilter` 再校验匹配结果。
+GPU 请求采用堆叠调度：满足全部资源要求后，优先选择可用 GPU 数量最少的宿主机，
+使本次分配后的 GPU 余量尽量小。可用数量为 `gpus - used_gpus - reserved_gpu`，包含创建中的预留占用。
+例如请求 1 张 GPU 时，剩余 2 张的主机优先于剩余 8 张的主机；CPU、内存评分只在 GPU 余量相同时比较，
+两者权重各为 0.5，最后按宿主机 ID 稳定排序。数据库在候选 `LIMIT` 前也先按可用 GPU 数量升序排序。
+请求不需要 GPU 时，按 CPU、内存综合评分选择宿主机。
 磁盘需求取规格的 `disk`，以 `diskGb` 随创建请求和调度请求传递；宿主机在维护状态下人工同步
 OpenStack 数据，启用时先向 Actor 提交容量和基础占用。候选查询和 Actor 最终预留都会检查剩余磁盘，
 预留、确认、取消、过期和释放均同步更新资源计数，可用磁盘等于 `disk - used_disk - reserved_disk_gb`。
@@ -325,12 +330,18 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 | 阶段 | 创建意图事件 | 就绪事件 | OpenStack 调用 |
 | --- | --- | --- | --- |
 | `PREPARING_PARENT_PORT` | `ParentPortPreparationStarted` | `ParentPortPrepared` | `prepareInstanceParentPort()`，创建父端口及其 QoS |
-| `PREPARING_SUB_PORT` | `SubPortPreparationStarted` | `SubPortPrepared` | `prepareInstanceSubPort()`，沿用父端口 MAC 创建子端口及其 QoS |
+| `PREPARING_SUB_PORT` | `SubPortPreparationStarted` | `SubPortPrepared` | `prepareInstanceSubPort()`，沿用父端口 MAC 创建子端口及其 QoS，分配并关联专属浮动 IP |
 | `PREPARING_TRUNK` | `TrunkPreparationStarted` | `TrunkPrepared` | `prepareInstanceTrunk()`，使用父子端口 ID 创建 Trunk 并关联 VLAN |
 
 当前阶段的就绪事件和下一阶段的创建意图一起持久化，之后才调用下一阶段。
-父端口就绪时保存 ID、MAC 和固定 IP；子端口就绪时追加其 ID 和固定 IP；Trunk 就绪时追加 Trunk ID。
+父端口就绪时保存 ID、MAC 和固定 IP；子端口就绪时追加其 ID、固定 IP、浮动 IP ID 和地址；Trunk 就绪时追加 Trunk ID。
 状态查询和数据库投影随每个阶段更新，网络尚未全部完成时也能看到已完成的资源。
+子端口浮动 IP 从用户路由出口对应的 `LOCAL` 网络分配，依赖准备时将该网络 ID 保存到
+`NetworkRequirement.subFloatingNetworkId`，重启后继续使用同一网络。
+分配时指定子端口 ID 和固定 IP，并写入实例操作标识；`SubPortPrepared` 只有在绑定确认后才持久化。
+`InstanceView.network` 返回 `subFloatingIpId`、`subFloatingIpAddress`，`instance_view` 同步保存
+`sub_floating_network_id`、`sub_floating_ip_id`、`sub_floating_ip_address`。
+该地址属于实例网络资源，父端口的 22、8888 转发继续使用原有候选浮动 IP。
 三个阶段共用 `ParentPortPreparationStarted` 持久化的网络截止时间，时长为
 `cloud.instance.provisioning-timeout`；切换阶段和重启都不会重置截止时间，过期后不再启动下一阶段的创建。
 Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询不产生事件；
@@ -339,11 +350,22 @@ Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询
 实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。网络调用结果不确定或 Actor 恢复时，
 只按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；当前阶段确认就绪后再进入下一阶段。
 不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时等待至网络截止时间后进入 `FAILED`。
+子端口恢复同时按项目和操作标识查询浮动 IP，并校验外部网络、子端口和固定 IP；
+地址缺失时继续等待至原截止时间，多个匹配地址或绑定不一致时失败。
 Nova 超时后确认资源存在但未就绪，或确认不存在时，进入 `FAILED`，保留资源等待人工处理。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。
 
+`RecoveryCompleted` 只进入独立的 `InstanceRecovery` 恢复编排，不直接调用创建或删除入口。
+恢复使用专用的 `RetryRecovery`、`RecoveryStepCompleted`、`RecoveryTimedOut` 命令和定时器，
+独立处理当前持久化阶段的查询、结果判断和重试；阶段、轮询代次与请求标识共同校验异步结果，
+恢复期间忽略旧创建、删除流程的迟到回调，状态查询和重复受理仍正常响应。
+恢复当前阶段时沿用原有截止时间和资源操作标识，不重置已开始阶段的等待期限。
+端口转发恢复先查询已有 claim，不存在时才使用相同 claim ID 提交创建；网络和 Nova 恢复只查询当前阶段资源。
+当前操作确认完成并持久化明确的就绪事件后，才交给创建逻辑启动下一项尚未执行的操作。
+只有资源操作标识、领域事件以及 OpenStack/Actor 客户端等基础接口共用，恢复的请求与结果处理可独立修改。
+
 创建失败统一持久化 `InstanceProvisioningFailed`，保留失败原因以及 Nova、专属安全组、父子端口、
-Trunk、QoS 和端口转发等已创建资源；端口创建失败时也不自动删除专用 QoS。
+Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创建失败时也不自动删除专用 QoS。
 进入 `FAILED` 后停止实例创建的定时任务，忽略迟到的创建结果，重启恢复也不会发起删除。
 已提交到其他 Actor 或 OpenStack 的请求可能继续完成，实例失败不会取消用户级项目、Share 或网络准备。
 不再提供创建失败后自动清理的配置开关，也不会因为修改配置或重启应用而启动清理。
@@ -352,9 +374,15 @@ Trunk、QoS 和端口转发等已创建资源；端口创建失败时也不自�
 该入口只允许对 `FAILED` 实例开始删除；创建中或 `ACTIVE` 的实例会拒绝，业务错误码为 `11721`。
 `InstanceDeletionStarted` 持久化后进入 `DELETING` 并返回 HTTP `202`，重复请求在 `DELETING`、`DELETED` 下幂等受理。
 清理按 Nova、端口转发、实例网络/QoS、专属安全组、资源预留的顺序执行，未进入的资源创建阶段直接跳过。
-先查询 Nova，确认服务器消失后才继续删除其他资源；本进程中尚未完成的安全组请求会在删除安全组前等待结束。
+实例网络清理先按操作标识删除子端口浮动 IP，再删除 Trunk、端口和 QoS；响应丢失或已解除关联的实例浮动 IP 也能找到并释放。
+先查询 Nova，存在时提交删除；请求被接受后持久化 `NovaDeletionAccepted`，同时保存查到的服务器 ID。
+此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
+服务器仍存在或查询失败时保持 `DELETING`；只有查询确认不存在（404）才继续删除端口转发、网络等资源。
+这些查询不产生新事件，也不设置删除等待超时。本进程中尚未完成的安全组请求会在删除安全组前等待结束。
 删除未完成或调用失败时按 `cloud.instance.poll.max-delay` 继续检查、重试，保持 `DELETING`；
 已受理的删除在重启后继续，只有全部清理成功才持久化 `InstanceDeleted` 并进入 `DELETED`。
+`DELETING` 的恢复由 `InstanceRecovery` 独立查询、删除和重试，不复用外部删除请求的编排方法。
+恢复时若已有 `NovaDeletionAccepted`，继续查询服务器；尚未记录受理时，先查询，存在才重新提交删除。
 宿主机预留的原有 TTL 机制继续生效，失败后不由实例工作流主动取消预留；人工删除时取消仍存在的预留。
 `cloud.reservation.ttl` 从第一步预留资源时开始计时，默认调整为 50 分钟，覆盖依赖准备、安全组、
 实例网络、端口转发、Nova 创建和资源确认。当前各创建阶段的默认超时合计为 45 分钟，额外预留 5 分钟给调度返回和确认。
@@ -453,6 +481,7 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 执行 `sql/read-model.sql` 初始化读模型表。`user-resources` 投影消费 User 事件更新读模型，
 查询结果在投影追上事件日志后完整可见。
+已有 `instance_view` 表需执行 `sql/migrations/add-instance-subport-floating-ip.sql` 增加子端口浮动 IP 字段。
 
 ## 浮动 IP 读模型
 
@@ -543,6 +572,8 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 ## 宿主机资源读模型
 
 宿主机元数据和资源账目统一保存在 `hypervisor_host`，调度直接查询该表。
+宿主机查询统一通过 `HypervisorHostRepo` 和 `HypervisorHostMapper`；调度候选复用
+`HypervisorHostEntity` 映射，再转换为调度器的 `HypervisorCandidate`。
 `hypervisor_status` 表示 Actor 的 `ACTIVE`、`DRAINING`、`MAINTENANCE` 状态；
 原有 `status`、`state` 仍表示 OpenStack 服务状态。
 总容量只保留 `vcpus`、`ram`、`disk`、`gpus`；占用只保留 `used_vcpus`、`used_ram`、

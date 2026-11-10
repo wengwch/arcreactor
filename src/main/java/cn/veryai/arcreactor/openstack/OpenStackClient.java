@@ -961,7 +961,7 @@ public class OpenStackClient {
         InstanceNetworkStep.PARENT_PORT, PreparedNetwork.empty(), allowCreate);
   }
 
-  /** Prepares only the subport and its QoS policy, using the persisted parent MAC address. */
+  /** Prepares the subport, its QoS policy and a dedicated floating IP on the user router's LOCAL network. */
   public CompletionStage<PreparedNetwork> prepareInstanceSubPort(ServerTarget target,
       String operationId, NetworkRequirement requirement, String securityGroupId, PreparedNetwork prepared,
       boolean allowCreate) {
@@ -991,6 +991,8 @@ public class OpenStackClient {
     if (step == InstanceNetworkStep.TRUNK) {
       requireServerText(prepared.subPortId(), "subPortId");
       requireServerText(prepared.subFixedIp(), "subFixedIp");
+      requireServerText(prepared.subFloatingIpId(), "subFloatingIpId");
+      requireServerText(prepared.subFloatingIpAddress(), "subFloatingIpAddress");
     }
     return CompletableFuture.supplyAsync(() -> {
       try {
@@ -1037,7 +1039,8 @@ public class OpenStackClient {
       }
       requireServerText(trunk.getId(), "trunkId");
       return new PreparedNetwork(prepared.parentPortId(), prepared.parentMacAddress(),
-          prepared.parentFixedIp(), prepared.subPortId(), prepared.subFixedIp(), trunk.getId());
+          prepared.parentFixedIp(), prepared.subPortId(), prepared.subFixedIp(),
+          prepared.subFloatingIpId(), prepared.subFloatingIpAddress(), trunk.getId());
     }
     boolean parent = step == InstanceNetworkStep.PARENT_PORT;
     String networkId = parent ? requirement.parentNetworkId() : requirement.subNetworkId();
@@ -1077,16 +1080,55 @@ public class OpenStackClient {
     String fixedIp = port.getFixedIps().stream().filter(ip -> subnetId.equals(ip.getSubnetId()))
         .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
         .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
-    return parent
-        ? new PreparedNetwork(port.getId(), port.getMacAddress(), fixedIp, null, null, null)
-        : new PreparedNetwork(prepared.parentPortId(), prepared.parentMacAddress(),
-            prepared.parentFixedIp(), port.getId(), fixedIp, null);
+    if (parent) return new PreparedNetwork(port.getId(), port.getMacAddress(), fixedIp, null, null, null, null, null);
+    NetFloatingIP floatingIp = ensureInstanceSubPortFloatingIp(client, target.projectId(), operationId,
+        requirement.subFloatingNetworkId(), port.getId(), fixedIp, allowCreate);
+    if (floatingIp == null) return null;
+    return new PreparedNetwork(prepared.parentPortId(), prepared.parentMacAddress(), prepared.parentFixedIp(),
+        port.getId(), fixedIp, floatingIp.getId(), floatingIp.getFloatingIpAddress(), null);
+  }
+
+  private NetFloatingIP ensureInstanceSubPortFloatingIp(OSClient.OSClientV3 client, String projectId,
+      String operationId, String floatingNetworkId, String portId, String fixedIp, boolean allowCreate) {
+    String marker = instanceSubPortFloatingIpMarker(operationId);
+    NetFloatingIP floatingIp = uniqueResource(findInstanceSubPortFloatingIps(client, projectId, operationId),
+        "instance subport floating IP");
+    if (floatingIp == null && allowCreate) {
+      floatingIp = client.networking().floatingip().create(Builders.netFloatingIP()
+          .floatingNetworkId(floatingNetworkId).portId(portId).fixedIpAddress(fixedIp).description(marker).build());
+      if (floatingIp == null) throw new IllegalStateException("Neutron returned no subport floating IP");
+    }
+    // A lost response is resolved by lookup; recovery must not allocate another address.
+    if (floatingIp == null) return null;
+    if (!projectId.equals(floatingIp.getTenantId()) || !marker.equals(floatingIp.getDescription())
+        || !floatingNetworkId.equals(floatingIp.getFloatingNetworkId()) || !portId.equals(floatingIp.getPortId())
+        || !fixedIp.equals(floatingIp.getFixedIpAddress())) {
+      throw new OpenStackOperationException("Instance subport floating IP has mismatched ownership, network or binding", null);
+    }
+    requireServerText(floatingIp.getId(), "subFloatingIpId");
+    requireServerText(floatingIp.getFloatingIpAddress(), "subFloatingIpAddress");
+    return floatingIp;
+  }
+
+  private List<? extends NetFloatingIP> findInstanceSubPortFloatingIps(OSClient.OSClientV3 client,
+      String projectId, String operationId) {
+    String marker = instanceSubPortFloatingIpMarker(operationId);
+    return client.networking().floatingip().list().stream()
+        .filter(ip -> projectId.equals(ip.getTenantId()) && marker.equals(ip.getDescription())).toList();
+  }
+
+  private static String instanceSubPortFloatingIpMarker(String operationId) {
+    return instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT) + "-floating-ip";
   }
 
   /** Discover by operation marker as IDs may have been lost with a create response. */
   public CompletionStage<Void> deleteInstanceNetwork(ServerTarget target, String operationId) {
     return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
+      // Release owned addresses before deleting ports, including addresses whose create response was lost.
+      for (NetFloatingIP floatingIp : findInstanceSubPortFloatingIps(client, target.projectId(), operationId)) {
+        requireDeleteResponse(client.networking().floatingip().delete(floatingIp.getId()));
+      }
       String trunkMarker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
       for (Trunk trunk : client.networking().trunk().list()) {
         if (!trunkMarker.equals(trunk.getDescription()) || !target.projectId().equals(trunk.getTenantId())) continue;

@@ -4,9 +4,8 @@ import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.AvailabilityZoneFi
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.CapacityFilter;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.GpuFilter;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.filter.HostnameFilter;
-import cn.veryai.arcreactor.repo.HypervisorReadRepo;
+import cn.veryai.arcreactor.repo.HypervisorHostRepo;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.CpuBalanceScorer;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.GpuFragmentationScorer;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.scorer.MemoryBalanceScorer;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.DispatcherSelector;
@@ -17,19 +16,18 @@ import java.util.List;
 public final class SchedulerFactory {
     private SchedulerFactory() {}
 
-    public static SchedulerService create(ActorSystem<?> system, HypervisorReadRepo readRepo) {
+    public static SchedulerService create(ActorSystem<?> system, HypervisorHostRepo hostRepo) {
         var config = system.settings().config().getConfig("cloud.scheduler");
         var blockingExecutor = system.dispatchers().lookup(
                 DispatcherSelector.fromConfig("virtual-thread-dispatcher"));
         CandidateFinder finder = new ProjectionCandidateFinder(
-                readRepo, blockingExecutor, config.getInt("candidate-query-limit"));
+                hostRepo, blockingExecutor, config.getInt("candidate-query-limit"));
         AllocationClaimer claimer = new PekkoAllocationClaimer(system,
                 Duration.ofMillis(config.getDuration("ask-timeout").toMillis()));
         return new SchedulerService(finder,
                 List.of(new HostnameFilter(), new CapacityFilter(), new AvailabilityZoneFilter(), new GpuFilter()),
-                List.of(new SchedulerService.WeightedScorer(new CpuBalanceScorer(), 0.4),
-                        new SchedulerService.WeightedScorer(new MemoryBalanceScorer(), 0.4),
-                        new SchedulerService.WeightedScorer(new GpuFragmentationScorer(), 0.2)),
+                List.of(new SchedulerService.WeightedScorer(new CpuBalanceScorer(), 0.5),
+                        new SchedulerService.WeightedScorer(new MemoryBalanceScorer(), 0.5)),
                 claimer, config.getInt("max-claim-attempts"), SchedulerMetrics.NOOP);
     }
 }

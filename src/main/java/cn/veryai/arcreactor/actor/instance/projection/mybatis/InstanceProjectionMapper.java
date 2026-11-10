@@ -68,6 +68,12 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateNovaDeletion(
+            @Param("instanceId") String instanceId,
+            @Param("serverId") String serverId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updateFailure(
             @Param("instanceId") String instanceId,
             @Param("phase") String phase,

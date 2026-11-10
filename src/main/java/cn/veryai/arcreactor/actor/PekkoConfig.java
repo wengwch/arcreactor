@@ -5,7 +5,7 @@ import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.internal.DefaultHypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerFactory;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerService;
-import cn.veryai.arcreactor.repo.HypervisorReadRepo;
+import cn.veryai.arcreactor.repo.HypervisorHostRepo;
 import java.time.Duration;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -20,8 +20,8 @@ class PekkoConfig {
   }
 
   @Bean
-  SchedulerService schedulerService(ActorSystem<Void> actorSystem, HypervisorReadRepo readMapper) {
-    return SchedulerFactory.create(actorSystem, readMapper);
+  SchedulerService schedulerService(ActorSystem<Void> actorSystem, HypervisorHostRepo hostRepo) {
+    return SchedulerFactory.create(actorSystem, hostRepo);
   }
 
   @Bean

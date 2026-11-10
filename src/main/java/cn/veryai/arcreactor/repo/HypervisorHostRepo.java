@@ -39,6 +39,13 @@ public class HypervisorHostRepo {
         return mapper.findAll();
     }
 
+    public List<HypervisorHostEntity> findCandidates(
+            int vcpus, long memoryGb, long diskGb, String availabilityZone, int gpuCount,
+            String regionId, String hypervisorType, String hostname, int limit) {
+        return mapper.findCandidates(vcpus, memoryGb, diskGb, availabilityZone, gpuCount,
+                regionId, hypervisorType, hostname, limit);
+    }
+
     public int update(HypervisorHostEntity entity) {
         return mapper.update(entity);
     }

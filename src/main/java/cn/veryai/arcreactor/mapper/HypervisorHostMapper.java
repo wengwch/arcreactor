@@ -21,6 +21,17 @@ public interface HypervisorHostMapper {
 
     List<HypervisorHostEntity> findAll();
 
+    List<HypervisorHostEntity> findCandidates(
+            @Param("vcpus") int vcpus,
+            @Param("memoryGb") long memoryGb,
+            @Param("diskGb") long diskGb,
+            @Param("availabilityZone") String availabilityZone,
+            @Param("gpuCount") int gpuCount,
+            @Param("regionId") String regionId,
+            @Param("hypervisorType") String hypervisorType,
+            @Param("hostname") String hostname,
+            @Param("limit") int limit);
+
     int update(HypervisorHostEntity entity);
 
     int deleteById(@Param("id") String id);

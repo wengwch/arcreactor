@@ -13,6 +13,7 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
+import cn.veryai.arcreactor.actor.instance.event.NovaDeletionAccepted;
 import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
 import cn.veryai.arcreactor.actor.instance.event.ParentPortPreparationStarted;
@@ -85,6 +86,8 @@ public final class InstanceProjectionHandler
             mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
         } else if (event instanceof InstanceDeletionStarted) {
             mapper.updatePhase(instanceId, "DELETING", version, timestamp);
+        } else if (event instanceof NovaDeletionAccepted accepted) {
+            mapper.updateNovaDeletion(instanceId, accepted.serverId(), version, timestamp);
         } else if (event instanceof InstanceDeleted) {
             mapper.updatePhase(instanceId, "DELETED", version, timestamp);
         } else if (event instanceof InstanceActivated) {

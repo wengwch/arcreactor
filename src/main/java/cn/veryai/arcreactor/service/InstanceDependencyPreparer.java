@@ -110,7 +110,8 @@ public class InstanceDependencyPreparer {
                 }
                 return new PreparedDependencies(projectId,
                         new ShareRequirement(userId, share.shareId(), resolvedShare), preparedShare,
-                        resolved.withSubNetwork(readyNetwork.networkId(), readyNetwork.subnetId()));
+                        resolved.withSubNetwork(readyNetwork.networkId(), readyNetwork.subnetId(),
+                                readyNetwork.localNetworkId()));
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 throw new BaseException(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_INTERRUPTED, exception);

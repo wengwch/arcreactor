@@ -1,5 +1,7 @@
 package cn.veryai.arcreactor.actor.instance;
 
+import static cn.veryai.arcreactor.actor.instance.InstanceOperationIds.*;
+
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
@@ -21,8 +23,12 @@ import cn.veryai.arcreactor.actor.instance.command.ForwardingPreparationTimedOut
 import cn.veryai.arcreactor.actor.instance.command.ForwardingStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
 import cn.veryai.arcreactor.actor.instance.command.NetworkPreparationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.NovaDeletionChecked;
 import cn.veryai.arcreactor.actor.instance.command.ProvisioningCompleted;
+import cn.veryai.arcreactor.actor.instance.command.RecoveryStepCompleted;
+import cn.veryai.arcreactor.actor.instance.command.RecoveryTimedOut;
 import cn.veryai.arcreactor.actor.instance.command.RetryConfirm;
+import cn.veryai.arcreactor.actor.instance.command.RetryRecovery;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingFailed;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationCompleted;
@@ -41,6 +47,7 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceDeletionStarted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
+import cn.veryai.arcreactor.actor.instance.event.NovaDeletionAccepted;
 import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
 import cn.veryai.arcreactor.actor.instance.event.ParentPortPreparationStarted;
@@ -106,6 +113,8 @@ public final class InstanceWorkflowActor
   private static final String FORWARDING_DEADLINE_TIMER = "forwarding-preparation-deadline";
   private static final String NETWORK_TIMER = "network-preparation";
   private static final String SECURITY_GROUP_TIMER = "security-group-preparation";
+  private static final String RECOVERY_TIMER = "instance-recovery";
+  private static final String RECOVERY_DEADLINE_TIMER = "instance-recovery-deadline";
   private static final Executor CLOUD_INIT_EXECUTOR =
       task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
 
@@ -119,14 +128,17 @@ public final class InstanceWorkflowActor
   private final InstanceDependencyPreparer dependencyPreparer;
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
+  private final InstanceRecovery recovery;
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private String dependencyRequestToken;
   private String forwardingRequestToken;
   private String networkRequestToken;
   private String securityGroupRequestToken;
-  private CompletionStage<String> securityGroupRequest;
+  private CompletionStage<?> securityGroupRequest;
   private String novaRequestToken;
   private String deletionRequestToken;
+  private InstancePhase recoveringPhase;
+  private String recoveryRequestToken;
 
   public static Behavior<WorkflowCommand> create(
       String instanceId,
@@ -180,6 +192,8 @@ public final class InstanceWorkflowActor
     this.dependencyPreparer = Objects.requireNonNull(dependencyPreparer);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
+    this.recovery = new InstanceRecovery(placement, openStackClient, floatingIpForwardings,
+        dependencyPreparer, settings, clock);
   }
 
   @Override
@@ -190,7 +204,7 @@ public final class InstanceWorkflowActor
   @Override
   public CommandHandler<WorkflowCommand, InstanceWorkflowEvent, InstanceWorkflowState>
       commandHandler() {
-    return newCommandHandlerBuilder()
+    var handler = newCommandHandlerBuilder()
         .forAnyState()
         .onCommand(CreateInstance.class, this::onCreate)
         .onCommand(DeleteInstance.class, this::onDelete)
@@ -212,9 +226,23 @@ public final class InstanceWorkflowActor
         .onCommand(ConfirmRejected.class, this::onConfirmRejected)
         .onCommand(ConfirmUnknown.class, this::onConfirmUnknown)
         .onCommand(RetryConfirm.class, this::onRetryConfirm)
+        .onCommand(NovaDeletionChecked.class, this::onNovaDeletionChecked)
         .onCommand(DeletionCompleted.class, this::onDeletionCompleted)
         .onCommand(CheckDeletion.class, this::onCheckDeletion)
+        .onCommand(RetryRecovery.class, this::onRetryRecovery)
+        .onCommand(RecoveryStepCompleted.class, this::onRecoveryStepCompleted)
+        .onCommand(RecoveryTimedOut.class, this::onRecoveryTimedOut)
         .build();
+    return (state, command) -> {
+      // Results from the previous incarnation must not enter normal creation/deletion handlers.
+      if (recoveringPhase != null
+          && !(command instanceof RetryRecovery || command instanceof RecoveryStepCompleted
+              || command instanceof RecoveryTimedOut || command instanceof GetInstanceState
+              || command instanceof CreateInstance || command instanceof DeleteInstance)) {
+        return Effect().none();
+      }
+      return handler.apply(state, command);
+    };
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCreate(
@@ -361,10 +389,6 @@ public final class InstanceWorkflowActor
         remaining.isNegative() ? Duration.ZERO : remaining);
   }
 
-  private static String securityGroupOperationId(InstanceWorkflowState state) {
-    return "security-group:" + state.instanceId() + ":" + state.requestId();
-  }
-
   private InstanceWorkflowEvent afterNetworkStage(InstanceWorkflowState state, Instant now) {
     return state.spec().forwarding() == null
         ? novaCreationStarted(state, now)
@@ -457,10 +481,6 @@ public final class InstanceWorkflowActor
 
   private void scheduleNetworkPoll(InstanceWorkflowState state) {
     timers.startSingleTimer(NETWORK_TIMER, new CheckNetwork(state.pollingGeneration()), settings.pollInitialDelay());
-  }
-
-  private static String networkOperationId(InstanceWorkflowState state) {
-    return "network:" + state.instanceId() + ":" + state.requestId();
   }
 
   private void startForwardingPreparation(InstanceWorkflowState state) {
@@ -564,12 +584,6 @@ public final class InstanceWorkflowActor
   }
   private static String forwardingFloatingIpId(InstanceWorkflowState state) {
     return state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
-  }
-  private static String forwardingClaimId(InstanceWorkflowState state) {
-    return forwardingClaimId(state, state.currentForwardingPort());
-  }
-  private static String forwardingClaimId(InstanceWorkflowState state, int internalPort) {
-    return "fip:" + state.instanceId() + ":" + state.requestId() + ":" + internalPort;
   }
   private static boolean matchesForwarding(InstanceWorkflowState state, long generation) {
     return state.phase() == InstancePhase.PREPARING_FORWARDING && state.pollingGeneration() == generation;
@@ -734,6 +748,26 @@ public final class InstanceWorkflowActor
         });
   }
 
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onNovaDeletionChecked(
+      InstanceWorkflowState state, NovaDeletionChecked command) {
+    if (state.phase() != InstancePhase.DELETING || state.pollingGeneration() != command.generation()
+        || deletionRequestToken == null || !deletionRequestToken.equals(command.requestToken())) return Effect().none();
+    deletionRequestToken = null;
+    if (command.failure() != null) {
+      context.getLog().warn("Nova deletion incomplete: instanceId={} reason={}", instanceId, command.failure());
+      scheduleDeletionCheck(state);
+    } else if (command.serverId() == null) {
+      // Only a successful lookup confirming absence allows deletion of dependent resources.
+      startResourceDeletion(state);
+    } else if (!state.novaDeletionAccepted()) {
+      return Effect().persist(new NovaDeletionAccepted(instanceId, command.serverId(), clock.instant()))
+          .thenRun(this::scheduleDeletionCheck);
+    } else {
+      scheduleDeletionCheck(state);
+    }
+    return Effect().none();
+  }
+
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeletionCompleted(
       InstanceWorkflowState state, DeletionCompleted command) {
     if (state.phase() != InstancePhase.DELETING
@@ -770,6 +804,8 @@ public final class InstanceWorkflowActor
 
   private void creationFailed() {
     timers.cancelAll();
+    recoveringPhase = null;
+    recoveryRequestToken = null;
     dependencyRequestToken = null;
     securityGroupRequestToken = null;
     networkRequestToken = null;
@@ -876,6 +912,20 @@ public final class InstanceWorkflowActor
     if (state.phase() != InstancePhase.DELETING || deletionRequestToken != null) return;
     String token = UUID.randomUUID().toString();
     deletionRequestToken = token;
+    CompletionStage<String> request;
+    try {
+      request = deleteNovaServer(state);
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (serverId, error) -> new NovaDeletionChecked(
+        state.pollingGeneration(), token, serverId, error == null ? null : rootCause(error).toString()));
+  }
+
+  private void startResourceDeletion(InstanceWorkflowState state) {
+    if (state.phase() != InstancePhase.DELETING || deletionRequestToken != null) return;
+    String token = UUID.randomUUID().toString();
+    deletionRequestToken = token;
     CompletionStage<Boolean> request;
     try {
       request = deleteResources(state);
@@ -891,10 +941,7 @@ public final class InstanceWorkflowActor
     // A deadline may fire while Neutron is still creating the group or one of its rules.
     CompletionStage<Void> securityGroupSettled = securityGroupRequest == null
         ? CompletableFuture.completedFuture(null) : securityGroupRequest.handle((ignored, error) -> null);
-    CompletionStage<Boolean> forwardingCleanup = deleteNovaServer(state).thenCompose(deleted -> {
-      if (!deleted) return CompletableFuture.completedFuture(false);
-      return deleteForwardings(state);
-    });
+    CompletionStage<Boolean> forwardingCleanup = deleteForwardings(state);
     CompletionStage<Boolean> networkCleanup = forwardingCleanup.thenCompose(deleted -> {
       if (!deleted) return CompletableFuture.completedFuture(false);
       return state.networkPreparation() == null ? CompletableFuture.completedFuture(true)
@@ -917,18 +964,21 @@ public final class InstanceWorkflowActor
     });
   }
 
-  private CompletionStage<Boolean> deleteNovaServer(InstanceWorkflowState state) {
+  /** Returns a still-present server ID; null means a successful lookup confirmed absence. */
+  private CompletionStage<String> deleteNovaServer(InstanceWorkflowState state) {
     if (state.novaServerId() == null && state.novaOperationId() == null) {
-      return CompletableFuture.completedFuture(true);
+      return CompletableFuture.completedFuture(null);
     }
     CompletionStage<OpenStackClient.NovaServer> lookup = state.novaServerId() == null
         ? openStackClient.findServerByOperationId(target(state), state.novaOperationId())
             .thenApply(OpenStackClient.ServerLookupResult::server)
         : openStackClient.getServer(target(state), state.novaServerId());
-    return lookup.thenCompose(server -> server == null ? CompletableFuture.completedFuture(true)
-        : openStackClient.deleteServer(target(state), server.serverId())
-            .thenCompose(ignored -> openStackClient.getServer(target(state), server.serverId()))
-            .thenApply(remaining -> remaining == null));
+    return lookup.thenCompose(server -> {
+      if (server == null) return CompletableFuture.completedFuture(null);
+      if (state.novaDeletionAccepted()) return CompletableFuture.completedFuture(server.serverId());
+      // Acceptance is persisted before subsequent timer-driven lookups; it is not deletion completion.
+      return openStackClient.deleteServer(target(state), server.serverId()).thenApply(ignored -> server.serverId());
+    });
   }
 
   private CompletionStage<Boolean> deleteForwardings(InstanceWorkflowState state) {
@@ -972,18 +1022,6 @@ public final class InstanceWorkflowActor
         state.spec().clusterId(), state.projectId(), state.spec().region());
   }
 
-  private static String reservationId(InstanceWorkflowState state) {
-    return state.reservationId() == null
-        ? "res:" + state.instanceId() + ":" + state.requestId()
-        : state.reservationId();
-  }
-
-  private static String operationId(InstanceWorkflowState state) {
-    return state.novaOperationId() == null
-        ? "nova-create:" + state.instanceId() + ":" + state.requestId()
-        : state.novaOperationId();
-  }
-
   @Override
   public EventHandler<InstanceWorkflowState, InstanceWorkflowEvent> eventHandler() {
     return newEventHandlerBuilder()
@@ -1022,6 +1060,7 @@ public final class InstanceWorkflowActor
         .onEvent(
             InstanceDeletionStarted.class,
             (state, event) -> state.deleting())
+        .onEvent(NovaDeletionAccepted.class, (state, event) -> state.novaDeletionAccepted(event.serverId()))
         .onEvent(InstanceDeleted.class, (state, event) -> state.deleted())
         .onEvent(InstanceActivated.class, (state, event) -> state.active())
         .onEvent(
@@ -1033,45 +1072,149 @@ public final class InstanceWorkflowActor
   @Override
   public SignalHandler<InstanceWorkflowState> signalHandler() {
     return newSignalHandlerBuilder()
-        .onSignal(
-            RecoveryCompleted.class,
-            (state, signal) -> {
-              dependencyRequestToken = null;
-              securityGroupRequestToken = null;
-              securityGroupRequest = null;
-              networkRequestToken = null;
-              novaRequestToken = null;
-              forwardingRequestToken = null;
-              deletionRequestToken = null;
-              context
-                  .getLog()
-                  .info(
-                      "workflow recovery completed instanceId={} requestId={} phase={} "
-                          + "workflowVersion={} hypervisorId={} reservationId={} novaOperationId={} novaServerId={}",
-                      instanceId,
-                      state.requestId(),
-                      state.phase(),
-                      state.version(),
-                      state.hypervisorId(),
-                      state.reservationId(),
-                      state.novaOperationId(),
-                      state.novaServerId());
-              switch (state.phase()) {
-                case SCHEDULING -> startScheduling(state);
-                case PREPARING_DEPENDENCIES -> requestDependencies(state);
-                case PREPARING_SECURITY_GROUP -> startSecurityGroupPreparation(state);
-                case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> requestNetwork(state, false);
-                case PREPARING_FORWARDING -> {
-                  scheduleForwardingDeadline(state);
-                  context.getSelf().tell(new CheckForwardingStatus(state.pollingGeneration(), 1));
-                }
-                case PROVISIONING -> requestProvisioning(state, false);
-                case CONFIRMING -> scheduleConfirmRetry(state);
-                case DELETING -> scheduleDeletionCheck(state);
-                default -> {}
-              }
-            })
+        .onSignal(RecoveryCompleted.class, (state, signal) -> recoverState(state))
         .build();
+  }
+
+  private void recoverState(InstanceWorkflowState state) {
+    timers.cancelAll();
+    dependencyRequestToken = null;
+    securityGroupRequestToken = null;
+    securityGroupRequest = null;
+    networkRequestToken = null;
+    novaRequestToken = null;
+    forwardingRequestToken = null;
+    deletionRequestToken = null;
+    recoveryRequestToken = null;
+    context.getLog().info(
+        "workflow recovery completed instanceId={} requestId={} phase={} "
+            + "workflowVersion={} hypervisorId={} reservationId={} novaOperationId={} novaServerId={}",
+        instanceId, state.requestId(), state.phase(), state.version(), state.hypervisorId(),
+        state.reservationId(), state.novaOperationId(), state.novaServerId());
+    recoveringPhase = switch (state.phase()) {
+      case SCHEDULING, PREPARING_DEPENDENCIES, PREPARING_SECURITY_GROUP,
+          PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK,
+          PREPARING_FORWARDING, PROVISIONING, CONFIRMING, DELETING -> state.phase();
+      default -> null;
+    };
+    if (recoveringPhase == null) return;
+    scheduleRecoveryDeadline(state);
+    if (recoveringPhase == InstancePhase.CONFIRMING || recoveringPhase == InstancePhase.DELETING) {
+      scheduleRecovery(state, 1);
+    } else {
+      requestRecovery(state, 1);
+    }
+  }
+
+  private void requestRecovery(InstanceWorkflowState state, int attempt) {
+    String token = UUID.randomUUID().toString();
+    recoveryRequestToken = token;
+    CompletionStage<InstanceRecovery.Outcome> request = recovery.recover(state);
+    if (state.phase() == InstancePhase.PREPARING_SECURITY_GROUP) securityGroupRequest = request;
+    context.pipeToSelf(request, (outcome, error) -> new RecoveryStepCompleted(
+        state.phase(), state.pollingGeneration(), token, attempt, outcome,
+        error == null ? null : rootCause(error).toString()));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onRetryRecovery(
+      InstanceWorkflowState state, RetryRecovery command) {
+    if (matchesRecovery(state, command.phase(), command.generation()) && recoveryRequestToken == null) {
+      requestRecovery(state, command.attempt());
+    }
+    return Effect().none();
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onRecoveryStepCompleted(
+      InstanceWorkflowState state, RecoveryStepCompleted command) {
+    if (!matchesRecovery(state, command.phase(), command.generation())
+        || recoveryRequestToken == null || !recoveryRequestToken.equals(command.requestToken())) return Effect().none();
+    recoveryRequestToken = null;
+    if (state.phase() == InstancePhase.PREPARING_SECURITY_GROUP) securityGroupRequest = null;
+    if (command.failure() != null || command.outcome() == null) {
+      context.getLog().warn("Instance recovery incomplete: instanceId={} phase={} reason={}",
+          instanceId, state.phase(), command.failure());
+      scheduleRecovery(state, command.attempt() + 1);
+      return Effect().none();
+    }
+    InstanceRecovery.Outcome outcome = recovery.resolveCompletion(state, command.outcome());
+    var effect = outcome.events().isEmpty() ? Effect().none() : Effect().persist(outcome.events());
+    return effect.thenRun(next -> {
+      switch (outcome.action()) {
+        case RETRY -> scheduleRecovery(next, command.attempt() + 1);
+        case CONTINUE_CREATION -> {
+          finishRecovery();
+          continueCreationAfterRecovery(next);
+        }
+        case STOP -> {
+          finishRecovery();
+          if (next.phase() == InstancePhase.FAILED) creationFailed();
+          else if (next.phase() == InstancePhase.ACTIVE) metrics.workflowActive();
+        }
+      }
+    });
+  }
+
+  private boolean matchesRecovery(InstanceWorkflowState state, InstancePhase phase, long generation) {
+    return recoveringPhase == phase && state.phase() == phase && state.pollingGeneration() == generation;
+  }
+
+  private void scheduleRecovery(InstanceWorkflowState state, int attempt) {
+    Duration delay = switch (state.phase()) {
+      case PREPARING_FORWARDING -> settings.pollDelay(attempt);
+      case DELETING -> settings.pollMaxDelay();
+      default -> settings.pollInitialDelay();
+    };
+    timers.startSingleTimer(RECOVERY_TIMER, new RetryRecovery(state.phase(), state.pollingGeneration(), attempt), delay);
+  }
+
+  private static Instant recoveryDeadline(InstanceWorkflowState state) {
+    return switch (state.phase()) {
+      case PREPARING_SECURITY_GROUP -> state.securityGroupPreparation().deadline();
+      case PREPARING_FORWARDING -> state.forwardingPreparationDeadline();
+      default -> null;
+    };
+  }
+
+  private void scheduleRecoveryDeadline(InstanceWorkflowState state) {
+    Instant deadline = recoveryDeadline(state);
+    if (deadline == null) return;
+    Duration remaining = Duration.between(clock.instant(), deadline);
+    timers.startSingleTimer(RECOVERY_DEADLINE_TIMER,
+        new RecoveryTimedOut(state.phase(), state.pollingGeneration(), deadline),
+        remaining.isNegative() || remaining.isZero() ? Duration.ofMillis(1) : remaining);
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onRecoveryTimedOut(
+      InstanceWorkflowState state, RecoveryTimedOut command) {
+    if (!matchesRecovery(state, command.phase(), command.generation())
+        || !Objects.equals(recoveryDeadline(state), command.deadline())) return Effect().none();
+    if (clock.instant().isBefore(command.deadline())) {
+      scheduleRecoveryDeadline(state);
+      return Effect().none();
+    }
+    return state.phase() == InstancePhase.PREPARING_SECURITY_GROUP
+        ? failCreation("SECURITY_GROUP_PREPARATION_TIMEOUT", "Timed out preparing instance security group")
+        : failCreation("FORWARDING_PREPARATION_TIMEOUT", "Timed out preparing port forwarding");
+  }
+
+  private void finishRecovery() {
+    timers.cancel(RECOVERY_TIMER);
+    timers.cancel(RECOVERY_DEADLINE_TIMER);
+    recoveringPhase = null;
+    recoveryRequestToken = null;
+  }
+
+  private void continueCreationAfterRecovery(InstanceWorkflowState state) {
+    // The recovered operation is already persisted. Only the next unstarted operation uses creation logic.
+    switch (state.phase()) {
+      case PREPARING_DEPENDENCIES -> requestDependencies(state);
+      case PREPARING_SECURITY_GROUP -> startSecurityGroupPreparation(state);
+      case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> requestNetwork(state, true);
+      case PREPARING_FORWARDING -> startForwardingPreparation(state);
+      case PROVISIONING -> requestProvisioning(state, true);
+      case CONFIRMING -> startConfirm(state);
+      default -> throw new IllegalStateException("Cannot continue creation after recovery: " + state.phase());
+    }
   }
 
   @Override

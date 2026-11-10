@@ -104,6 +104,35 @@
         SELECT <include refid="columns"/> FROM hypervisor_host ORDER BY name, id
     </select>
 
+    <select id="findCandidates" resultMap="entity">
+        SELECT <include refid="columns"/> FROM hypervisor_host h
+        WHERE h.hypervisor_status = 'ACTIVE'
+          AND h.available_vcpu &gt;= #{vcpus}
+          AND h.available_memory_gb &gt;= #{memoryGb}
+          AND h.available_disk_gb &gt;= #{diskGb}
+          AND h.available_gpu &gt;= #{gpuCount}
+        <if test="availabilityZone != null and availabilityZone.trim() != ''">
+          AND h.availability_zone = #{availabilityZone}
+        </if>
+        <if test="regionId != null and regionId.trim() != ''">
+          AND h.region_id = #{regionId}
+        </if>
+        <if test="hypervisorType != null and hypervisorType.trim() != ''">
+          AND h.hypervisor_type = #{hypervisorType}
+        </if>
+        <!-- Match HostnameFilter's exact comparison before limiting the candidates. -->
+        <if test="hostname != null and hostname.trim() != ''">
+          AND CAST(h.hostname AS BINARY) = CAST(#{hostname} AS BINARY)
+        </if>
+        <!-- Apply GPU packing before LIMIT so fuller eligible hosts are not excluded by ID order. -->
+        ORDER BY
+        <if test="gpuCount &gt; 0">
+          h.available_gpu ASC,
+        </if>
+          h.id
+        LIMIT #{limit}
+    </select>
+
     <update id="update">
         UPDATE hypervisor_host SET
             name = #{name},

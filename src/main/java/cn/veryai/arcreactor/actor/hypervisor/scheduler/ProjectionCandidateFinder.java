@@ -1,22 +1,21 @@
 package cn.veryai.arcreactor.actor.hypervisor.scheduler;
 
-import cn.veryai.arcreactor.enums.HypervisorStatus;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.HypervisorCandidate;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.SchedulingRequest;
-import cn.veryai.arcreactor.repo.HypervisorReadRepo;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.mybatis.HypervisorResourceRow;
+import cn.veryai.arcreactor.entity.HypervisorHostEntity;
+import cn.veryai.arcreactor.repo.HypervisorHostRepo;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 
-/** MyBatis-backed query side of the scheduler. */
+/** Reads projected host resources through the shared host repository. */
 public final class ProjectionCandidateFinder implements CandidateFinder {
-    private final HypervisorReadRepo repo;
+    private final HypervisorHostRepo repo;
     private final Executor blockingExecutor;
     private final int queryLimit;
 
-    public ProjectionCandidateFinder(HypervisorReadRepo repo, Executor blockingExecutor, int queryLimit) {
+    public ProjectionCandidateFinder(HypervisorHostRepo repo, Executor blockingExecutor, int queryLimit) {
         if (queryLimit <= 0) throw new IllegalArgumentException("queryLimit must be positive");
         this.repo = repo;
         this.blockingExecutor = blockingExecutor;
@@ -39,13 +38,13 @@ public final class ProjectionCandidateFinder implements CandidateFinder {
                 .toList(), blockingExecutor);
     }
 
-    private HypervisorCandidate mapCandidate(HypervisorResourceRow row) {
-        return new HypervisorCandidate(row.hypervisorId(), HypervisorStatus.valueOf(row.status()),
-                row.availabilityZone(), row.hostname(),
-                row.totalVcpu(), row.reservedVcpu(), row.usedVcpu(),
-                row.totalMemoryGb(), row.reservedMemoryGb(), row.usedMemoryGb(),
-                row.totalDiskGb(), row.reservedDiskGb(), row.usedDiskGb(),
-                row.totalGpu(), row.reservedGpu(), row.usedGpu(),
-                row.resourceVersion());
+    private HypervisorCandidate mapCandidate(HypervisorHostEntity host) {
+        return new HypervisorCandidate(host.getId(), host.getHypervisorStatus(),
+                host.getAvailabilityZone(), host.getHostname(),
+                host.getVcpus(), host.getReservedVcpu(), host.getUsedVcpus(),
+                host.getRam(), host.getReservedMemoryGb(), host.getUsedRam(),
+                host.getDisk(), host.getReservedDiskGb(), host.getUsedDisk(),
+                host.getGpus(), host.getReservedGpu(), host.getUsedGpus(),
+                host.getResourceVersion());
     }
 }

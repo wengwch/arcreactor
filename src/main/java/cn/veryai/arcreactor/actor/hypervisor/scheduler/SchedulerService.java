@@ -43,13 +43,19 @@ public final class SchedulerService {
     }
 
     public List<ScoredCandidate> rank(List<HypervisorCandidate> candidates, SchedulingRequest request) {
+        Comparator<ScoredCandidate> order = Comparator.comparingDouble(ScoredCandidate::score).reversed();
+        if (request.resources().gpuRequest() > 0) {
+            // Pack GPU requests into the smallest sufficient remainder, including outstanding reservations.
+            // CPU/memory scores only break ties and cannot override GPU packing.
+            order = Comparator.comparingInt((ScoredCandidate scored) -> scored.candidate().availableGpuCount())
+                    .thenComparing(order);
+        }
         return candidates.stream()
                 .filter(candidate -> filters.stream().allMatch(filter -> filter.matches(request, candidate)))
                 .map(candidate -> new ScoredCandidate(candidate, scorers.stream()
                         .mapToDouble(weighted -> weighted.weight() * weighted.scorer().score(request, candidate))
                         .sum()))
-                .sorted(Comparator.comparingDouble(ScoredCandidate::score).reversed()
-                        .thenComparing(scored -> scored.candidate().hypervisorId()))
+                .sorted(order.thenComparing(scored -> scored.candidate().hypervisorId()))
                 .toList();
     }
 
@@ -62,8 +68,9 @@ public final class SchedulerService {
         }
         HypervisorCandidate candidate = ranked.get(index).candidate();
         log.info("scheduler candidate selected hypervisorId={} requestId={} reservationId={} "
-                        + "instanceId={} score={}", candidate.hypervisorId(), request.requestId(),
-                request.reservationId(), request.instanceId(), ranked.get(index).score());
+                        + "instanceId={} gpuRequest={} availableGpu={} score={}", candidate.hypervisorId(), request.requestId(),
+                request.reservationId(), request.instanceId(), request.resources().gpuRequest(),
+                candidate.availableGpuCount(), ranked.get(index).score());
         return allocationClaimer.tryReserve(candidate, request)
                 .exceptionally(error -> ClaimResult.failed(request.reservationId(), error.toString()))
                 .thenCompose(claim -> {
