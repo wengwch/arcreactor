@@ -59,7 +59,9 @@ public final class InstanceRecovery {
         case SCHEDULING -> recoverScheduling(state);
         case PREPARING_DEPENDENCIES -> recoverDependencies(state);
         case PREPARING_SECURITY_GROUP -> recoverSecurityGroup(state);
-        case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> recoverNetwork(state);
+        case PREPARING_PARENT_PORT -> recoverParentPort(state);
+        case PREPARING_SUB_PORT -> recoverSubPort(state);
+        case PREPARING_TRUNK -> recoverTrunk(state);
         case PREPARING_FORWARDING -> recoverForwarding(state);
         case PROVISIONING -> recoverProvisioning(state);
         case CONFIRMING -> recoverConfirmation(state);
@@ -98,37 +100,43 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverSecurityGroup(InstanceWorkflowState state) {
     List<Integer> ports = state.spec().forwarding() == null ? List.of() : state.spec().forwarding().internalPorts();
-    return client.prepareInstanceSecurityGroup(target(state), securityGroupOperationId(state), ports).thenApply(groupId -> {
+    return client.recoverInstanceSecurityGroup(target(state), state.instanceId(), ports).thenApply(groupId -> {
       if (!hasText(groupId)) return failed(state, "SECURITY_GROUP_PREPARATION_FAILED", "Missing instance security group ID");
       return proceed(new SecurityGroupPrepared(state.instanceId(), groupId),
           new ParentPortPreparationStarted(state.instanceId()));
     });
   }
 
-  private CompletionStage<Outcome> recoverNetwork(InstanceWorkflowState state) {
-    // The current stage may already have committed remotely. Only discover it; never resubmit its create.
-    CompletionStage<PreparedNetwork> lookup = switch (state.phase()) {
-      case PREPARING_PARENT_PORT -> client.prepareInstanceParentPort(target(state), networkOperationId(state),
-          state.dependencies().network(), state.securityGroupId(), false);
-      case PREPARING_SUB_PORT -> client.prepareInstanceSubPort(target(state), networkOperationId(state),
-          state.dependencies().network(), state.securityGroupId(), state.networkPreparation().resources(), false);
-      case PREPARING_TRUNK -> client.prepareInstanceTrunk(target(state), networkOperationId(state),
-          state.dependencies().network(), state.networkPreparation().resources(), false);
-      default -> throw new IllegalStateException("Not recovering instance network: " + state.phase());
-    };
-    return lookup.thenApply(resources -> {
-      if (resources == null) return retry();
-      return switch (state.phase()) {
-        case PREPARING_PARENT_PORT -> proceed(new ParentPortPrepared(state.instanceId(), resources),
-            new SubPortPreparationStarted(state.instanceId()));
-        case PREPARING_SUB_PORT -> proceed(new SubPortPrepared(state.instanceId(), resources),
-            new TrunkPreparationStarted(state.instanceId()));
-        case PREPARING_TRUNK -> proceed(new TrunkPrepared(state.instanceId(), resources),
-            state.spec().forwarding() == null ? novaStarted(state)
-                : new ForwardingPreparationStarted(state.instanceId()));
-        default -> throw new IllegalStateException("Not recovering instance network: " + state.phase());
-      };
-    });
+  private CompletionStage<Outcome> recoverParentPort(InstanceWorkflowState state) {
+    // Discover the parent port and its QoS without resubmitting creation.
+    return client.prepareInstanceParentPort(target(state), networkOperationId(state),
+        state.dependencies().network(), state.securityGroupId(), false).thenApply(resources -> {
+          if (resources == null) return retry();
+          return proceed(new ParentPortPrepared(state.instanceId(), resources),
+              new SubPortPreparationStarted(state.instanceId()));
+        });
+  }
+
+  private CompletionStage<Outcome> recoverSubPort(InstanceWorkflowState state) {
+    // Discover the subport, its QoS and floating IP using the recorded parent port.
+    return client.prepareInstanceSubPort(target(state), networkOperationId(state),
+        state.dependencies().network(), state.securityGroupId(), state.networkPreparation().resources(), false)
+        .thenApply(resources -> {
+          if (resources == null) return retry();
+          return proceed(new SubPortPrepared(state.instanceId(), resources),
+              new TrunkPreparationStarted(state.instanceId()));
+        });
+  }
+
+  private CompletionStage<Outcome> recoverTrunk(InstanceWorkflowState state) {
+    // Discover the trunk using the recorded ports without resubmitting creation.
+    return client.prepareInstanceTrunk(target(state), networkOperationId(state),
+        state.dependencies().network(), state.networkPreparation().resources(), false).thenApply(resources -> {
+          if (resources == null) return retry();
+          return proceed(new TrunkPrepared(state.instanceId(), resources),
+              state.spec().forwarding() == null ? novaStarted(state)
+                  : new ForwardingPreparationStarted(state.instanceId()));
+        });
   }
 
   private CompletionStage<Outcome> recoverForwarding(InstanceWorkflowState state) {
@@ -225,7 +233,7 @@ public final class InstanceRecovery {
       }).thenCompose(deleted -> {
         if (!deleted) return CompletableFuture.completedFuture(false);
         return state.securityGroupPreparation() == null ? CompletableFuture.completedFuture(true)
-            : client.deleteInstanceSecurityGroup(target(state), securityGroupOperationId(state)).thenApply(ignored -> true);
+            : client.deleteInstanceSecurityGroup(target(state), state.instanceId()).thenApply(ignored -> true);
       }).thenCompose(deleted -> {
         if (!deleted) return CompletableFuture.completedFuture(false);
         return state.hypervisorId() == null || state.reservationId() == null ? CompletableFuture.completedFuture(true)

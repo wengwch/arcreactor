@@ -9,8 +9,10 @@ import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.instance.command.CheckDeletion;
 import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
-import cn.veryai.arcreactor.actor.instance.command.CheckNetwork;
+import cn.veryai.arcreactor.actor.instance.command.CheckParentPort;
 import cn.veryai.arcreactor.actor.instance.command.CheckProvisioning;
+import cn.veryai.arcreactor.actor.instance.command.CheckSubPort;
+import cn.veryai.arcreactor.actor.instance.command.CheckTrunk;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmRejected;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmUnknown;
@@ -21,8 +23,8 @@ import cn.veryai.arcreactor.actor.instance.command.DependenciesFailed;
 import cn.veryai.arcreactor.actor.instance.command.DependenciesReady;
 import cn.veryai.arcreactor.actor.instance.command.ForwardingStatusCompleted;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
-import cn.veryai.arcreactor.actor.instance.command.NetworkPreparationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.NovaDeletionChecked;
+import cn.veryai.arcreactor.actor.instance.command.ParentPortPreparationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.ProvisioningCompleted;
 import cn.veryai.arcreactor.actor.instance.command.RecoveryStepCompleted;
 import cn.veryai.arcreactor.actor.instance.command.RetryConfirm;
@@ -30,6 +32,8 @@ import cn.veryai.arcreactor.actor.instance.command.RetryRecovery;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingFailed;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.SubPortPreparationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.TrunkPreparationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
@@ -107,7 +111,9 @@ public final class InstanceWorkflowActor
   private static final String CONFIRM_TIMER = "reservation-confirm";
   private static final String DELETION_TIMER = "instance-deletion";
   private static final String FORWARDING_POLL_TIMER = "forwarding-status-poll";
-  private static final String NETWORK_TIMER = "network-preparation";
+  private static final String PARENT_PORT_TIMER = "parent-port-preparation";
+  private static final String SUB_PORT_TIMER = "sub-port-preparation";
+  private static final String TRUNK_TIMER = "trunk-preparation";
   private static final String RECOVERY_TIMER = "instance-recovery";
   private static final Executor CLOUD_INIT_EXECUTOR =
       task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
@@ -126,7 +132,9 @@ public final class InstanceWorkflowActor
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private String dependencyRequestToken;
   private String forwardingRequestToken;
-  private String networkRequestToken;
+  private String parentPortRequestToken;
+  private String subPortRequestToken;
+  private String trunkRequestToken;
   private String securityGroupRequestToken;
   private String novaRequestToken;
   private String deletionRequestToken;
@@ -205,8 +213,12 @@ public final class InstanceWorkflowActor
         .onCommand(DependenciesFailed.class, this::onDependenciesFailed)
         .onCommand(GetInstanceState.class, this::onGetState)
         .onCommand(SecurityGroupPreparationCompleted.class, this::onSecurityGroupPreparationCompleted)
-        .onCommand(CheckNetwork.class, this::onCheckNetwork)
-        .onCommand(NetworkPreparationCompleted.class, this::onNetworkPreparationCompleted)
+        .onCommand(CheckParentPort.class, this::onCheckParentPort)
+        .onCommand(ParentPortPreparationCompleted.class, this::onParentPortPreparationCompleted)
+        .onCommand(CheckSubPort.class, this::onCheckSubPort)
+        .onCommand(SubPortPreparationCompleted.class, this::onSubPortPreparationCompleted)
+        .onCommand(CheckTrunk.class, this::onCheckTrunk)
+        .onCommand(TrunkPreparationCompleted.class, this::onTrunkPreparationCompleted)
         .onCommand(CheckProvisioning.class, this::onCheckProvisioning)
         .onCommand(ProvisioningCompleted.class, this::onProvisioningCompleted)
         .onCommand(CheckForwardingStatus.class, this::onCheckForwardingStatus)
@@ -324,7 +336,7 @@ public final class InstanceWorkflowActor
     List<Integer> ports = state.spec().forwarding() == null ? List.of() : state.spec().forwarding().internalPorts();
     CompletionStage<String> request;
     try {
-      request = openStackClient.prepareInstanceSecurityGroup(target(state), securityGroupOperationId(state),
+      request = openStackClient.prepareInstanceSecurityGroup(target(state), instanceId,
           ports);
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
@@ -348,7 +360,7 @@ public final class InstanceWorkflowActor
     }
     return Effect().persist(List.of(new SecurityGroupPrepared(instanceId, command.securityGroupId()),
             new ParentPortPreparationStarted(instanceId)))
-        .thenRun(next -> requestNetwork(next, true));
+        .thenRun(next -> requestParentPort(next, true));
   }
 
   private InstanceWorkflowEvent afterNetworkStage(InstanceWorkflowState state, Instant now) {
@@ -366,69 +378,154 @@ public final class InstanceWorkflowActor
     return new NovaCreationStarted(instanceId, operationId(state), now);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckNetwork(
-      InstanceWorkflowState state, CheckNetwork command) {
-    if (!state.phase().isPreparingNetwork() || state.pollingGeneration() != command.generation()) return Effect().none();
-    if (networkRequestToken != null) {
-      scheduleNetworkPoll(state);
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckParentPort(
+      InstanceWorkflowState state, CheckParentPort command) {
+    if (state.phase() != InstancePhase.PREPARING_PARENT_PORT
+        || state.pollingGeneration() != command.generation()) return Effect().none();
+    if (parentPortRequestToken != null) {
+      scheduleParentPortPoll(state);
       return Effect().none();
     }
-    requestNetwork(state, false);
+    requestParentPort(state, false);
     return Effect().none();
   }
 
-  private void requestNetwork(InstanceWorkflowState state, boolean allowCreate) {
+  private void requestParentPort(InstanceWorkflowState state, boolean allowCreate) {
     String token = UUID.randomUUID().toString();
-    networkRequestToken = token;
+    parentPortRequestToken = token;
     CompletionStage<PreparedNetwork> request;
     try {
-      request = switch (state.phase()) {
-        case PREPARING_PARENT_PORT -> openStackClient.prepareInstanceParentPort(target(state), networkOperationId(state),
-            state.dependencies().network(), state.securityGroupId(), allowCreate);
-        case PREPARING_SUB_PORT -> openStackClient.prepareInstanceSubPort(target(state), networkOperationId(state),
-            state.dependencies().network(), state.securityGroupId(), state.networkPreparation().resources(), allowCreate);
-        case PREPARING_TRUNK -> openStackClient.prepareInstanceTrunk(target(state), networkOperationId(state),
-            state.dependencies().network(), state.networkPreparation().resources(), allowCreate);
-        default -> throw new IllegalStateException("Not preparing instance network: " + state.phase());
-      };
+      request = openStackClient.prepareInstanceParentPort(target(state), networkOperationId(state),
+          state.dependencies().network(), state.securityGroupId(), allowCreate);
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
     context.pipeToSelf(request, (resources, error) -> {
       Throwable cause = error == null ? null : rootCause(error);
-      return new NetworkPreparationCompleted(state.pollingGeneration(), token, resources,
+      return new ParentPortPreparationCompleted(state.pollingGeneration(), token, resources,
           cause instanceof OpenStackOperationException, cause == null ? null : cause.toString());
     });
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onNetworkPreparationCompleted(
-      InstanceWorkflowState state, NetworkPreparationCompleted command) {
-    if (!state.phase().isPreparingNetwork() || state.pollingGeneration() != command.generation()
-        || !Objects.equals(networkRequestToken, command.requestToken())) return Effect().none();
-    networkRequestToken = null;
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onParentPortPreparationCompleted(
+      InstanceWorkflowState state, ParentPortPreparationCompleted command) {
+    if (state.phase() != InstancePhase.PREPARING_PARENT_PORT || state.pollingGeneration() != command.generation()
+        || parentPortRequestToken == null || !parentPortRequestToken.equals(command.requestToken())) return Effect().none();
+    parentPortRequestToken = null;
     if (command.rejected()) return failCreation("NETWORK_PREPARATION_FAILED", command.detail());
     if (command.resources() == null) {
-      scheduleNetworkPoll(state);
+      scheduleParentPortPoll(state);
       return Effect().none();
     }
-    List<InstanceWorkflowEvent> events = switch (state.phase()) {
-      case PREPARING_PARENT_PORT -> List.of(new ParentPortPrepared(instanceId, command.resources()),
-          new SubPortPreparationStarted(instanceId));
-      case PREPARING_SUB_PORT -> List.of(new SubPortPrepared(instanceId, command.resources()),
-          new TrunkPreparationStarted(instanceId));
-      case PREPARING_TRUNK -> List.of(new TrunkPrepared(instanceId, command.resources()),
-          afterNetworkStage(state, clock.instant()));
-      default -> throw new IllegalStateException("Not preparing instance network: " + state.phase());
-    };
-    return Effect().persist(events).thenRun(next -> {
-      timers.cancel(NETWORK_TIMER);
-      if (next.phase().isPreparingNetwork()) requestNetwork(next, true);
-      else startAfterNetwork(next);
+    return Effect().persist(List.of(new ParentPortPrepared(instanceId, command.resources()),
+        new SubPortPreparationStarted(instanceId))).thenRun(next -> {
+      timers.cancel(PARENT_PORT_TIMER);
+      requestSubPort(next, true);
     });
   }
 
-  private void scheduleNetworkPoll(InstanceWorkflowState state) {
-    timers.startSingleTimer(NETWORK_TIMER, new CheckNetwork(state.pollingGeneration()), settings.pollInitialDelay());
+  private void scheduleParentPortPoll(InstanceWorkflowState state) {
+    timers.startSingleTimer(PARENT_PORT_TIMER, new CheckParentPort(state.pollingGeneration()), settings.pollInitialDelay());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckSubPort(
+      InstanceWorkflowState state, CheckSubPort command) {
+    if (state.phase() != InstancePhase.PREPARING_SUB_PORT
+        || state.pollingGeneration() != command.generation()) return Effect().none();
+    if (subPortRequestToken != null) {
+      scheduleSubPortPoll(state);
+      return Effect().none();
+    }
+    requestSubPort(state, false);
+    return Effect().none();
+  }
+
+  private void requestSubPort(InstanceWorkflowState state, boolean allowCreate) {
+    String token = UUID.randomUUID().toString();
+    subPortRequestToken = token;
+    CompletionStage<PreparedNetwork> request;
+    try {
+      request = openStackClient.prepareInstanceSubPort(target(state), networkOperationId(state),
+          state.dependencies().network(), state.securityGroupId(), state.networkPreparation().resources(), allowCreate);
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (resources, error) -> {
+      Throwable cause = error == null ? null : rootCause(error);
+      return new SubPortPreparationCompleted(state.pollingGeneration(), token, resources,
+          cause instanceof OpenStackOperationException, cause == null ? null : cause.toString());
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSubPortPreparationCompleted(
+      InstanceWorkflowState state, SubPortPreparationCompleted command) {
+    if (state.phase() != InstancePhase.PREPARING_SUB_PORT || state.pollingGeneration() != command.generation()
+        || subPortRequestToken == null || !subPortRequestToken.equals(command.requestToken())) return Effect().none();
+    subPortRequestToken = null;
+    if (command.rejected()) return failCreation("NETWORK_PREPARATION_FAILED", command.detail());
+    if (command.resources() == null) {
+      scheduleSubPortPoll(state);
+      return Effect().none();
+    }
+    return Effect().persist(List.of(new SubPortPrepared(instanceId, command.resources()),
+        new TrunkPreparationStarted(instanceId))).thenRun(next -> {
+      timers.cancel(SUB_PORT_TIMER);
+      requestTrunk(next, true);
+    });
+  }
+
+  private void scheduleSubPortPoll(InstanceWorkflowState state) {
+    timers.startSingleTimer(SUB_PORT_TIMER, new CheckSubPort(state.pollingGeneration()), settings.pollInitialDelay());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckTrunk(
+      InstanceWorkflowState state, CheckTrunk command) {
+    if (state.phase() != InstancePhase.PREPARING_TRUNK
+        || state.pollingGeneration() != command.generation()) return Effect().none();
+    if (trunkRequestToken != null) {
+      scheduleTrunkPoll(state);
+      return Effect().none();
+    }
+    requestTrunk(state, false);
+    return Effect().none();
+  }
+
+  private void requestTrunk(InstanceWorkflowState state, boolean allowCreate) {
+    String token = UUID.randomUUID().toString();
+    trunkRequestToken = token;
+    CompletionStage<PreparedNetwork> request;
+    try {
+      request = openStackClient.prepareInstanceTrunk(target(state), networkOperationId(state),
+          state.dependencies().network(), state.networkPreparation().resources(), allowCreate);
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (resources, error) -> {
+      Throwable cause = error == null ? null : rootCause(error);
+      return new TrunkPreparationCompleted(state.pollingGeneration(), token, resources,
+          cause instanceof OpenStackOperationException, cause == null ? null : cause.toString());
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onTrunkPreparationCompleted(
+      InstanceWorkflowState state, TrunkPreparationCompleted command) {
+    if (state.phase() != InstancePhase.PREPARING_TRUNK || state.pollingGeneration() != command.generation()
+        || trunkRequestToken == null || !trunkRequestToken.equals(command.requestToken())) return Effect().none();
+    trunkRequestToken = null;
+    if (command.rejected()) return failCreation("NETWORK_PREPARATION_FAILED", command.detail());
+    if (command.resources() == null) {
+      scheduleTrunkPoll(state);
+      return Effect().none();
+    }
+    return Effect().persist(List.of(new TrunkPrepared(instanceId, command.resources()),
+        afterNetworkStage(state, clock.instant()))).thenRun(next -> {
+      timers.cancel(TRUNK_TIMER);
+      startAfterNetwork(next);
+    });
+  }
+
+  private void scheduleTrunkPoll(InstanceWorkflowState state) {
+    timers.startSingleTimer(TRUNK_TIMER, new CheckTrunk(state.pollingGeneration()), settings.pollInitialDelay());
   }
 
   private void startForwardingPreparation(InstanceWorkflowState state) {
@@ -733,7 +830,9 @@ public final class InstanceWorkflowActor
     recoveryRequestToken = null;
     dependencyRequestToken = null;
     securityGroupRequestToken = null;
-    networkRequestToken = null;
+    parentPortRequestToken = null;
+    subPortRequestToken = null;
+    trunkRequestToken = null;
     novaRequestToken = null;
     forwardingRequestToken = null;
     metrics.workflowFailed();
@@ -871,7 +970,7 @@ public final class InstanceWorkflowActor
     CompletionStage<Boolean> securityGroupCleanup = networkCleanup.thenCompose(deleted -> {
       if (!deleted) return CompletableFuture.completedFuture(false);
       return state.securityGroupPreparation() == null ? CompletableFuture.completedFuture(true)
-          : openStackClient.deleteInstanceSecurityGroup(target(state), securityGroupOperationId(state))
+          : openStackClient.deleteInstanceSecurityGroup(target(state), instanceId)
               .thenApply(ignored -> true);
     });
     return securityGroupCleanup.thenCompose(deleted -> {
@@ -999,7 +1098,9 @@ public final class InstanceWorkflowActor
     timers.cancelAll();
     dependencyRequestToken = null;
     securityGroupRequestToken = null;
-    networkRequestToken = null;
+    parentPortRequestToken = null;
+    subPortRequestToken = null;
+    trunkRequestToken = null;
     novaRequestToken = null;
     forwardingRequestToken = null;
     deletionRequestToken = null;
@@ -1093,7 +1194,9 @@ public final class InstanceWorkflowActor
     switch (state.phase()) {
       case PREPARING_DEPENDENCIES -> requestDependencies(state);
       case PREPARING_SECURITY_GROUP -> startSecurityGroupPreparation(state);
-      case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> requestNetwork(state, true);
+      case PREPARING_PARENT_PORT -> requestParentPort(state, true);
+      case PREPARING_SUB_PORT -> requestSubPort(state, true);
+      case PREPARING_TRUNK -> requestTrunk(state, true);
       case PREPARING_FORWARDING -> startForwardingPreparation(state);
       case PROVISIONING -> requestProvisioning(state, true);
       case CONFIRMING -> startConfirm(state);

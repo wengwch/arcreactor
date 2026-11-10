@@ -14,9 +14,5 @@ public enum InstancePhase {
     ACTIVE,
     DELETING,
     DELETED,
-    FAILED;
-
-    public boolean isPreparingNetwork() {
-        return this == PREPARING_PARENT_PORT || this == PREPARING_SUB_PORT || this == PREPARING_TRUNK;
-    }
+    FAILED
 }

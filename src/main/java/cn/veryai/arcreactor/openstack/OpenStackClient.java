@@ -423,14 +423,39 @@ public class OpenStackClient {
     return "veryai:pf:" + key;
   }
 
-  /** Resume the instance's own group and missing rules after recovery, before creating any ports. */
-  public CompletionStage<String> prepareInstanceSecurityGroup(ServerTarget target, String operationId,
+  /** Creates the instance's own group and ingress rules before creating any ports. */
+  public CompletionStage<String> prepareInstanceSecurityGroup(ServerTarget target, String instanceId,
       List<Integer> internalPorts) {
     List<Integer> ports = List.copyOf(internalPorts);
     if (ports.stream().anyMatch(port -> port < 1 || port > 65535)) {
       throw new IllegalArgumentException("Invalid instance security group port");
     }
-    String marker = instanceSecurityGroupMarker(operationId);
+    String marker = instanceSecurityGroupMarker(instanceId);
+    return CompletableFuture.supplyAsync(() -> {
+      OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
+      SecurityGroup group = client.networking().securitygroup().create(Builders.securityGroup()
+          .name(marker).description(marker).tenantId(target.projectId()).build());
+      if (group == null || group.getId() == null || group.getId().isBlank()
+          || !target.projectId().equals(group.getTenantId()) || !marker.equals(group.getDescription())) {
+        throw new OpenStackOperationException("Missing or mismatched instance security group", null);
+      }
+      for (int port : ports) {
+        for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
+          createInstanceSecurityRule(client, group.getId(), port, protocol, marker);
+        }
+      }
+      return group.getId();
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** Independently resumes the instance's group and missing rules after recovery. */
+  public CompletionStage<String> recoverInstanceSecurityGroup(ServerTarget target, String instanceId,
+      List<Integer> internalPorts) {
+    List<Integer> ports = List.copyOf(internalPorts);
+    if (ports.stream().anyMatch(port -> port < 1 || port > 65535)) {
+      throw new IllegalArgumentException("Invalid instance security group port");
+    }
+    String marker = instanceSecurityGroupMarker(instanceId);
     return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
       List<? extends SecurityGroup> matches = findInstanceSecurityGroups(client, target.projectId(), marker);
@@ -455,20 +480,25 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
+  private void createInstanceSecurityRule(OSClient.OSClientV3 client, String groupId, int internalPort,
+      NetProtocol protocol, String groupMarker) {
+    SecurityGroupRule created = client.networking().securityrule().create(Builders.securityGroupRule()
+        .securityGroupId(groupId).protocol(protocol.name().toLowerCase(Locale.ROOT)).direction("ingress")
+        .ethertype("IPv4").portRangeMin(internalPort).portRangeMax(internalPort).remoteIpPrefix("0.0.0.0/0")
+        .description(groupMarker + ":" + protocol.name().toLowerCase(Locale.ROOT) + ":" + internalPort).build());
+    if (created == null || created.getId() == null || created.getId().isBlank()
+        || !allowsInstancePort(created, groupId, internalPort, protocol)) {
+      throw new OpenStackOperationException("Missing or mismatched instance security rule", null);
+    }
+  }
+
   private void ensureInstanceSecurityRule(OSClient.OSClientV3 client, String groupId, int internalPort,
       NetProtocol protocol, String groupMarker) {
     var service = client.networking().securityrule();
     if (service.list(Map.of("security_group_id", groupId)).stream()
         .anyMatch(rule -> allowsInstancePort(rule, groupId, internalPort, protocol))) return;
     try {
-      SecurityGroupRule created = service.create(Builders.securityGroupRule().securityGroupId(groupId)
-          .protocol(protocol.name().toLowerCase(Locale.ROOT)).direction("ingress").ethertype("IPv4")
-          .portRangeMin(internalPort).portRangeMax(internalPort).remoteIpPrefix("0.0.0.0/0")
-          .description(groupMarker + ":" + protocol.name().toLowerCase(Locale.ROOT) + ":" + internalPort).build());
-      if (created == null || created.getId() == null || created.getId().isBlank()
-          || !allowsInstancePort(created, groupId, internalPort, protocol)) {
-        throw new OpenStackOperationException("Missing or mismatched instance security rule", null);
-      }
+      createInstanceSecurityRule(client, groupId, internalPort, protocol, groupMarker);
     } catch (ResponseException error) {
       // An earlier request may have completed while recovery was querying the group's rules.
       if (error.getStatus() != 409 || service.list(Map.of("security_group_id", groupId)).stream()
@@ -482,16 +512,16 @@ public class OpenStackClient {
         .filter(group -> projectId.equals(group.getTenantId()) && marker.equals(group.getDescription())).toList();
   }
 
-  private static String instanceSecurityGroupMarker(String operationId) {
-    requireServerText(operationId, "operationId");
-    return "arcreactor-" + UUID.nameUUIDFromBytes(operationId.getBytes(StandardCharsets.UTF_8)) + "-security-group";
+  private static String instanceSecurityGroupMarker(String instanceId) {
+    requireServerText(instanceId, "instanceId");
+    return "veryai:sg:" + instanceId;
   }
 
   /** Called after instance ports have been removed. Also finds groups whose create response was lost. */
-  public CompletionStage<Void> deleteInstanceSecurityGroup(ServerTarget target, String operationId) {
+  public CompletionStage<Void> deleteInstanceSecurityGroup(ServerTarget target, String instanceId) {
     return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
-      for (SecurityGroup group : findInstanceSecurityGroups(client, target.projectId(), instanceSecurityGroupMarker(operationId))) {
+      for (SecurityGroup group : findInstanceSecurityGroups(client, target.projectId(), instanceSecurityGroupMarker(instanceId))) {
         requireDeleteResponse(client.networking().securitygroup().delete(group.getId()));
       }
     }, NETWORK_EXECUTOR);

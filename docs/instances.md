@@ -316,13 +316,15 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 参数定义见 [Jupyter Server 配置文档](https://jupyter-server.readthedocs.io/en/stable/other/full-config.html#ServerApp.port)。
 `forwarding-ports` 配置转发目标和安全组放行端口，镜像中的 SSH/JupyterLab 服务仍须监听对应内部端口。
 
-依赖就绪后先持久化 `SecurityGroupPreparationStarted`，再异步创建实例专属安全组和入站规则。
+依赖就绪后先持久化 `SecurityGroupPreparationStarted`，再调用 `prepareInstanceSecurityGroup()`
+直接创建实例专属安全组和 TCP/UDP 入站规则，创建流程不查询已有安全组或规则。
 整组规则就绪后持久化 `SecurityGroupPrepared`，记录安全组 ID，再开始创建端口；失败使用
 `InstanceProvisioningFailed` 记录失败原因并进入 `FAILED`，不重新提交失败的安全组创建流程。
-安全组名称和描述包含由实例 ID、请求 ID 生成的操作标识，重启恢复时先查询匹配的安全组，
-复用已有组并补齐缺失规则；找到多个匹配组则失败，避免任意选择。
+安全组名称和描述统一为 `veryai-{instanceId}-security-group`，创建、恢复和删除均使用实例 ID。
+重启恢复调用独立的 `recoverInstanceSecurityGroup()`，先查询匹配的安全组，
+存在则复用，不存在才创建，并补齐缺失规则；找到多个匹配组则失败，避免任意选择。
 准备阶段直接等待异步调用结果，不设置业务截止时间。
-查找与创建并非原子操作，旧请求在远端继续执行时仍可能出现重复创建窗口。
+恢复中的查找与创建并非原子操作，旧请求在远端继续执行时仍可能出现重复创建窗口。
 
 网络创建拆分为三个持久化阶段，每个阶段只执行当前资源的 OpenStack 操作：
 
@@ -331,6 +333,12 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 | `PREPARING_PARENT_PORT` | `ParentPortPreparationStarted` | `ParentPortPrepared` | `prepareInstanceParentPort()`，创建父端口及其 QoS |
 | `PREPARING_SUB_PORT` | `SubPortPreparationStarted` | `SubPortPrepared` | `prepareInstanceSubPort()`，沿用父端口 MAC 创建子端口及其 QoS，分配并关联专属浮动 IP |
 | `PREPARING_TRUNK` | `TrunkPreparationStarted` | `TrunkPrepared` | `prepareInstanceTrunk()`，使用父子端口 ID 创建 Trunk 并关联 VLAN |
+
+Actor 分别通过 `requestParentPort()`、`requestSubPort()`、`requestTrunk()` 执行三个阶段，
+每个阶段拥有独立的轮询命令、完成命令、定时器和请求标识，阶段、轮询代次及请求标识共同过滤迟到结果。
+各自的完成处理明确持久化下一阶段的开始事件，并启动对应请求；当前顺序为父端口 → 子端口 → Trunk。
+修改阶段组合时，在对应完成处理处调整衔接；恢复流程分别由独立的 `recoverParentPort()`、
+`recoverSubPort()`、`recoverTrunk()` 处理，同步调整恢复完成后的下一阶段事件即可。
 
 当前阶段的就绪事件和下一阶段的创建意图一起持久化，之后才调用下一阶段。
 父端口就绪时保存 ID、MAC 和固定 IP；子端口就绪时追加其 ID、固定 IP、浮动 IP ID 和地址；Trunk 就绪时追加 Trunk ID。

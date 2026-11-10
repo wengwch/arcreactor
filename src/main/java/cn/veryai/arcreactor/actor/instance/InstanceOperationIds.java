@@ -16,10 +16,6 @@ final class InstanceOperationIds {
         ? "nova-create:" + state.instanceId() + ":" + state.requestId() : state.novaOperationId();
   }
 
-  static String securityGroupOperationId(InstanceWorkflowState state) {
-    return "security-group:" + state.instanceId() + ":" + state.requestId();
-  }
-
   static String networkOperationId(InstanceWorkflowState state) {
     return "network:" + state.instanceId() + ":" + state.requestId();
   }
