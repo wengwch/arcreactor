@@ -8,7 +8,6 @@ import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorEvent;
 import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorMaintenanceEntered;
 import cn.veryai.arcreactor.actor.hypervisor.event.ReservationCancelled;
 import cn.veryai.arcreactor.actor.hypervisor.event.ReservationConfirmed;
-import cn.veryai.arcreactor.actor.hypervisor.event.ReservationExpired;
 import cn.veryai.arcreactor.actor.hypervisor.event.ResourcesReleased;
 import cn.veryai.arcreactor.actor.hypervisor.event.ResourcesReserved;
 import cn.veryai.arcreactor.actor.hypervisor.projection.mybatis.HypervisorProjectionMapper;
@@ -39,8 +38,6 @@ public final class HypervisorProjectionHandler
             written = mapper.applyResourceDelta(hypervisorId, confirmed.reservation().resources(), -1, 1, version, timestamp);
         } else if (event instanceof ReservationCancelled cancelled) {
             written = mapper.applyResourceDelta(hypervisorId, cancelled.reservation().resources(), -1, 0, version, timestamp);
-        } else if (event instanceof ReservationExpired expired) {
-            written = mapper.applyResourceDelta(hypervisorId, expired.reservation().resources(), -1, 0, version, timestamp);
         } else if (event instanceof ResourcesReleased released) {
             written = mapper.applyResourceDelta(hypervisorId, released.allocation().resources(), 0, -1, version, timestamp);
         } else if (event instanceof HypervisorEnabled) {

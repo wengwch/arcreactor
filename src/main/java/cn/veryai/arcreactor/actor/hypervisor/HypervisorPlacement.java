@@ -1,7 +1,6 @@
 package cn.veryai.arcreactor.actor.hypervisor;
 
 import java.io.Serializable;
-import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 
@@ -28,7 +27,6 @@ public interface HypervisorPlacement {
             String reservationId,
             String instanceId,
             Resources resources,
-            Duration reservationTtl,
             String availabilityZone,
             String regionId,
             String hypervisorType,
@@ -38,9 +36,6 @@ public interface HypervisorPlacement {
             requireText(reservationId, "reservationId");
             requireText(instanceId, "instanceId");
             Objects.requireNonNull(resources, "resources");
-            if (reservationTtl == null || reservationTtl.isNegative() || reservationTtl.isZero()) {
-                throw new IllegalArgumentException("reservationTtl must be positive");
-            }
         }
     }
 

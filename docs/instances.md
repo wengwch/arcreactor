@@ -37,7 +37,7 @@ GPU 请求采用堆叠调度：满足全部资源要求后，优先选择可用 
 请求不需要 GPU 时，按 CPU、内存综合评分选择宿主机。
 磁盘需求取规格的 `disk`，以 `diskGb` 随创建请求和调度请求传递；宿主机在维护状态下人工同步
 OpenStack 数据，启用时先向 Actor 提交容量和基础占用。候选查询和 Actor 最终预留都会检查剩余磁盘，
-预留、确认、取消、过期和释放均同步更新资源计数，可用磁盘等于 `disk - used_disk - reserved_disk_gb`。
+预留、确认、取消和释放均同步更新资源计数，可用磁盘等于 `disk - used_disk - reserved_disk_gb`。
 `description` 保存在实例工作流的 metadata 中，并作为 Nova metadata 提交。
 
 ## 服务端默认配置
@@ -55,7 +55,6 @@ MANILA_FS_NAME=<实际的 Ceph 文件系统名称>
 | 配置 | 环境变量 | 默认值 |
 | --- | --- | --- |
 | `share-size` | `INSTANCE_SHARE_SIZE` | 100 GB |
-| `dependency-preparation-timeout` | `INSTANCE_DEPENDENCY_PREPARATION_TIMEOUT` | 10 分钟，项目、Share、用户网络共用 |
 | `dependency-poll-interval` | `INSTANCE_DEPENDENCY_POLL_INTERVAL` | 2 秒，查询 UserActor 的资源状态 |
 | `forwarding-ports` | `INSTANCE_FORWARDING_PORTS` | `22,8888`，每个内部端口独立分配公网端口 |
 | `network-cidr` | `INSTANCE_NETWORK_CIDR` | `10.0.0.0/16` |
@@ -133,7 +132,7 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，进入 `SCHEDULING` 并立即回复受理；
 先根据区域、宿主机类型和 CPU、内存、磁盘、GPU 规格选择宿主机并预留资源。
 调度失败直接进入 `FAILED`，不启动依赖和实例专属资源的创建。
-调度成功后持久化 `HypervisorSelected` 和 `DependencyPreparationStarted`，保存宿主机、预留 ID 和依赖准备截止时间，
+调度成功后持久化 `HypervisorSelected` 和 `DependencyPreparationStarted`，保存宿主机和预留 ID，
 进入 `PREPARING_DEPENDENCIES` 后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
 再等待 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createShare()`、`createNetwork()`，
 创建请求持久化后即返回当前状态，首次受理为 `IN_PROGRESS`，已有资源直接返回其当前状态。
@@ -141,16 +140,16 @@ InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，�
 仅 `READY` 才继续下一步，`FAILED`、`REJECTED` 直接结束准备。
 ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时才重新提交幂等创建命令。
 准备器向 UserActor 发送的创建和查询 ask 均使用 `cloud.user.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
-准备过程共用 `dependency-preparation-timeout`，从调度成功后开始计时，绝对截止时间随 `DependencyPreparationStarted` 持久化。
+依赖准备不设置整体截止时间，持续查询至资源就绪或明确失败。
 结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 访问数据和父子网络/子网 ID，
 再创建专属安全组，随后依次进入父端口、子端口和 Trunk 三个阶段。
 原始请求规格保持不变，重复请求仍按原始规格判断幂等。
-准备失败或超时直接持久化实例 `FAILED` 及失败码，用户级依赖资源继续保留。
+准备失败直接持久化实例 `FAILED` 及失败码，用户级依赖资源继续保留。
 若 Actor 恢复时仍处于 `SCHEDULING`，使用原请求和预留 ID 继续调度；宿主机选定并进入后续阶段后不再调度。
-若仍处于 `PREPARING_DEPENDENCIES`，保留选定的宿主机和资源预留，使用原始规格和原截止时间重新执行准备器：
+若仍处于 `PREPARING_DEPENDENCIES`，保留选定的宿主机和资源预留，使用原始规格重新执行准备器：
 同规格创建命令只返回已持久化的资源状态，已有 `READY` 资源直接复用，未完成资源继续查询。
-停机时间计入准备超时，重启不会延长截止时间；已记录的失败不会自动重试。
+已记录的失败不会自动重试。
 当前 `pekko.cluster.sharding.remember-entities = off`，应用启动不会主动唤醒所有历史实例。
 实例收到消息（例如 `InstanceService.get(instanceId)`）后才恢复，准备器的创建和查询消息会唤醒对应 UserActor。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
@@ -223,8 +222,8 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
 每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。
 未配置端口转发时，Trunk 就绪后直接进入 `PROVISIONING`；两条路径都使用第一步已选定的宿主机。
-整个转发阶段共用 `cloud.instance.forwarding-preparation-timeout`（默认 5 分钟）。
-重启后沿用已持久化的候选、内部端口、已完成映射和截止时间，查询当前未完成的 claim；
+转发阶段不设置整体等待超时，保留轮询以等待异步创建完成。
+重启后沿用已持久化的候选、内部端口和已完成映射，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
 
 FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED`。
@@ -249,7 +248,7 @@ Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
 端口预留沿用本次创建的 generation，统一由最终结果完成该操作。
 
 创建直接依次提交 TCP、UDP 规则，不调用规则列表接口，也不查询或复用已有规则。
-创建事件不保存截止时间，SDK 方法和 Actor 均不额外设置创建超时；底层 HTTP 超时和实例整体转发阶段超时仍按各自配置执行。
+创建事件不保存截止时间，SDK 方法和 Actor 均不额外设置创建超时；底层 HTTP 超时仍按 SDK 配置执行。
 规则描述中的操作标识为 `veryai:pf:<claimId>:<protocol>`，协议为 `TCP` 或 `UDP`，供创建恢复时定位资源。
 `signalHandler` 收到 `RecoveryCompleted` 后通过独立的 `recoverState → recoverClaim` 按持久化状态分流。
 `CREATING` 通过 `recoverCreation → OpenStackClient.recoverPortForwardings()` 恢复；恢复入口和远端操作编排
@@ -322,7 +321,7 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 `InstanceProvisioningFailed` 记录失败原因并进入 `FAILED`，不重新提交失败的安全组创建流程。
 安全组名称和描述包含由实例 ID、请求 ID 生成的操作标识，重启恢复时先查询匹配的安全组，
 复用已有组并补齐缺失规则；找到多个匹配组则失败，避免任意选择。
-准备阶段沿用已持久化的截止时间，时长使用 `cloud.instance.provisioning-timeout`。
+准备阶段直接等待异步调用结果，不设置业务截止时间。
 查找与创建并非原子操作，旧请求在远端继续执行时仍可能出现重复创建窗口。
 
 网络创建拆分为三个持久化阶段，每个阶段只执行当前资源的 OpenStack 操作：
@@ -342,24 +341,23 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 `InstanceView.network` 返回 `subFloatingIpId`、`subFloatingIpAddress`，`instance_view` 同步保存
 `sub_floating_network_id`、`sub_floating_ip_id`、`sub_floating_ip_address`。
 该地址属于实例网络资源，父端口的 22、8888 转发继续使用原有候选浮动 IP。
-三个阶段共用 `ParentPortPreparationStarted` 持久化的网络截止时间，时长为
-`cloud.instance.provisioning-timeout`；切换阶段和重启都不会重置截止时间，过期后不再启动下一阶段的创建。
+三个网络阶段均不设置等待截止时间，当前阶段就绪后才启动下一阶段。
 Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询不产生事件；
 阶段变化和资源 ID、状态变化才持久化，数据库投影使用相同阶段。
 
 实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。网络调用结果不确定或 Actor 恢复时，
 只按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；当前阶段确认就绪后再进入下一阶段。
-不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时等待至网络截止时间后进入 `FAILED`。
+不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时保持当前阶段并继续查询。
 子端口恢复同时按项目和操作标识查询浮动 IP，并校验外部网络、子端口和固定 IP；
-地址缺失时继续等待至原截止时间，多个匹配地址或绑定不一致时失败。
-Nova 超时后确认资源存在但未就绪，或确认不存在时，进入 `FAILED`，保留资源等待人工处理。
+地址缺失时继续查询，多个匹配地址或绑定不一致时失败。
+Nova 尚未就绪或尚未查到时继续查询；明确返回 `ERROR` 时进入 `FAILED`，保留资源等待人工处理。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。
 
 `RecoveryCompleted` 只进入独立的 `InstanceRecovery` 恢复编排，不直接调用创建或删除入口。
-恢复使用专用的 `RetryRecovery`、`RecoveryStepCompleted`、`RecoveryTimedOut` 命令和定时器，
+恢复使用专用的 `RetryRecovery`、`RecoveryStepCompleted` 命令和轮询定时器，
 独立处理当前持久化阶段的查询、结果判断和重试；阶段、轮询代次与请求标识共同校验异步结果，
 恢复期间忽略旧创建、删除流程的迟到回调，状态查询和重复受理仍正常响应。
-恢复当前阶段时沿用原有截止时间和资源操作标识，不重置已开始阶段的等待期限。
+恢复当前阶段时沿用原有资源操作标识，不额外设置恢复超时。
 端口转发恢复先查询已有 claim，不存在时才使用相同 claim ID 提交创建；网络和 Nova 恢复只查询当前阶段资源。
 当前操作确认完成并持久化明确的就绪事件后，才交给创建逻辑启动下一项尚未执行的操作。
 只有资源操作标识、领域事件以及 OpenStack/Actor 客户端等基础接口共用，恢复的请求与结果处理可独立修改。
@@ -378,15 +376,14 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 先查询 Nova，存在时提交删除；请求被接受后持久化 `NovaDeletionAccepted`，同时保存查到的服务器 ID。
 此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
 服务器仍存在或查询失败时保持 `DELETING`；只有查询确认不存在（404）才继续删除端口转发、网络等资源。
-这些查询不产生新事件，也不设置删除等待超时。本进程中尚未完成的安全组请求会在删除安全组前等待结束。
+这些查询不产生新事件，也不设置删除等待超时。
 删除未完成或调用失败时按 `cloud.instance.poll.max-delay` 继续检查、重试，保持 `DELETING`；
 已受理的删除在重启后继续，只有全部清理成功才持久化 `InstanceDeleted` 并进入 `DELETED`。
 `DELETING` 的恢复由 `InstanceRecovery` 独立查询、删除和重试，不复用外部删除请求的编排方法。
 恢复时若已有 `NovaDeletionAccepted`，继续查询服务器；尚未记录受理时，先查询，存在才重新提交删除。
-宿主机预留的原有 TTL 机制继续生效，失败后不由实例工作流主动取消预留；人工删除时取消仍存在的预留。
-`cloud.reservation.ttl` 从第一步预留资源时开始计时，默认调整为 50 分钟，覆盖依赖准备、安全组、
-实例网络、端口转发、Nova 创建和资源确认。当前各创建阶段的默认超时合计为 45 分钟，额外预留 5 分钟给调度返回和确认。
-调整各准备超时时应同步调整 TTL；重启不会自动延长已有预留。
+宿主机资源预留不设置 TTL，也不自动过期释放。创建中、重启后及创建失败后均保留预留资源，
+成功时通过确认命令转为分配，人工删除时取消预留；已确认的分配由释放命令处理。
+已结束的预留结果仍按 `cloud.reservation.outcome-retention` 定期清理，该清理不影响进行中的预留和分配。
 专属安全组按项目和操作标识查找并删除，包含创建成功但响应未持久化的组；删除组时一并删除其规则。
 用户级项目、Share 和网络由多个实例复用，实例删除不会删除这些资源。
 查询接口及 `instance_view` 投影展示 `FAILED`、`DELETING`、`DELETED`，保留已知资源 ID 和原创建失败原因供排查。
@@ -398,7 +395,7 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
 实例安全组、网络、端口转发和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
 `INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 30 秒，只需覆盖 Actor 受理等待时间
 （`cloud.instance.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
-受理后的依赖准备失败或超时通过 `GET /api/v1/instances/{instanceId}`、`InstanceService.get(instanceId)` 和 `instance_view` 的
+受理后的依赖准备失败通过 `GET /api/v1/instances/{instanceId}`、`InstanceService.get(instanceId)` 和 `instance_view` 的
 `phase`、`failureCode` / `failure_code`、`failureMessage` / `failure_message` 查询，已创建的用户级资源继续保留。
 响应沿用全局 `RespWrapper`，`result` 包含：
 
@@ -417,6 +414,7 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
 
 密码和 token 使用 `SecureRandom` 独立生成，返回时并不表示实例已处于 ACTIVE 状态。
 参数校验和业务错误通过现有国际化异常处理器返回；创建请求确认超时表示受理结果未确定。
+ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整体截止时间，也不会自动释放宿主机预留。
 
 ## 查询端口转发
 
@@ -586,7 +584,7 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 | --- | --- | --- | --- |
 | 预留 | 增加请求资源 | 不变 | 不变 |
 | 确认 | 扣减预留 | 增加确认分配 | +1 |
-| 取消或过期 | 扣减预留 | 不变 | 不变 |
+| 取消 | 扣减预留 | 不变 | 不变 |
 | 释放 | 不变 | 扣减该实例的分配，保留基础占用 | -1 |
 
 维护操作按以下顺序执行：
@@ -602,8 +600,8 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 不会重新查询 OpenStack 并重复叠加。内存总量和占用均按 MB 除以 1024 换算为 GB，使用整数除法。
 Nova 的主机接口不提供 GPU 容量、占用，同步时保留主机表中的 GPU 数值，GPU 数量由人工配置。
 
-进入维护前必须释放全部预留及分配；同步前还需确认没有在途的 Nova 创建、删除请求，
-尤其是预留已过期但云端操作仍未结束的情况。Actor 的计数为空不能证明外部操作已经结束。
+进入维护前必须释放全部预留及分配；同步前还需确认没有在途的 Nova 创建、删除请求。
+Actor 的计数为空不能证明外部操作已经结束。
 区域同步在获取数据后通过同一个数据库事务写入，写入失败时整体回滚；非维护状态的主机跳过同步，
 上游列表中缺失的主机不会自动删除。新主机也按上述顺序同步、配置并启用。
 候选查询按区域、宿主机类型、可选 hostname、状态和可用资源过滤，最终仍由 Actor 原子校验资源并预留。

@@ -4,17 +4,11 @@ import java.time.Duration;
 import java.util.Objects;
 
 public record InstanceWorkflowSettings(
-        Duration reservationTtl,
-        Duration provisioningTimeout,
         Duration pollInitialDelay,
-        Duration pollMaxDelay,
-        Duration forwardingPreparationTimeout) {
+        Duration pollMaxDelay) {
     public InstanceWorkflowSettings {
-        requirePositive(reservationTtl, "reservationTtl");
-        requirePositive(provisioningTimeout, "provisioningTimeout");
         requirePositive(pollInitialDelay, "pollInitialDelay");
         requirePositive(pollMaxDelay, "pollMaxDelay");
-        requirePositive(forwardingPreparationTimeout, "forwardingPreparationTimeout");
         if (pollMaxDelay.compareTo(pollInitialDelay) < 0) {
             throw new IllegalArgumentException("pollMaxDelay must not be less than pollInitialDelay");
         }

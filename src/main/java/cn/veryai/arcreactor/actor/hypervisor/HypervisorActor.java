@@ -74,7 +74,6 @@ public final class HypervisorActor
                 .onCommand(ReserveResources.class, this::onReserve)
                 .onCommand(ConfirmReservation.class, this::onConfirm)
                 .onCommand(CancelReservation.class, this::onCancel)
-                .onCommand(ExpireReservation.class, this::onExpire)
                 .onCommand(ReleaseResources.class, this::onRelease)
                 .onCommand(UpdateCapacity.class, this::onUpdateCapacity)
                 .onCommand(EnableHypervisor.class, this::onEnable)
@@ -89,7 +88,7 @@ public final class HypervisorActor
         Reservation existing = state.reservations().get(command.reservationId());
         if (existing != null) {
             if (sameReservation(existing, command)) {
-                command.replyTo().tell(new ReserveAccepted(existing.reservationId(), existing.expiresAt(), true));
+                command.replyTo().tell(new ReserveAccepted(existing.reservationId(), true));
             } else {
                 command.replyTo().tell(rejected(command, ReserveRejected.Reason.RESERVATION_ID_CONFLICT,
                         "reservationId belongs to different request data"));
@@ -98,7 +97,7 @@ public final class HypervisorActor
         }
         Allocation allocation = state.allocations().get(command.instanceId());
         if (allocation != null && allocation.reservationId().equals(command.reservationId())) {
-            command.replyTo().tell(new ReserveAccepted(command.reservationId(), allocation.allocatedAt(), true));
+            command.replyTo().tell(new ReserveAccepted(command.reservationId(), true));
             return Effect().none();
         }
         if (state.reservationOutcomes().containsKey(command.reservationId())) {
@@ -128,15 +127,13 @@ public final class HypervisorActor
                     "insufficient CPU, memory, disk, or matching GPU"));
             return Effect().none();
         }
-        Instant expiresAt = clock.instant().plus(command.ttl());
         Reservation reservation = new Reservation(command.reservationId(), command.requestId(),
-                command.instanceId(), assigned.orElseThrow(), expiresAt);
+                command.instanceId(), assigned.orElseThrow());
         return Effect().persist(new ResourcesReserved(reservation)).thenRun(nextState -> {
-            scheduleExpiration(reservation);
             context.getLog().info("reservation accepted hypervisorId={} requestId={} reservationId={} "
                             + "instanceId={} resourceVersion={}", hypervisorId, command.requestId(),
                     command.reservationId(), command.instanceId(), nextState.version());
-            command.replyTo().tell(new ReserveAccepted(reservation.reservationId(), expiresAt, false));
+            command.replyTo().tell(new ReserveAccepted(reservation.reservationId(), false));
         });
     }
 
@@ -157,7 +154,6 @@ public final class HypervisorActor
         }
         Instant now = clock.instant();
         return Effect().persist(new ReservationConfirmed(reservation, now)).thenRun(next -> {
-            timers.cancel(timerKey(reservation.reservationId()));
             context.getLog().info("reservation confirmed hypervisorId={} requestId={} reservationId={} "
                             + "instanceId={} resourceVersion={}", hypervisorId, reservation.requestId(),
                     reservation.reservationId(), reservation.instanceId(), next.version());
@@ -172,24 +168,11 @@ public final class HypervisorActor
             return Effect().none();
         }
         return Effect().persist(new ReservationCancelled(reservation, clock.instant())).thenRun(next -> {
-            timers.cancel(timerKey(command.reservationId()));
             context.getLog().info("reservation cancelled hypervisorId={} requestId={} reservationId={} "
                             + "instanceId={} resourceVersion={}", hypervisorId, reservation.requestId(),
                     reservation.reservationId(), reservation.instanceId(), next.version());
             command.replyTo().tell(ActionReply.succeeded(false));
         });
-    }
-
-    private Effect<HypervisorEvent, HypervisorState> onExpire(HypervisorState state, ExpireReservation command) {
-        Reservation reservation = state.reservations().get(command.reservationId());
-        if (reservation == null || !reservation.expiresAt().equals(command.expectedExpiresAt())
-                || clock.instant().isBefore(reservation.expiresAt())) {
-            return Effect().none();
-        }
-        return Effect().persist(new ReservationExpired(reservation, clock.instant())).thenRun(next ->
-                context.getLog().info("reservation expired hypervisorId={} requestId={} reservationId={} "
-                                + "instanceId={} resourceVersion={}", hypervisorId, reservation.requestId(),
-                        reservation.reservationId(), reservation.instanceId(), next.version()));
     }
 
     private Effect<HypervisorEvent, HypervisorState> onRelease(HypervisorState state, ReleaseResources command) {
@@ -285,8 +268,6 @@ public final class HypervisorActor
                         (state, event) -> state.confirm(event.reservation().reservationId(), event.allocatedAt()))
                 .onEvent(ReservationCancelled.class, (state, event) -> state.removeReservation(
                         event.reservation().reservationId(), ReservationOutcome.CANCELLED, event.cancelledAt()))
-                .onEvent(ReservationExpired.class, (state, event) -> state.removeReservation(
-                        event.reservation().reservationId(), ReservationOutcome.EXPIRED, event.expiredAt()))
                 .onEvent(ResourcesReleased.class,
                         (state, event) -> state.removeAllocation(event.allocation().instanceId(), event.releasedAt()))
                 .onEvent(ReservationOutcomesCleaned.class,
@@ -306,7 +287,6 @@ public final class HypervisorActor
         return newSignalHandlerBuilder().onSignal(RecoveryCompleted.class, (state, signal) -> {
             context.getLog().info("actor recovery completed hypervisorId={} resourceVersion={} reservations={}",
                     hypervisorId, state.version(), state.reservations().size());
-            state.reservations().values().forEach(this::scheduleExpiration);
             context.getSelf().tell(new CleanReservationOutcomes());
             timers.startTimerWithFixedDelay("reservation-outcome-cleanup",
                     new CleanReservationOutcomes(), outcomeCleanupInterval);
@@ -316,17 +296,6 @@ public final class HypervisorActor
     @Override
     public RetentionCriteria retentionCriteria() {
         return RetentionCriteria.snapshotEvery(100, 2);
-    }
-
-    private void scheduleExpiration(Reservation reservation) {
-        Duration delay = Duration.between(clock.instant(), reservation.expiresAt());
-        ExpireReservation command = new ExpireReservation(reservation.reservationId(), reservation.expiresAt());
-        if (delay.isNegative() || delay.isZero()) context.getSelf().tell(command);
-        else timers.startSingleTimer(timerKey(reservation.reservationId()), command, delay);
-    }
-
-    private static String timerKey(String reservationId) {
-        return "reservation-expiry:" + reservationId;
     }
 
     private static boolean sameReservation(Reservation existing, ReserveResources command) {

@@ -28,7 +28,7 @@ public final class PekkoAllocationClaimer implements AllocationClaimer {
                         ClusterSharding.get(system).entityRefFor(
                                 HypervisorActor.TYPE_KEY, candidate.hypervisorId()),
                         replyTo -> new ReserveResources(request.requestId(), request.reservationId(),
-                                request.instanceId(), request.resources(), request.reservationTtl(), replyTo,
+                                request.instanceId(), request.resources(), replyTo,
                                 request.constraints().availabilityZone()),
                         askTimeout,
                         system.scheduler())

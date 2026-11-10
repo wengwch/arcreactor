@@ -42,16 +42,14 @@ public final class InstanceRecovery {
   private final OpenStackClient client;
   private final FloatingIpForwardings forwardings;
   private final InstanceDependencyPreparer dependencies;
-  private final InstanceWorkflowSettings settings;
   private final Clock clock;
 
   InstanceRecovery(HypervisorPlacement placement, OpenStackClient client, FloatingIpForwardings forwardings,
-      InstanceDependencyPreparer dependencies, InstanceWorkflowSettings settings, Clock clock) {
+      InstanceDependencyPreparer dependencies, Clock clock) {
     this.placement = placement;
     this.client = client;
     this.forwardings = forwardings;
     this.dependencies = dependencies;
-    this.settings = settings;
     this.clock = clock;
   }
 
@@ -74,22 +72,11 @@ public final class InstanceRecovery {
     }
   }
 
-  Outcome resolveCompletion(InstanceWorkflowState state, Outcome outcome) {
-    // Recheck in the actor mailbox: a remote result may have arrived before a deadline but waited in the queue.
-    return switch (state.phase()) {
-      case PREPARING_SECURITY_GROUP -> expired(state.securityGroupPreparation().deadline()) ? securityGroupTimedOut(state) : outcome;
-      case PREPARING_FORWARDING -> expired(state.forwardingPreparationDeadline()) ? forwardingTimedOut(state) : outcome;
-      case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK ->
-          outcome.action() != Action.STOP && expired(state.networkPreparation().deadline()) ? networkTimedOut(state) : outcome;
-      default -> outcome;
-    };
-  }
-
   private CompletionStage<Outcome> recoverScheduling(InstanceWorkflowState state) {
     var spec = state.spec();
     var request = new HypervisorPlacement.ScheduleRequest(state.requestId(), reservationId(state),
         state.instanceId(), new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount()),
-        settings.reservationTtl(), null, spec.region(), spec.hypervisorType(), spec.hostname());
+        null, spec.region(), spec.hypervisorType(), spec.hostname());
     return placement.schedule(request).thenApply(result -> {
       if (result.status() == HypervisorPlacement.ScheduleResult.Status.NO_VALID_HOST) {
         return failed(state, "NO_VALID_HOST", result.detail());
@@ -97,36 +84,28 @@ public final class InstanceRecovery {
       Instant now = clock.instant();
       return proceed(new HypervisorSelected(state.instanceId(), result.hypervisorId(), reservationId(state),
               result.attempts(), now),
-          new DependencyPreparationStarted(state.instanceId(), dependencies.preparationDeadline(now)));
+          new DependencyPreparationStarted(state.instanceId()));
     });
   }
 
   private CompletionStage<Outcome> recoverDependencies(InstanceWorkflowState state) {
     var share = state.spec().share();
     return dependencies.prepare(share.userId(), state.spec().clusterId(), share.shareId(), share.spec(),
-        state.spec().network(), state.dependencyPreparationDeadline()).thenApply(prepared ->
+        state.spec().network()).thenApply(prepared ->
         proceed(new DependenciesPrepared(state.instanceId(), prepared),
-            new SecurityGroupPreparationStarted(state.instanceId(), clock.instant().plus(settings.provisioningTimeout()))));
+            new SecurityGroupPreparationStarted(state.instanceId())));
   }
 
   private CompletionStage<Outcome> recoverSecurityGroup(InstanceWorkflowState state) {
-    if (expired(state.securityGroupPreparation().deadline())) {
-      return CompletableFuture.completedFuture(securityGroupTimedOut(state));
-    }
     List<Integer> ports = state.spec().forwarding() == null ? List.of() : state.spec().forwarding().internalPorts();
-    return client.prepareInstanceSecurityGroup(target(state), securityGroupOperationId(state), ports,
-        state.securityGroupPreparation().deadline()).thenApply(groupId -> {
-      if (expired(state.securityGroupPreparation().deadline())) return securityGroupTimedOut(state);
+    return client.prepareInstanceSecurityGroup(target(state), securityGroupOperationId(state), ports).thenApply(groupId -> {
       if (!hasText(groupId)) return failed(state, "SECURITY_GROUP_PREPARATION_FAILED", "Missing instance security group ID");
       return proceed(new SecurityGroupPrepared(state.instanceId(), groupId),
-          new ParentPortPreparationStarted(state.instanceId(), clock.instant().plus(settings.provisioningTimeout())));
+          new ParentPortPreparationStarted(state.instanceId()));
     });
   }
 
   private CompletionStage<Outcome> recoverNetwork(InstanceWorkflowState state) {
-    if (expired(state.networkPreparation().deadline())) {
-      return CompletableFuture.completedFuture(networkTimedOut(state));
-    }
     // The current stage may already have committed remotely. Only discover it; never resubmit its create.
     CompletionStage<PreparedNetwork> lookup = switch (state.phase()) {
       case PREPARING_PARENT_PORT -> client.prepareInstanceParentPort(target(state), networkOperationId(state),
@@ -138,7 +117,6 @@ public final class InstanceRecovery {
       default -> throw new IllegalStateException("Not recovering instance network: " + state.phase());
     };
     return lookup.thenApply(resources -> {
-      if (expired(state.networkPreparation().deadline())) return networkTimedOut(state);
       if (resources == null) return retry();
       return switch (state.phase()) {
         case PREPARING_PARENT_PORT -> proceed(new ParentPortPrepared(state.instanceId(), resources),
@@ -147,27 +125,22 @@ public final class InstanceRecovery {
             new TrunkPreparationStarted(state.instanceId()));
         case PREPARING_TRUNK -> proceed(new TrunkPrepared(state.instanceId(), resources),
             state.spec().forwarding() == null ? novaStarted(state)
-                : new ForwardingPreparationStarted(state.instanceId(), clock.instant().plus(settings.forwardingPreparationTimeout())));
+                : new ForwardingPreparationStarted(state.instanceId()));
         default -> throw new IllegalStateException("Not recovering instance network: " + state.phase());
       };
     });
   }
 
   private CompletionStage<Outcome> recoverForwarding(InstanceWorkflowState state) {
-    if (expired(state.forwardingPreparationDeadline())) {
-      return CompletableFuture.completedFuture(forwardingTimedOut(state));
-    }
     String floatingIpId = state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
     ForwardingSpec spec = forwardingSpec(state);
     return forwardings.get(state.spec().region(), floatingIpId, forwardingClaimId(state))
         .thenCompose(reply -> {
-          if (reply != null && reply.status() == ForwardingReply.Status.NOT_FOUND
-              && !expired(state.forwardingPreparationDeadline())) {
+          if (reply != null && reply.status() == ForwardingReply.Status.NOT_FOUND) {
             return forwardings.create(floatingIpId, forwardingClaimId(state), spec);
           }
           return CompletableFuture.completedFuture(reply);
         }).thenApply(reply -> {
-          if (expired(state.forwardingPreparationDeadline())) return forwardingTimedOut(state);
           if (reply == null) return retry();
           return switch (reply.status()) {
             case READY -> recoveredForwarding(state, floatingIpId, spec, reply.claim());
@@ -202,14 +175,12 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<Outcome> recoverProvisioning(InstanceWorkflowState state) {
-    // An uncertain Nova submission is resolved by lookup even after its deadline; never boot another server.
+    // Resolve an uncertain Nova submission by lookup; never boot another server.
     CompletionStage<OpenStackClient.NovaServer> lookup = state.novaServerId() == null
         ? client.findServerByOperationId(target(state), state.novaOperationId()).thenApply(OpenStackClient.ServerLookupResult::server)
         : client.getServer(target(state), state.novaServerId());
     return lookup.thenApply(server -> {
-      boolean timedOut = expired(state.provisioningDeadline());
-      if (server == null) return timedOut
-          ? failed(state, "PROVISIONING_TIMEOUT", "Nova server was not found before deadline") : retry();
+      if (server == null) return retry();
       Instant now = clock.instant();
       List<InstanceWorkflowEvent> events = new ArrayList<>();
       if (!server.serverId().equals(state.novaServerId()) || server.status() != state.novaStatus()) {
@@ -219,9 +190,8 @@ public final class InstanceRecovery {
         events.add(new NovaReachedActive(state.instanceId(), server.serverId(), now));
         return new Outcome(events, Action.CONTINUE_CREATION);
       }
-      if (server.status() == OpenStackClient.NovaServer.Status.ERROR || timedOut) {
-        events.add(new InstanceProvisioningFailed(state.instanceId(), timedOut ? "PROVISIONING_TIMEOUT" : "NOVA_ERROR",
-            timedOut ? "Nova server did not become ACTIVE before deadline" : server.fault(), now));
+      if (server.status() == OpenStackClient.NovaServer.Status.ERROR) {
+        events.add(new InstanceProvisioningFailed(state.instanceId(), "NOVA_ERROR", server.fault(), now));
         return new Outcome(events, Action.STOP);
       }
       return new Outcome(events, Action.RETRY);
@@ -280,7 +250,7 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<Boolean> recoverForwardingDeletion(InstanceWorkflowState state) {
-    if (state.spec().forwarding() == null || state.forwardingPreparationDeadline() == null) {
+    if (state.spec().forwarding() == null || !state.forwardingPreparationStarted()) {
       return CompletableFuture.completedFuture(true);
     }
     List<CompletableFuture<Boolean>> requests = new ArrayList<>();
@@ -302,13 +272,11 @@ public final class InstanceRecovery {
         String code = error instanceof BaseException business ? Integer.toString(business.getCode()) : "DEPENDENCY_PREPARATION_FAILED";
         yield failed(state, code, "Dependency preparation failed: " + code + " (" + error.getClass().getSimpleName() + ")");
       }
-      case PREPARING_SECURITY_GROUP -> expired(state.securityGroupPreparation().deadline()) ? securityGroupTimedOut(state)
-          : failed(state, "SECURITY_GROUP_PREPARATION_FAILED", error instanceof OpenStackOperationException
+      case PREPARING_SECURITY_GROUP -> failed(state, "SECURITY_GROUP_PREPARATION_FAILED", error instanceof OpenStackOperationException
               ? error.getMessage() : "Security group preparation failed: " + error.getClass().getSimpleName());
       case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> error instanceof OpenStackOperationException
           ? failed(state, "NETWORK_PREPARATION_FAILED", error.toString())
-          : expired(state.networkPreparation().deadline()) ? networkTimedOut(state) : retry();
-      case PREPARING_FORWARDING -> expired(state.forwardingPreparationDeadline()) ? forwardingTimedOut(state) : retry();
+          : retry();
       case DELETING -> {
         log.warn("Instance deletion recovery incomplete: instanceId={} reason={}", state.instanceId(), error.toString());
         yield retry();
@@ -321,21 +289,9 @@ public final class InstanceRecovery {
     return new Outcome(List.of(new InstanceProvisioningFailed(state.instanceId(), code, detail, clock.instant())), Action.STOP);
   }
 
-  private Outcome securityGroupTimedOut(InstanceWorkflowState state) {
-    return failed(state, "SECURITY_GROUP_PREPARATION_TIMEOUT", "Timed out preparing instance security group");
-  }
-
-  private Outcome networkTimedOut(InstanceWorkflowState state) {
-    return failed(state, "NETWORK_PREPARATION_TIMEOUT", "Timed out preparing instance network: " + state.phase());
-  }
-
-  private Outcome forwardingTimedOut(InstanceWorkflowState state) {
-    return failed(state, "FORWARDING_PREPARATION_TIMEOUT", "Timed out preparing port forwarding");
-  }
-
   private NovaCreationStarted novaStarted(InstanceWorkflowState state) {
     Instant now = clock.instant();
-    return new NovaCreationStarted(state.instanceId(), operationId(state), now, now.plus(settings.provisioningTimeout()));
+    return new NovaCreationStarted(state.instanceId(), operationId(state), now);
   }
 
   private static Outcome proceed(InstanceWorkflowEvent... events) {
@@ -343,8 +299,6 @@ public final class InstanceRecovery {
   }
 
   private static Outcome retry() { return new Outcome(List.of(), Action.RETRY); }
-
-  private boolean expired(Instant deadline) { return !clock.instant().isBefore(deadline); }
 
   private static boolean hasText(String value) { return value != null && !value.isBlank(); }
 

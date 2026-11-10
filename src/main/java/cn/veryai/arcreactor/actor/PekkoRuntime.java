@@ -50,11 +50,8 @@ public final class PekkoRuntime {
     this.instanceAskTimeout = config.getDuration("cloud.instance.ask-timeout");
     InstanceWorkflowSettings settings =
         new InstanceWorkflowSettings(
-            duration(config, "cloud.reservation.ttl"),
-            duration(config, "cloud.instance.provisioning-timeout"),
             duration(config, "cloud.instance.poll.initial-delay"),
-            duration(config, "cloud.instance.poll.max-delay"),
-            duration(config, "cloud.instance.forwarding-preparation-timeout"));
+            duration(config, "cloud.instance.poll.max-delay"));
 
     try {
       sharding = ClusterSharding.get(actorSystem);

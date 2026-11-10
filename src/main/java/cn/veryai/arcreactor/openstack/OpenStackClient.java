@@ -57,7 +57,6 @@ import org.springframework.stereotype.Service;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -426,14 +425,13 @@ public class OpenStackClient {
 
   /** Resume the instance's own group and missing rules after recovery, before creating any ports. */
   public CompletionStage<String> prepareInstanceSecurityGroup(ServerTarget target, String operationId,
-      List<Integer> internalPorts, Instant deadline) {
+      List<Integer> internalPorts) {
     List<Integer> ports = List.copyOf(internalPorts);
     if (ports.stream().anyMatch(port -> port < 1 || port > 65535)) {
       throw new IllegalArgumentException("Invalid instance security group port");
     }
     String marker = instanceSecurityGroupMarker(operationId);
     return CompletableFuture.supplyAsync(() -> {
-      requireSecurityGroupDeadline(deadline);
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.projectId());
       List<? extends SecurityGroup> matches = findInstanceSecurityGroups(client, target.projectId(), marker);
       if (matches.size() > 1) {
@@ -441,7 +439,6 @@ public class OpenStackClient {
       }
       SecurityGroup group = matches.isEmpty() ? null : matches.getFirst();
       if (group == null) {
-        requireSecurityGroupDeadline(deadline);
         group = client.networking().securitygroup().create(Builders.securityGroup()
             .name(marker).description(marker).tenantId(target.projectId()).build());
       }
@@ -451,7 +448,7 @@ public class OpenStackClient {
       }
       for (int port : ports) {
         for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
-          ensureInstanceSecurityRule(client, group.getId(), port, protocol, marker, deadline);
+          ensureInstanceSecurityRule(client, group.getId(), port, protocol, marker);
         }
       }
       return group.getId();
@@ -459,11 +456,10 @@ public class OpenStackClient {
   }
 
   private void ensureInstanceSecurityRule(OSClient.OSClientV3 client, String groupId, int internalPort,
-      NetProtocol protocol, String groupMarker, Instant deadline) {
+      NetProtocol protocol, String groupMarker) {
     var service = client.networking().securityrule();
     if (service.list(Map.of("security_group_id", groupId)).stream()
         .anyMatch(rule -> allowsInstancePort(rule, groupId, internalPort, protocol))) return;
-    requireSecurityGroupDeadline(deadline);
     try {
       SecurityGroupRule created = service.create(Builders.securityGroupRule().securityGroupId(groupId)
           .protocol(protocol.name().toLowerCase(Locale.ROOT)).direction("ingress").ethertype("IPv4")
@@ -477,12 +473,6 @@ public class OpenStackClient {
       // An earlier request may have completed while recovery was querying the group's rules.
       if (error.getStatus() != 409 || service.list(Map.of("security_group_id", groupId)).stream()
           .noneMatch(rule -> allowsInstancePort(rule, groupId, internalPort, protocol))) throw error;
-    }
-  }
-
-  private static void requireSecurityGroupDeadline(Instant deadline) {
-    if (!Instant.now().isBefore(deadline)) {
-      throw new OpenStackOperationException("Instance security group preparation deadline exceeded", null);
     }
   }
 
