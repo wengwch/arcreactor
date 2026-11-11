@@ -15,11 +15,11 @@ public class OpenstackClusterEntity {
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @ToString.Exclude
     private String adminPassword;
-    private String adminDefaultProjectId;
-    private String adminDefaultDomainId;
-    private String adminDefaultRegion;
+    private String osAdminDefaultProjectId;
+    private String osAdminDefaultDomainId;
+    private String osAdminDefaultRegion;
     private String authEndpoint;
-    private String memberRoleId;
-    private String adminRoleId;
+    private String osMemberRoleId;
+    private String osAdminRoleId;
 
 }

@@ -4,12 +4,12 @@ CREATE TABLE IF NOT EXISTS openstack_cluster (
   description TEXT,
   admin_username VARCHAR(255) NOT NULL,
   admin_password VARCHAR(1024) NOT NULL,
-  admin_default_project_id VARCHAR(255) NOT NULL,
-  admin_default_domain_id VARCHAR(255) NOT NULL,
-  admin_default_region VARCHAR(255) NOT NULL,
+  os_admin_default_project_id VARCHAR(255) NOT NULL,
+  os_admin_default_domain_id VARCHAR(255) NOT NULL,
+  os_admin_default_region VARCHAR(255) NOT NULL,
   auth_endpoint VARCHAR(1024) NOT NULL,
-  member_role_id VARCHAR(255),
-  admin_role_id VARCHAR(255),
+  os_member_role_id VARCHAR(255),
+  os_admin_role_id VARCHAR(255),
   PRIMARY KEY (id)
 ) ENGINE=InnoDB;
 

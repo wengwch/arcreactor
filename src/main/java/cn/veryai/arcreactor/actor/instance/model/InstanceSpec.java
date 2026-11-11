@@ -10,8 +10,8 @@ public record InstanceSpec(
         String clusterId,
         String region,
         String name,
-        String imageId,
-        String flavorId,
+        String osImageId,
+        String osFlavorId,
         int vcpus,
         long memoryGb,
         long diskGb,
@@ -27,8 +27,8 @@ public record InstanceSpec(
         requireText(clusterId, "clusterId");
         requireText(region, "region");
         requireText(name, "name");
-        requireText(imageId, "imageId");
-        requireText(flavorId, "flavorId");
+        requireText(osImageId, "osImageId");
+        requireText(osFlavorId, "osFlavorId");
         requireText(hypervisorType, "hypervisorType");
         hostname = StringUtils.trimToNull(hostname);
         if (vcpus <= 0 || memoryGb <= 0 || diskGb < 0 || gpuCount < 0) {

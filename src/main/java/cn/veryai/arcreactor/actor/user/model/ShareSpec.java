@@ -32,9 +32,9 @@ public record ShareSpec(
     this(regionId, null, name, description, size, shareProto, shareType, accessTo);
   }
 
-  public ShareSpec withProjectId(String projectId) {
-    requireText(projectId, "osProjectId");
-    return new ShareSpec(regionId, projectId, name, description, size, shareProto, shareType, accessTo);
+  public ShareSpec withOsProjectId(String osProjectId) {
+    requireText(osProjectId, "osProjectId");
+    return new ShareSpec(regionId, osProjectId, name, description, size, shareProto, shareType, accessTo);
   }
 
   private static void requireText(String value, String name) {

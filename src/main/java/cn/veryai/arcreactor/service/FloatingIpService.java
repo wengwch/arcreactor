@@ -50,8 +50,8 @@ public class FloatingIpService {
         if (cluster == null) {
             throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
         }
-        String projectId = cluster.getAdminDefaultProjectId();
-        if (StringUtils.isBlank(projectId)) {
+        String osProjectId = cluster.getOsAdminDefaultProjectId();
+        if (StringUtils.isBlank(osProjectId)) {
             throw new BaseException(ErrorCode.OPENSTACK_ADMIN_PROJECT_REQUIRED);
         }
         SysNetworkEntity externalNetwork = sysNetworkRepo.findById(param.getExtNetId());
@@ -73,7 +73,7 @@ public class FloatingIpService {
         entity.setRegionId(param.getRegionId());
         entity.setExtNetId(externalNetwork.getId());
         entity.setOsExtNetId(externalNetwork.getOsNetId());
-        entity.setOsProjectId(projectId);
+        entity.setOsProjectId(osProjectId);
         entity.setOsFloatingIpId(param.getOsFloatingIpId());
         entity.setFloatingIp(param.getFloatingIp());
 
@@ -81,7 +81,7 @@ public class FloatingIpService {
             List<PortForwardingSnapshot> forwardings = List.of();
             if (param.isInitOpenstack()) {
                 NetFloatingIP floatingIp = openStackClient.createPortForwardingFloatingIP(
-                        entity.getRegionId(), projectId, entity.getOsExtNetId());
+                        entity.getRegionId(), osProjectId, entity.getOsExtNetId());
                 if (floatingIp == null
                         || StringUtils.isAnyBlank(floatingIp.getId(), floatingIp.getFloatingIpAddress())) {
                     throw new IllegalStateException("OpenStack returned an incomplete floating IP");

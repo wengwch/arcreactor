@@ -42,7 +42,7 @@ public interface InstanceProjectionMapper {
     int updateSecurityGroup(
             @Param("instanceId") String instanceId,
             @Param("phase") String phase,
-            @Param("securityGroupId") String securityGroupId,
+            @Param("osSecurityGroupId") String osSecurityGroupId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -63,14 +63,14 @@ public interface InstanceProjectionMapper {
     int updateNovaServer(
             @Param("instanceId") String instanceId,
             @Param("phase") String phase,
-            @Param("serverId") String serverId,
+            @Param("osServerId") String osServerId,
             @Param("novaStatus") String novaStatus,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updateNovaDeletion(
             @Param("instanceId") String instanceId,
-            @Param("serverId") String serverId,
+            @Param("osServerId") String osServerId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

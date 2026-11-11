@@ -1,6 +1,6 @@
 # 来源：enqcloud_test.sys_network.csv、enqcloud_test.sys_router.csv。
 # 按顺序执行 3 个网络请求，再执行路由请求；修改 baseUrl 为实际服务地址。
-# 前置条件：Test-SH-01 区域及其 OpenStack 集群已存在，集群 adminDefaultProjectId
+# 前置条件：Test-SH-01 区域及其 OpenStack 集群已存在，集群 osAdminDefaultProjectId
 # 应与源数据的 31205d8c26f4471cbed5f8c5a689a585 一致。
 # initOpenstack=false：仅在应用数据库创建记录，复用 CSV 中已有的 OpenStack 资源。
 # 应用业务 id 会重新生成；CSV 的 _id、_class 不属于创建接口字段。

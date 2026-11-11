@@ -53,7 +53,7 @@ public final class InstanceProjectionHandler
         } else if (event instanceof SecurityGroupPreparationStarted) {
             mapper.updatePhase(instanceId, "PREPARING_SECURITY_GROUP", version, timestamp);
         } else if (event instanceof SecurityGroupPrepared prepared) {
-            mapper.updateSecurityGroup(instanceId, "PREPARING_SECURITY_GROUP", prepared.securityGroupId(), version, timestamp);
+            mapper.updateSecurityGroup(instanceId, "PREPARING_SECURITY_GROUP", prepared.osSecurityGroupId(), version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
         } else if (event instanceof ParentPortPreparationStarted) {
@@ -77,17 +77,17 @@ public final class InstanceProjectionHandler
         } else if (event instanceof NovaCreationStarted started) {
             mapper.updateNovaOperation(instanceId, "PROVISIONING", started.operationId(), version, timestamp);
         } else if (event instanceof NovaServerCreated created) {
-            mapper.updateNovaServer(instanceId, "PROVISIONING", created.serverId(),
+            mapper.updateNovaServer(instanceId, "PROVISIONING", created.osServerId(),
                     created.status().name(), version, timestamp);
         } else if (event instanceof NovaReachedActive active) {
-            mapper.updateNovaServer(instanceId, "CONFIRMING", active.serverId(),
+            mapper.updateNovaServer(instanceId, "CONFIRMING", active.osServerId(),
                     "ACTIVE", version, timestamp);
         } else if (event instanceof ReservationConfirmedForInstance) {
             mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
         } else if (event instanceof InstanceDeletionStarted) {
             mapper.updatePhase(instanceId, "DELETING", version, timestamp);
         } else if (event instanceof NovaDeletionAccepted accepted) {
-            mapper.updateNovaDeletion(instanceId, accepted.serverId(), version, timestamp);
+            mapper.updateNovaDeletion(instanceId, accepted.osServerId(), version, timestamp);
         } else if (event instanceof InstanceDeleted) {
             mapper.updatePhase(instanceId, "DELETED", version, timestamp);
         } else if (event instanceof InstanceActivated) {

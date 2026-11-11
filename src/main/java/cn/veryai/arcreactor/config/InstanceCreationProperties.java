@@ -20,7 +20,7 @@ public class InstanceCreationProperties {
     private String shareType;
     /** Shared storage capacity, in GB. */
     private int shareSize = 1;
-    private String networkCidr = "10.0.0.0/16";
+    private String networkCidr = "100.127.0.0/16";
     private String networkDns = "";
     private String networkGateway;
     private int segmentationId = 100;

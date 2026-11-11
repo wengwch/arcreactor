@@ -12,10 +12,12 @@ import java.util.List;
 
 /** Fields needed from an existing OpenStack forwarding rule to synchronize port usage. */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record PortForwardingSnapshot(@NotBlank String id,
+public record PortForwardingSnapshot(@NotBlank String osForwardingId,
     @JsonAlias("external_port") @Min(1) @Max(65535) int externalPort) implements Serializable {
   public PortForwardingSnapshot {
-    if (id == null || id.isBlank()) throw new IllegalArgumentException("forwarding id is required");
+    if (osForwardingId == null || osForwardingId.isBlank()) {
+      throw new IllegalArgumentException("osForwardingId is required");
+    }
     if (externalPort < 1 || externalPort > 65535) throw new IllegalArgumentException("invalid external port");
   }
 

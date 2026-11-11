@@ -7,19 +7,19 @@
         <result column="description" property="description"/>
         <result column="admin_username" property="adminUsername"/>
         <result column="admin_password" property="adminPassword"/>
-        <result column="admin_default_project_id" property="adminDefaultProjectId"/>
-        <result column="admin_default_domain_id" property="adminDefaultDomainId"/>
-        <result column="admin_default_region" property="adminDefaultRegion"/>
+        <result column="os_admin_default_project_id" property="osAdminDefaultProjectId"/>
+        <result column="os_admin_default_domain_id" property="osAdminDefaultDomainId"/>
+        <result column="os_admin_default_region" property="osAdminDefaultRegion"/>
         <result column="auth_endpoint" property="authEndpoint"/>
-        <result column="member_role_id" property="memberRoleId"/>
-        <result column="admin_role_id" property="adminRoleId"/>
+        <result column="os_member_role_id" property="osMemberRoleId"/>
+        <result column="os_admin_role_id" property="osAdminRoleId"/>
     </resultMap>
 
-    <sql id="columns">id, name, description, admin_username, admin_password, admin_default_project_id, admin_default_domain_id, admin_default_region, auth_endpoint, member_role_id, admin_role_id</sql>
+    <sql id="columns">id, name, description, admin_username, admin_password, os_admin_default_project_id, os_admin_default_domain_id, os_admin_default_region, auth_endpoint, os_member_role_id, os_admin_role_id</sql>
 
     <insert id="insert">
         INSERT INTO openstack_cluster (<include refid="columns"/>)
-        VALUES (#{id}, #{name}, #{description}, #{adminUsername}, #{adminPassword}, #{adminDefaultProjectId}, #{adminDefaultDomainId}, #{adminDefaultRegion}, #{authEndpoint}, #{memberRoleId}, #{adminRoleId})
+        VALUES (#{id}, #{name}, #{description}, #{adminUsername}, #{adminPassword}, #{osAdminDefaultProjectId}, #{osAdminDefaultDomainId}, #{osAdminDefaultRegion}, #{authEndpoint}, #{osMemberRoleId}, #{osAdminRoleId})
     </insert>
 
     <select id="findById" resultMap="cluster">
@@ -36,12 +36,12 @@
             description = #{description},
             admin_username = #{adminUsername},
             admin_password = #{adminPassword},
-            admin_default_project_id = #{adminDefaultProjectId},
-            admin_default_domain_id = #{adminDefaultDomainId},
-            admin_default_region = #{adminDefaultRegion},
+            os_admin_default_project_id = #{osAdminDefaultProjectId},
+            os_admin_default_domain_id = #{osAdminDefaultDomainId},
+            os_admin_default_region = #{osAdminDefaultRegion},
             auth_endpoint = #{authEndpoint},
-            member_role_id = #{memberRoleId},
-            admin_role_id = #{adminRoleId}
+            os_member_role_id = #{osMemberRoleId},
+            os_admin_role_id = #{osAdminRoleId}
         WHERE id = #{id}
     </update>
 

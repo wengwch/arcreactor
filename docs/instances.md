@@ -20,6 +20,16 @@
 镜像和规格必须属于所选区域，规格的宿主机类型必须与请求一致。
 示例中的 ID 需要替换为已配置并启用的实际资源。
 
+OpenStack 资源关联 ID 统一使用 `os_` 数据库列名，Java 属性和 JSON 字段使用 `os...` 驼峰名，
+例如 `os_project_id` / `osProjectId`、`os_parent_port_id` / `osParentPortId`。
+此约定覆盖项目、网络、子网、路由、端口、QoS、安全组、Nova、Share 和端口转发的资源 ID，
+也覆盖集群配置中的项目、域、角色及默认区域。`instanceId`、`hypervisorId`、`shareId`、
+`regionId` 等本地业务引用沿用原名；创建请求中的 `imageId`、`flavorId` 在组装 `InstanceSpec` 时
+转换为 `osImageId`、`osFlavorId`。
+新库使用当前建表 SQL；已有表先补齐之前的字段迁移（包括 `add-instance-port-qos.sql`），
+再执行 `sql/migrations/prefix-openstack-reference-fields.sql` 统一改名。
+该脚本仅修改关系表字段，开发阶段不提供旧 Actor 事件、快照或旧接口字段名的兼容转换。
+
 `hostname` 可选，使用宿主机记录 `hypervisor_host.hostname` 的值。省略、传 `null` 或空白字符串时自动调度；
 指定时去除首尾空白并按大小写精确匹配，只在匹配的主机上预留资源。
 主机仍需满足请求的区域、宿主机类型、ACTIVE 状态及 CPU、内存、磁盘、GPU 资源要求；
@@ -84,7 +94,7 @@ LOCAL、SHARED 网络和 OpenStack 集群连接；CIDR、DNS、VLAN 和静态路
 `FloatingIpState.enabled` 初始为 `false`，收到 `FloatingIpEnabled` 后变为 `true`，收到 `FloatingIpDisabled` 后变为 `false`。
 `PUT /api/v1/floating-ips/{id}/disable` 禁止受理新的 claim，已有创建、查询、删除和恢复继续处理，当前位图保留。
 `PUT /api/v1/floating-ips/{id}/enable` 可不带请求体，沿用当前位图；已启用时重复调用同样成功。
-启用请求可携带 `forwardings` 列表，每项包含规则 `id` 和 `externalPort`（也接受 OpenStack 的 `external_port`）。
+启用请求可携带 `forwardings` 列表，每项包含规则 `osForwardingId` 和 `externalPort`（也接受 OpenStack 的 `external_port`）。
 只有 Actor 当前为禁用状态时才能携带列表更新端口占用；已启用时携带列表会被拒绝，即使列表与已有占用一致。
 非 `null` 列表根据 OpenStack 转发规则生成位图，与当前 `usedPorts` 做 OR 合并，既有占用全部保留。
 省略列表、传 `null` 或 `[]` 均不清除端口位；启用操作只增加占用。位图不区分占用来源，
@@ -103,6 +113,9 @@ Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStas
 
 实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先创建
 QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
+创建和恢复查询结果通过 `PreparedNetwork.parentQos`、`subQos` 保存各端口的 `osPolicyId`、
+`osIngressRuleId`、`osEgressRuleId`，随端口就绪事件持久化，并写入 `instance_view`。
+不限速时仍保存 policy ID，两个 rule ID 为 NULL；后续子端口和 Trunk 阶段保留前序 QoS 记录。
 创建 Command 的 `spec.network.parentPortBandwidthLimit` 和 `spec.network.subPortBandwidthLimit`
 分别携带父、子端口限速，随实例创建事件持久化；恢复时沿用提交时的值。
 服务层从以上配置组装这两个参数，直接发送 `CreateInstance` 命令的调用方可以逐实例传入不同限速：
@@ -335,30 +348,47 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 | `PREPARING_TRUNK` | `TrunkPreparationStarted` | `TrunkPrepared` | `prepareInstanceTrunk()`，使用父子端口 ID 创建 Trunk 并关联 VLAN |
 
 Actor 分别通过 `requestParentPort()`、`requestSubPort()`、`requestTrunk()` 执行三个阶段，
-每个阶段拥有独立的轮询命令、完成命令、定时器和请求标识，阶段、轮询代次及请求标识共同过滤迟到结果。
+每个阶段拥有独立的完成命令和请求标识，阶段、执行代次及请求标识共同过滤迟到结果。
 各自的完成处理明确持久化下一阶段的开始事件，并启动对应请求；当前顺序为父端口 → 子端口 → Trunk。
 修改阶段组合时，在对应完成处理处调整衔接；恢复流程分别由独立的 `recoverParentPort()`、
 `recoverSubPort()`、`recoverTrunk()` 处理，同步调整恢复完成后的下一阶段事件即可。
 
+OpenStackClient 的三个 `prepareInstance...()` 方法分别直接创建当前阶段资源，
+父端口负责端口及 QoS，子端口负责端口、QoS 和专属浮动 IP，Trunk 负责父子端口的 VLAN 组合。
+查询分别使用 `findInstanceParentPort()`、`findInstanceSubPort()`、`findInstanceTrunk()`，
+校验资源归属、网络、安全组、QoS、浮动 IP 绑定和 VLAN；端口、Trunk 或子端口浮动 IP
+未找到时返回空结果，查询不创建缺失资源，也不补建 QoS 规则。
+创建与查询使用独立方法，不通过 `allowCreate` 参数切换。正常创建调用创建方法，
+成功返回有效资源就进入下一阶段；调用异常或缺少结果时持久化 `FAILED`，保留资源等待人工删除。
+正常创建不安排网络阶段的 Check 轮询；查询方法由独立的 `InstanceRecovery` 在重启恢复时使用。
+
 当前阶段的就绪事件和下一阶段的创建意图一起持久化，之后才调用下一阶段。
-父端口就绪时保存 ID、MAC 和固定 IP；子端口就绪时追加其 ID、固定 IP、浮动 IP ID 和地址；Trunk 就绪时追加 Trunk ID。
+父端口就绪时保存 ID、MAC、固定 IP 及 QoS policy/规则 ID；子端口就绪时追加其 ID、固定 IP、
+QoS policy/规则 ID、浮动 IP ID 和地址；Trunk 就绪时追加 Trunk ID。
 状态查询和数据库投影随每个阶段更新，网络尚未全部完成时也能看到已完成的资源。
 子端口浮动 IP 从用户路由出口对应的 `LOCAL` 网络分配，依赖准备时将该网络 ID 保存到
-`NetworkRequirement.subFloatingNetworkId`，重启后继续使用同一网络。
+`NetworkRequirement.osSubFloatingNetworkId`，重启后继续使用同一网络。
 分配时指定子端口 ID 和固定 IP，并写入实例操作标识；`SubPortPrepared` 只有在绑定确认后才持久化。
-`InstanceView.network` 返回 `subFloatingIpId`、`subFloatingIpAddress`，`instance_view` 同步保存
-`sub_floating_network_id`、`sub_floating_ip_id`、`sub_floating_ip_address`。
+`InstanceView.network` 返回 `osSubFloatingIpId`、`subFloatingIpAddress`，`instance_view` 同步保存
+`os_sub_floating_network_id`、`os_sub_floating_ip_id`、`sub_floating_ip_address`。
 该地址属于实例网络资源，父端口的 22、8888 转发继续使用原有候选浮动 IP。
 三个网络阶段均不设置等待截止时间，当前阶段就绪后才启动下一阶段。
 Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询不产生事件；
 阶段变化和资源 ID、状态变化才持久化，数据库投影使用相同阶段。
+创建由 `requestNovaCreation()` 提交，通过 `NovaCreationCompleted` 处理结果；
+正常状态轮询由 `requestNovaStatus()` 按已保存的 Nova 实例 ID 查询，通过 `NovaStatusChecked` 处理结果。
+两条路径使用独立的请求标识和完成处理，不通过布尔参数切换创建与查询。
+创建请求异常或未返回实例时，直接持久化 `InstanceProvisioningFailed` 并进入 `FAILED`，保留资源等待人工删除。
+正常状态查询缺少已保存的实例 ID 时，转入 `InstanceRecovery.recoverProvisioning()` 独立恢复，
+按已知实例 ID 或操作标识找回实例；恢复期间只查询，不重新提交 Nova 创建。
 
-实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。网络调用结果不确定或 Actor 恢复时，
-只按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；当前阶段确认就绪后再进入下一阶段。
+实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。
+Actor 恢复时仍处于网络创建阶段，则按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；
+当前阶段确认就绪后再进入下一阶段。
 不会重新提交当前阶段的创建请求，也不会重新执行已完成阶段；当前资源持续缺失时保持当前阶段并继续查询。
 子端口恢复同时按项目和操作标识查询浮动 IP，并校验外部网络、子端口和固定 IP；
 地址缺失时继续查询，多个匹配地址或绑定不一致时失败。
-Nova 尚未就绪或尚未查到时继续查询；明确返回 `ERROR` 时进入 `FAILED`，保留资源等待人工处理。
+Nova 在重启恢复时创建结果不确定、尚未就绪或尚未查到时继续查询；明确返回 `ERROR` 时进入 `FAILED`，保留资源等待人工处理。
 查询持续失败、无法确认 Nova 实际结果时继续查询，不提前释放资源。
 
 `RecoveryCompleted` 只进入独立的 `InstanceRecovery` 恢复编排，不直接调用创建或删除入口。
@@ -427,7 +457,7 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 ## 查询端口转发
 
 创建后轮询 `GET /api/v1/instances/{instanceId}`。接口查询 Actor 的当前状态，返回创建阶段、
-失败信息、专属 `securityGroupId` 及 `forwardings` 列表，不包含密码、Jupyter token 或 Share 访问凭据。
+失败信息、专属 `osSecurityGroupId` 及 `forwardings` 列表，不包含密码、Jupyter token 或 Share 访问凭据。
 不存在的实例按全局响应约定返回业务 `code = 404`。
 以下仅展示相关字段，地址和端口为示例：
 
@@ -437,7 +467,21 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
   "result": {
     "instanceId": "实例 UUID",
     "phase": "ACTIVE",
-    "securityGroupId": "实例专属安全组 UUID",
+    "osSecurityGroupId": "实例专属安全组 UUID",
+    "network": {
+      "osParentPortId": "父端口 UUID",
+      "parentQos": {
+        "osPolicyId": "父端口 QoS policy UUID",
+        "osIngressRuleId": "父端口入站带宽规则 UUID",
+        "osEgressRuleId": "父端口出站带宽规则 UUID"
+      },
+      "osSubPortId": "子端口 UUID",
+      "subQos": {
+        "osPolicyId": "子端口 QoS policy UUID",
+        "osIngressRuleId": "子端口入站带宽规则 UUID",
+        "osEgressRuleId": "子端口出站带宽规则 UUID"
+      }
+    },
     "forwardings": [
       {"internalPort": 22, "floatingIp": "203.0.113.10", "externalPort": 10000},
       {"internalPort": 8888, "floatingIp": "203.0.113.10", "externalPort": 10001}
@@ -446,7 +490,7 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 }
 ```
 
-实际每条映射还包含 `claimId`、`floatingIpId`、`tcpForwardingId` 和 `udpForwardingId`。
+实际每条映射还包含 `claimId`、`osFloatingIpId`、`osTcpForwardingId` 和 `osUdpForwardingId`。
 SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 username>@203.0.113.10`。
 JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
 创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动，`ACTIVE` 也不代表
@@ -488,6 +532,9 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 执行 `sql/read-model.sql` 初始化读模型表。`user-resources` 投影消费 User 事件更新读模型，
 查询结果在投影追上事件日志后完整可见。
 已有 `instance_view` 表需执行 `sql/migrations/add-instance-subport-floating-ip.sql` 增加子端口浮动 IP 字段。
+QoS 资源记录对应 `os_parent_qos_policy_id`、`os_parent_qos_ingress_rule_id`、`os_parent_qos_egress_rule_id`
+及同名 `os_sub_qos_*` 字段；已有表先使用 `sql/migrations/add-instance-port-qos.sql` 增加这六个字段，
+再执行 `sql/migrations/prefix-openstack-reference-fields.sql` 统一改名。
 
 ## 浮动 IP 读模型
 
@@ -549,7 +596,7 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 
 `InstanceProjection` 将实例状态写入 `instance_view`；端口转发记录统一由 `FloatingIpProjection`
 写入 `port_forwarding`，建表定义均位于 `sql/read-model.sql`。
-`instance_view.security_group_id` 保存实例专属安全组 ID；本次状态和事件结构调整不提供历史数据兼容转换。
+`instance_view.os_security_group_id` 保存实例专属安全组 ID；本次状态和事件结构调整不提供历史数据兼容转换。
 网络三阶段替换旧的 `PREPARING_NETWORK` 及整套网络开始、就绪事件，不提供旧网络事件或快照的兼容转换。
 
 创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和

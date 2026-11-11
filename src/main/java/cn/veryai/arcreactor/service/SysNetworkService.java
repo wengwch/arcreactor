@@ -60,7 +60,7 @@ public class SysNetworkService {
         if (openstackClusterEntity == null) {
             throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
         }
-        String adminDefaultProjectId = openstackClusterEntity.getAdminDefaultProjectId();
+        String osAdminDefaultProjectId = openstackClusterEntity.getOsAdminDefaultProjectId();
 
         try {
             SysNetworkEntity entity = new SysNetworkEntity();
@@ -78,7 +78,7 @@ public class SysNetworkService {
             entity.setIpv4CIDR(param.getIpv4CIDR());
             entity.setGateway(param.getGateway());
             entity.setSegmentId(param.getSegmentId());
-            entity.setOsProjectId(adminDefaultProjectId);
+            entity.setOsProjectId(osAdminDefaultProjectId);
             entity.setOsNetworkType(param.getSysNetworkType().getNetworkType());
             entity.setOsNetId(param.getOsNetId());
             entity.setOsSubNetId(param.getOsSubNetId());
@@ -86,7 +86,7 @@ public class SysNetworkService {
                 Network network =
                         openStackClient.createNetwork(
                                 entity.getRegionId(),
-                                adminDefaultProjectId,
+                                osAdminDefaultProjectId,
                                 entity.getName(),
                                 entity.getOsNetworkType(),
                                 entity.isRouterExternally(),
@@ -96,7 +96,7 @@ public class SysNetworkService {
                 Subnet subnet =
                         openStackClient.createSubnet(
                                 entity.getRegionId(),
-                                adminDefaultProjectId,
+                                osAdminDefaultProjectId,
                                 network.getId(),
                                 entity.getName() + "_subnet",
                                 entity.getIpv4CIDR(),

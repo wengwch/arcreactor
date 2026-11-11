@@ -20,18 +20,18 @@ public class SaveOpenstackClusterParam {
     private String adminPassword;
     @NotBlank
     @Size(max = 255)
-    private String adminDefaultProjectId;
+    private String osAdminDefaultProjectId;
     @NotBlank
     @Size(max = 255)
-    private String adminDefaultDomainId;
+    private String osAdminDefaultDomainId;
     @NotBlank
     @Size(max = 255)
-    private String adminDefaultRegion;
+    private String osAdminDefaultRegion;
     @NotBlank
     @Size(max = 1024)
     private String authEndpoint;
     @Size(max = 255)
-    private String memberRoleId;
+    private String osMemberRoleId;
     @Size(max = 255)
-    private String adminRoleId;
+    private String osAdminRoleId;
 }

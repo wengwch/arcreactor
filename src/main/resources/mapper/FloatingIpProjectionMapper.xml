@@ -7,7 +7,7 @@
             port_mask = #{portMask,jdbcType=BLOB},
             resource_version = #{version,jdbcType=BIGINT}
         WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{identity.floatingIpId,jdbcType=VARCHAR}
+          AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}
           AND resource_version &lt; #{version,jdbcType=BIGINT}
     </update>
 
@@ -15,12 +15,12 @@
         SELECT resource_version
         FROM floating_ip
         WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{identity.floatingIpId,jdbcType=VARCHAR}
+          AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}
     </select>
 
     <sql id="newerForwarding">
         WHERE region_id = #{event.identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{event.identity.floatingIpId,jdbcType=VARCHAR}
+          AND os_floating_ip_id = #{event.identity.osFloatingIpId,jdbcType=VARCHAR}
           AND claim_id = #{event.claimId,jdbcType=VARCHAR}
           AND resource_version &lt; #{version,jdbcType=BIGINT}
     </sql>
@@ -30,18 +30,18 @@
     <insert id="upsertForwardingCreated">
         INSERT INTO port_forwarding (
           region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id,
-          floating_ip, internal_port_id, fixed_ip, internal_port, external_port,
-          tcp_forwarding_id, udp_forwarding_id, phase, failure_message,
+          floating_ip, os_internal_port_id, fixed_ip, internal_port, external_port,
+          os_tcp_forwarding_id, os_udp_forwarding_id, phase, failure_message,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
           #{event.identity.regionId,jdbcType=VARCHAR},
-          #{event.identity.floatingIpId,jdbcType=VARCHAR},
+          #{event.identity.osFloatingIpId,jdbcType=VARCHAR},
           #{event.claimId,jdbcType=VARCHAR},
           #{event.spec.instanceId,jdbcType=VARCHAR},
           #{event.spec.userId,jdbcType=VARCHAR},
-          #{event.spec.projectId,jdbcType=VARCHAR},
+          #{event.spec.osProjectId,jdbcType=VARCHAR},
           #{event.identity.floatingIp,jdbcType=VARCHAR},
-          #{event.spec.internalPortId,jdbcType=VARCHAR},
+          #{event.spec.osInternalPortId,jdbcType=VARCHAR},
           #{event.spec.fixedIp,jdbcType=VARCHAR},
           #{event.spec.internalPort,jdbcType=INTEGER},
           NULL, NULL, NULL, 'CREATING', NULL,
@@ -51,12 +51,12 @@
           user_id = IF(resource_version &lt; VALUES(resource_version), VALUES(user_id), user_id),
           os_project_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_project_id), os_project_id),
           floating_ip = IF(resource_version &lt; VALUES(resource_version), VALUES(floating_ip), floating_ip),
-          internal_port_id = IF(resource_version &lt; VALUES(resource_version), VALUES(internal_port_id), internal_port_id),
+          os_internal_port_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_internal_port_id), os_internal_port_id),
           fixed_ip = IF(resource_version &lt; VALUES(resource_version), VALUES(fixed_ip), fixed_ip),
           internal_port = IF(resource_version &lt; VALUES(resource_version), VALUES(internal_port), internal_port),
           external_port = IF(resource_version &lt; VALUES(resource_version), VALUES(external_port), external_port),
-          tcp_forwarding_id = IF(resource_version &lt; VALUES(resource_version), VALUES(tcp_forwarding_id), tcp_forwarding_id),
-          udp_forwarding_id = IF(resource_version &lt; VALUES(resource_version), VALUES(udp_forwarding_id), udp_forwarding_id),
+          os_tcp_forwarding_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_tcp_forwarding_id), os_tcp_forwarding_id),
+          os_udp_forwarding_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_udp_forwarding_id), os_udp_forwarding_id),
           phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
           failure_message = IF(resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
           created_at = IF(resource_version &lt; VALUES(resource_version), VALUES(created_at), created_at),
@@ -79,8 +79,8 @@
         UPDATE port_forwarding SET
           floating_ip = #{event.resources.floatingIpAddress,jdbcType=VARCHAR},
           external_port = #{event.resources.externalPort,jdbcType=INTEGER},
-          tcp_forwarding_id = #{event.resources.tcpForwardingId,jdbcType=VARCHAR},
-          udp_forwarding_id = #{event.resources.udpForwardingId,jdbcType=VARCHAR},
+          os_tcp_forwarding_id = #{event.resources.osTcpForwardingId,jdbcType=VARCHAR},
+          os_udp_forwarding_id = #{event.resources.osUdpForwardingId,jdbcType=VARCHAR},
           phase = 'READY',
           failure_message = NULL,
           updated_at = #{updatedAt,jdbcType=TIMESTAMP},
@@ -121,7 +121,7 @@
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
           #{event.identity.regionId,jdbcType=VARCHAR},
-          #{event.identity.floatingIpId,jdbcType=VARCHAR},
+          #{event.identity.osFloatingIpId,jdbcType=VARCHAR},
           #{event.claimId,jdbcType=VARCHAR},
           #{event.identity.floatingIp,jdbcType=VARCHAR},
           'DELETED', #{version,jdbcType=BIGINT},
@@ -137,7 +137,7 @@
         SELECT resource_version
         FROM port_forwarding
         WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{identity.floatingIpId,jdbcType=VARCHAR}
+          AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}
           AND claim_id = #{claimId,jdbcType=VARCHAR}
     </select>
 </mapper>

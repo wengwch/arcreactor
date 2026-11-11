@@ -39,8 +39,8 @@
           #{spec.share.userId,jdbcType=VARCHAR},
           #{spec.clusterId,jdbcType=VARCHAR},
           #{spec.region,jdbcType=VARCHAR},
-          #{spec.imageId,jdbcType=VARCHAR},
-          #{spec.flavorId,jdbcType=VARCHAR},
+          #{spec.osImageId,jdbcType=VARCHAR},
+          #{spec.osFlavorId,jdbcType=VARCHAR},
           #{spec.hypervisorType,jdbcType=VARCHAR},
           #{spec.vcpus,jdbcType=INTEGER},
           #{spec.memoryGb,jdbcType=BIGINT},
@@ -95,13 +95,13 @@
     <update id="updateDependencies">
         UPDATE instance_view SET
           phase = #{phase},
-          os_project_id = #{dependencies.projectId,jdbcType=VARCHAR},
+          os_project_id = #{dependencies.osProjectId,jdbcType=VARCHAR},
           share_id = #{dependencies.share.shareId,jdbcType=VARCHAR},
-          parent_network_id = #{dependencies.network.parentNetworkId,jdbcType=VARCHAR},
-          parent_subnet_id = #{dependencies.network.parentSubnetId,jdbcType=VARCHAR},
-          sub_network_id = #{dependencies.network.subNetworkId,jdbcType=VARCHAR},
-          sub_subnet_id = #{dependencies.network.subSubnetId,jdbcType=VARCHAR},
-          sub_floating_network_id = #{dependencies.network.subFloatingNetworkId,jdbcType=VARCHAR},
+          os_parent_network_id = #{dependencies.network.osParentNetworkId,jdbcType=VARCHAR},
+          os_parent_subnet_id = #{dependencies.network.osParentSubnetId,jdbcType=VARCHAR},
+          os_sub_network_id = #{dependencies.network.osSubNetworkId,jdbcType=VARCHAR},
+          os_sub_subnet_id = #{dependencies.network.osSubSubnetId,jdbcType=VARCHAR},
+          os_sub_floating_network_id = #{dependencies.network.osSubFloatingNetworkId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>
@@ -110,7 +110,7 @@
     <update id="updateSecurityGroup">
         UPDATE instance_view SET
           phase = #{phase},
-          security_group_id = #{securityGroupId,jdbcType=VARCHAR},
+          os_security_group_id = #{osSecurityGroupId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>
@@ -119,14 +119,20 @@
     <update id="updateNetwork">
         UPDATE instance_view SET
           phase = #{phase},
-          parent_port_id = #{network.parentPortId,jdbcType=VARCHAR},
+          os_parent_port_id = #{network.osParentPortId,jdbcType=VARCHAR},
           parent_mac_address = #{network.parentMacAddress,jdbcType=VARCHAR},
           parent_fixed_ip = #{network.parentFixedIp,jdbcType=VARCHAR},
-          sub_port_id = #{network.subPortId,jdbcType=VARCHAR},
+          os_parent_qos_policy_id = #{network.parentQos.osPolicyId,jdbcType=VARCHAR},
+          os_parent_qos_ingress_rule_id = #{network.parentQos.osIngressRuleId,jdbcType=VARCHAR},
+          os_parent_qos_egress_rule_id = #{network.parentQos.osEgressRuleId,jdbcType=VARCHAR},
+          os_sub_port_id = #{network.osSubPortId,jdbcType=VARCHAR},
           sub_fixed_ip = #{network.subFixedIp,jdbcType=VARCHAR},
-          sub_floating_ip_id = #{network.subFloatingIpId,jdbcType=VARCHAR},
+          os_sub_qos_policy_id = #{network.subQos.osPolicyId,jdbcType=VARCHAR},
+          os_sub_qos_ingress_rule_id = #{network.subQos.osIngressRuleId,jdbcType=VARCHAR},
+          os_sub_qos_egress_rule_id = #{network.subQos.osEgressRuleId,jdbcType=VARCHAR},
+          os_sub_floating_ip_id = #{network.osSubFloatingIpId,jdbcType=VARCHAR},
           sub_floating_ip_address = #{network.subFloatingIpAddress,jdbcType=VARCHAR},
-          trunk_id = #{network.trunkId,jdbcType=VARCHAR},
+          os_trunk_id = #{network.osTrunkId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>
@@ -144,7 +150,7 @@
     <update id="updateNovaServer">
         UPDATE instance_view SET
           phase = #{phase},
-          nova_server_id = #{serverId,jdbcType=VARCHAR},
+          os_nova_server_id = #{osServerId,jdbcType=VARCHAR},
           nova_status = #{novaStatus,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
@@ -154,7 +160,7 @@
     <update id="updateNovaDeletion">
         UPDATE instance_view SET
           phase = 'DELETING',
-          nova_server_id = #{serverId,jdbcType=VARCHAR},
+          os_nova_server_id = #{osServerId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

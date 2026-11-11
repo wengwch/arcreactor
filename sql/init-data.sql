@@ -63,8 +63,8 @@ ON DUPLICATE KEY UPDATE id = image_category.id;
 -- Demonstration topology. These rows describe resources; SQL does not create
 -- projects, images, flavors, networks, routers or hypervisors in OpenStack.
 INSERT INTO openstack_cluster (id, name, description, admin_username, admin_password,
-                               admin_default_project_id, admin_default_domain_id, admin_default_region,
-                               auth_endpoint, member_role_id, admin_role_id)
+                               os_admin_default_project_id, os_admin_default_domain_id, os_admin_default_region,
+                               auth_endpoint, os_member_role_id, os_admin_role_id)
 VALUES ('demo-cluster', 'demo-cluster', 'Example cluster; replace all connection settings.', 'admin',
         'YrH8AAjiiDD9QLq95n4lotkgXrE55kSrlgK30s0M', '31205d8c26f4471cbed5f8c5a689a585', 'default', 'Test-SH-01',
         'http://172.30.25.253:5000/v3', '115b541c421c4e63a4969ae587682896', '140d67b15fc445bebb8865db19323aa8')
@@ -73,7 +73,7 @@ ON DUPLICATE KEY
 
 
 -- The region ID must match the actual OpenStack region name when enabling it.
--- Update its references in this script together with admin_default_region.
+-- Update its references in this script together with os_admin_default_region.
 INSERT INTO arc_reactor.region (cluster_id, id, name, description, enabled)
 VALUES ('demo-cluster', 'Test-SH-01', 'Test-SH-01', 'Disabled until a real OpenStack region is configured.', 1)
 ON DUPLICATE KEY

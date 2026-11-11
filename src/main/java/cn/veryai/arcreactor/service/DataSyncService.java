@@ -97,7 +97,7 @@ public class DataSyncService {
         if (cluster == null) {
             throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
         }
-        if (cluster.getAdminDefaultProjectId() == null || cluster.getAdminDefaultProjectId().isBlank()) {
+        if (cluster.getOsAdminDefaultProjectId() == null || cluster.getOsAdminDefaultProjectId().isBlank()) {
             throw new BaseException(ErrorCode.OPENSTACK_ADMIN_PROJECT_REQUIRED);
         }
     }

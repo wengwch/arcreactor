@@ -38,12 +38,12 @@ public final class UserProjectionHandler
     if (event instanceof ProjectCreationRequested(String clusterId, String name, Instant deadline)) {
       mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, deadline),
           version, timestamp);
-    } else if (event instanceof ProjectBecameReady(String clusterId, String name, String projectId)) {
+    } else if (event instanceof ProjectBecameReady(String clusterId, String name, String osProjectId)) {
       if (clusterId == null || clusterId.isBlank()
-          || projectId == null || projectId.isBlank()) {
+          || osProjectId == null || osProjectId.isBlank()) {
         throw new IllegalArgumentException("ready project must have cluster and project IDs");
       }
-      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, null).ready(projectId),
+      mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, null).ready(osProjectId),
           version, timestamp);
     } else if (event instanceof ProjectCreationFailed(String clusterId, String name, String failure)) {
       mapper.upsertProject(userId, UserProjectState.requested(clusterId, name, null).failed(failure),
@@ -70,13 +70,13 @@ public final class UserProjectionHandler
           failed.osShareId(), failed.osExportLocationId(), failed.exportLocationPath(), failed.osGrantAccessId(),
           null, 0, failed.failure(), null), version, timestamp);
     } else if (event instanceof NetworkCreationRequested requested) {
-      upsertNetwork(mapper, userId, UserNetworkState.requested(requested.spec(), requested.projectId(), requested.deadline()),
+      upsertNetwork(mapper, userId, UserNetworkState.requested(requested.spec(), requested.osProjectId(), requested.deadline()),
           version, timestamp);
     } else if (event instanceof NetworkBecameReady ready) {
-      upsertNetwork(mapper, userId, UserNetworkState.requested(ready.spec(), ready.projectId(), null).ready(ready.resources()),
+      upsertNetwork(mapper, userId, UserNetworkState.requested(ready.spec(), ready.osProjectId(), null).ready(ready.resources()),
           version, timestamp);
     } else if (event instanceof NetworkCreationFailed failed) {
-      upsertNetwork(mapper, userId, UserNetworkState.requested(failed.spec(), failed.projectId(), null).failed(failed.failure()),
+      upsertNetwork(mapper, userId, UserNetworkState.requested(failed.spec(), failed.osProjectId(), null).failed(failed.failure()),
           version, timestamp);
     }
   }

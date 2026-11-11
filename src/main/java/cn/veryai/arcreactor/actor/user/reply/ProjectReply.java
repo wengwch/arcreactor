@@ -4,7 +4,7 @@ import cn.veryai.arcreactor.actor.user.model.UserProjectState;
 import cn.veryai.arcreactor.entity.UserClusterProjectEntity;
 import java.io.Serializable;
 
-public record ProjectReply(Status status, String userId, String clusterId, String projectId,
+public record ProjectReply(Status status, String userId, String clusterId, String osProjectId,
     String detail) implements Serializable {
   public enum Status { IN_PROGRESS, READY, FAILED, REJECTED, NOT_FOUND }
 
@@ -14,7 +14,7 @@ public record ProjectReply(Status status, String userId, String clusterId, Strin
       case FAILED -> Status.FAILED;
       case CREATING -> Status.IN_PROGRESS;
     };
-    return new ProjectReply(status, userId, project.clusterId(), project.projectId(), project.failureMessage());
+    return new ProjectReply(status, userId, project.clusterId(), project.osProjectId(), project.failureMessage());
   }
 
   public UserClusterProjectEntity mapping() {
@@ -22,7 +22,7 @@ public record ProjectReply(Status status, String userId, String clusterId, Strin
     UserClusterProjectEntity entity = new UserClusterProjectEntity();
     entity.setUserId(userId);
     entity.setClusterId(clusterId);
-    entity.setProjectId(projectId);
+    entity.setOsProjectId(osProjectId);
     return entity;
   }
 }

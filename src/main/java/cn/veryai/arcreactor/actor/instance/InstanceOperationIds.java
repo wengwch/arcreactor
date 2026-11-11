@@ -25,6 +25,6 @@ final class InstanceOperationIds {
   }
 
   static String forwardingClaimId(InstanceWorkflowState state, int internalPort) {
-    return "fip:" + state.instanceId() + ":" + state.requestId() + ":" + internalPort;
+    return "veryai:fip:" + state.instanceId() + ":" + state.requestId() + ":" + internalPort;
   }
 }

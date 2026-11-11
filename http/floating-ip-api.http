@@ -3,7 +3,7 @@
 # 缺少 enabled 字段时执行 sql/migrations/add-floating-ip-enabled.sql；已有记录默认未启用，不回填历史状态。
 # 先执行 http/sys-network-router.http 中的公网网络请求，保存 csvPublicNetworkId，
 # 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
-# Test-SH-01 所属集群的 adminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
+# Test-SH-01 所属集群的 osAdminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
 # 创建参数不再接收 portMask；新建地址使用空占用，登记已有地址时由服务端查询 OpenStack 的现有转发规则。
 # 新建和登记都会通过 EnableFloatingIp 启用对应 Actor，等待 FloatingIpEnabled 持久化启用状态、身份和初始位图后返回。
 # 响应 enabled=true 表示 Actor 已确认启用，数据库 enabled 在投影完成后更新。
@@ -50,7 +50,7 @@ PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
 
 ### 禁用后，使用当前完整转发列表更新位图并启用
 # 人工确认浮动 IP 已禁用且没有在途创建、删除或恢复请求后，再查询 OpenStack 完整规则列表进行同步。
-# 已启用时携带列表会被拒绝。ID 为 OpenStack 转发规则 ID，不是浮动 IP ID。
+# 已启用时携带列表会被拒绝。osForwardingId 为 OpenStack 转发规则 ID。
 # externalPort 也接受 external_port；协议等其他 OpenStack 字段可以一并传入。
 # 非 null 列表生成的位图与当前 usedPorts 做 OR 合并，只记录 10000–40000 内的占用，既有占用全部保留。
 # 省略 forwardings、传 null 或 [] 均不清位；Actor 不自动等待在途请求。
@@ -59,9 +59,9 @@ Content-Type: application/json
 
 {
   "forwardings": [
-    {"id": "existing-tcp-rule-id", "externalPort": 12022},
-    {"id": "existing-udp-rule-id", "externalPort": 12022},
-    {"id": "another-rule-id", "externalPort": 18888}
+    {"osForwardingId": "existing-tcp-rule-id", "externalPort": 12022},
+    {"osForwardingId": "existing-udp-rule-id", "externalPort": 12022},
+    {"osForwardingId": "another-rule-id", "externalPort": 18888}
   ]
 }
 

@@ -61,10 +61,10 @@ public class SysRouterService {
     if (openstackClusterEntity == null) {
       throw new BaseException(ErrorCode.OPENSTACK_CLUSTER_NOT_FOUND);
     }
-    String adminDefaultProjectId = openstackClusterEntity.getAdminDefaultProjectId();
+    String osAdminDefaultProjectId = openstackClusterEntity.getOsAdminDefaultProjectId();
 
     SysRouterEntity entity = toEntity(UUID.randomUUID().toString(), param);
-    entity.setOsProjectId(adminDefaultProjectId);
+    entity.setOsProjectId(osAdminDefaultProjectId);
     SysNetworkEntity externalNetwork = sysNetworkRepo.findById(entity.getExtNetId());
     if (externalNetwork == null
         || !Objects.equals(externalNetwork.getRegionId(), entity.getRegionId())
@@ -88,14 +88,14 @@ public class SysRouterService {
         Router router =
             openStackClient.createRouter(
                 entity.getRegionId(),
-                adminDefaultProjectId,
+                osAdminDefaultProjectId,
                 entity.getName(),
                 entity.getOsExtNetId());
         entity.setOsRouterId(router.getId());
         RouterInterface routerInterface =
             openStackClient.attachRouterInterface(
                 entity.getRegionId(),
-                adminDefaultProjectId,
+                osAdminDefaultProjectId,
                 entity.getOsRouterId(),
                 sharedNetwork.getOsSubNetId());
       }

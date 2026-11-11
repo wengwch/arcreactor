@@ -4,5 +4,5 @@ import cn.veryai.arcreactor.actor.user.model.NetworkResources;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 
 /** Includes the request and all resource IDs so readiness can be projected independently. */
-public record NetworkBecameReady(NetworkSpec spec, String projectId, NetworkResources resources)
+public record NetworkBecameReady(NetworkSpec spec, String osProjectId, NetworkResources resources)
     implements UserEvent {}

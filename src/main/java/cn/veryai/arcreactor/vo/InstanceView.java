@@ -14,7 +14,7 @@ public record InstanceView(
         String hypervisorId,
         String reservationId,
         String novaOperationId,
-        String novaServerId,
+        String osNovaServerId,
         String novaStatus,
         String failureCode,
         String failureMessage,
@@ -24,19 +24,19 @@ public record InstanceView(
         String osShareId,
         List<PreparedForwarding> forwardings,
         PreparedNetwork network,
-        String securityGroupId,
-        String projectId) implements Serializable {
+        String osSecurityGroupId,
+        String osProjectId) implements Serializable {
 
     public static InstanceView from(InstanceWorkflowState state) {
         return new InstanceView(state.instanceId(), state.requestId(), state.phase().name(), state.hypervisorId(),
-                state.reservationId(), state.novaOperationId(), state.novaServerId(),
+                state.reservationId(), state.novaOperationId(), state.osNovaServerId(),
                 state.novaStatus() == null ? null : state.novaStatus().name(), state.failureCode(),
                 state.failureMessage(), state.version(),
-                state.spec() == null || state.spec().share() == null ? null : state.spec().share().userId(),
+                state.userId(),
                 state.shareId(),
                 state.preparedShare() == null ? null : state.preparedShare().osShareId(),
                 state.preparedForwardings(),
                 state.networkPreparation() == null ? null : state.networkPreparation().resources(),
-                state.securityGroupId(), state.projectId());
+                state.osSecurityGroupId(), state.osProjectId());
     }
 }

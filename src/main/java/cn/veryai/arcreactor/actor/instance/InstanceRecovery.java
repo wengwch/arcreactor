@@ -85,14 +85,14 @@ public final class InstanceRecovery {
       }
       Instant now = clock.instant();
       return proceed(new HypervisorSelected(state.instanceId(), result.hypervisorId(), reservationId(state),
-              result.attempts(), now),
+              now),
           new DependencyPreparationStarted(state.instanceId()));
     });
   }
 
   private CompletionStage<Outcome> recoverDependencies(InstanceWorkflowState state) {
     var share = state.spec().share();
-    return dependencies.prepare(share.userId(), state.spec().clusterId(), share.shareId(), share.spec(),
+    return dependencies.prepare(state.userId(), state.spec().clusterId(), share.shareId(), share.spec(),
         state.spec().network()).thenApply(prepared ->
         proceed(new DependenciesPrepared(state.instanceId(), prepared),
             new SecurityGroupPreparationStarted(state.instanceId())));
@@ -109,8 +109,8 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverParentPort(InstanceWorkflowState state) {
     // Discover the parent port and its QoS without resubmitting creation.
-    return client.prepareInstanceParentPort(target(state), networkOperationId(state),
-        state.dependencies().network(), state.securityGroupId(), false).thenApply(resources -> {
+    return client.findInstanceParentPort(target(state), networkOperationId(state),
+        state.dependencies().network(), state.osSecurityGroupId()).thenApply(resources -> {
           if (resources == null) return retry();
           return proceed(new ParentPortPrepared(state.instanceId(), resources),
               new SubPortPreparationStarted(state.instanceId()));
@@ -119,8 +119,8 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverSubPort(InstanceWorkflowState state) {
     // Discover the subport, its QoS and floating IP using the recorded parent port.
-    return client.prepareInstanceSubPort(target(state), networkOperationId(state),
-        state.dependencies().network(), state.securityGroupId(), state.networkPreparation().resources(), false)
+    return client.findInstanceSubPort(target(state), networkOperationId(state),
+        state.dependencies().network(), state.osSecurityGroupId(), state.networkPreparation().resources())
         .thenApply(resources -> {
           if (resources == null) return retry();
           return proceed(new SubPortPrepared(state.instanceId(), resources),
@@ -130,8 +130,8 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverTrunk(InstanceWorkflowState state) {
     // Discover the trunk using the recorded ports without resubmitting creation.
-    return client.prepareInstanceTrunk(target(state), networkOperationId(state),
-        state.dependencies().network(), state.networkPreparation().resources(), false).thenApply(resources -> {
+    return client.findInstanceTrunk(target(state), networkOperationId(state),
+        state.dependencies().network(), state.networkPreparation().resources()).thenApply(resources -> {
           if (resources == null) return retry();
           return proceed(new TrunkPrepared(state.instanceId(), resources),
               state.spec().forwarding() == null ? novaStarted(state)
@@ -140,24 +140,24 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<Outcome> recoverForwarding(InstanceWorkflowState state) {
-    String floatingIpId = state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
+    String osFloatingIpId = state.spec().forwarding().osFloatingIpIds().get(state.forwardingCandidateIndex());
     ForwardingSpec spec = forwardingSpec(state);
-    return forwardings.get(state.spec().region(), floatingIpId, forwardingClaimId(state))
+    return forwardings.get(state.spec().region(), osFloatingIpId, forwardingClaimId(state))
         .thenCompose(reply -> {
           if (reply != null && reply.status() == ForwardingReply.Status.NOT_FOUND) {
-            return forwardings.create(floatingIpId, forwardingClaimId(state), spec);
+            return forwardings.create(osFloatingIpId, forwardingClaimId(state), spec);
           }
           return CompletableFuture.completedFuture(reply);
         }).thenApply(reply -> {
           if (reply == null) return retry();
           return switch (reply.status()) {
-            case READY -> recoveredForwarding(state, floatingIpId, spec, reply.claim());
+            case READY -> recoveredForwarding(state, osFloatingIpId, spec, reply.claim());
             case FAILED, DELETE_FAILED, REJECTED, DELETED -> {
               if (reply.claim() != null && reply.claim().ownsPort()) {
                 yield failed(state, "FORWARDING_PREPARATION_FAILED", reply.detail());
               }
               int candidate = state.forwardingCandidateIndex() + 1;
-              yield candidate >= state.spec().forwarding().floatingIpIds().size()
+              yield candidate >= state.spec().forwarding().osFloatingIpIds().size()
                   ? failed(state, "FORWARDING_PREPARATION_FAILED", "All floating IP candidates failed for internal port "
                       + state.currentForwardingPort() + ": " + reply.detail())
                   : proceed(new ForwardingCandidateSelected(state.instanceId(), candidate));
@@ -167,12 +167,12 @@ public final class InstanceRecovery {
         });
   }
 
-  private Outcome recoveredForwarding(InstanceWorkflowState state, String floatingIpId,
+  private Outcome recoveredForwarding(InstanceWorkflowState state, String osFloatingIpId,
       ForwardingSpec spec, ForwardingClaim claim) {
     if (claim == null || claim.phase() != ForwardingClaim.Phase.READY
         || !forwardingClaimId(state).equals(claim.claimId()) || !spec.equals(claim.spec())
-        || !floatingIpId.equals(claim.floatingIpId())
-        || !hasText(claim.resources().tcpForwardingId()) || !hasText(claim.resources().udpForwardingId())
+        || !osFloatingIpId.equals(claim.osFloatingIpId())
+        || !hasText(claim.resources().osTcpForwardingId()) || !hasText(claim.resources().osUdpForwardingId())
         || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 10000
         || claim.resources().externalPort() > 40000) {
       return failed(state, "FORWARDING_RESULT_INVALID", "Incomplete or mismatched port forwarding result");
@@ -184,18 +184,18 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverProvisioning(InstanceWorkflowState state) {
     // Resolve an uncertain Nova submission by lookup; never boot another server.
-    CompletionStage<OpenStackClient.NovaServer> lookup = state.novaServerId() == null
+    CompletionStage<OpenStackClient.NovaServer> lookup = state.osNovaServerId() == null
         ? client.findServerByOperationId(target(state), state.novaOperationId()).thenApply(OpenStackClient.ServerLookupResult::server)
-        : client.getServer(target(state), state.novaServerId());
+        : client.getServer(target(state), state.osNovaServerId());
     return lookup.thenApply(server -> {
       if (server == null) return retry();
       Instant now = clock.instant();
       List<InstanceWorkflowEvent> events = new ArrayList<>();
-      if (!server.serverId().equals(state.novaServerId()) || server.status() != state.novaStatus()) {
-        events.add(new NovaServerCreated(state.instanceId(), state.novaOperationId(), server.serverId(), server.status(), now));
+      if (!server.osServerId().equals(state.osNovaServerId()) || server.status() != state.novaStatus()) {
+        events.add(new NovaServerCreated(state.instanceId(), state.novaOperationId(), server.osServerId(), server.status(), now));
       }
       if (server.status() == OpenStackClient.NovaServer.Status.ACTIVE) {
-        events.add(new NovaReachedActive(state.instanceId(), server.serverId(), now));
+        events.add(new NovaReachedActive(state.instanceId(), server.osServerId(), now));
         return new Outcome(events, Action.CONTINUE_CREATION);
       }
       if (server.status() == OpenStackClient.NovaServer.Status.ERROR) {
@@ -212,7 +212,7 @@ public final class InstanceRecovery {
       return switch (result.status()) {
         case SUCCEEDED -> new Outcome(List.of(new ReservationConfirmedForInstance(state.instanceId(),
                 state.hypervisorId(), state.reservationId(), now),
-            new InstanceActivated(state.instanceId(), state.novaServerId(), state.hypervisorId(), now)), Action.STOP);
+            new InstanceActivated(state.instanceId(), state.osNovaServerId(), state.hypervisorId(), now)), Action.STOP);
         case REJECTED -> failed(state, "RESERVATION_CONFIRM_REJECTED", result.detail());
         case UNKNOWN -> retry();
       };
@@ -221,10 +221,10 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverDeletion(InstanceWorkflowState state) {
     // Recovery owns this ordering independently of normal externally requested deletion.
-    return recoverNovaDeletion(state).thenCompose(serverId -> {
-      if (serverId != null) {
+    return recoverNovaDeletion(state).thenCompose(osServerId -> {
+      if (osServerId != null) {
         return CompletableFuture.completedFuture(state.novaDeletionAccepted() ? retry()
-            : new Outcome(List.of(new NovaDeletionAccepted(state.instanceId(), serverId, clock.instant())), Action.RETRY));
+            : new Outcome(List.of(new NovaDeletionAccepted(state.instanceId(), osServerId, clock.instant())), Action.RETRY));
       }
       return recoverForwardingDeletion(state).thenCompose(deleted -> {
         if (!deleted) return CompletableFuture.completedFuture(false);
@@ -245,15 +245,15 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<String> recoverNovaDeletion(InstanceWorkflowState state) {
-    if (state.novaServerId() == null && state.novaOperationId() == null) return CompletableFuture.completedFuture(null);
-    CompletionStage<OpenStackClient.NovaServer> lookup = state.novaServerId() == null
+    if (state.osNovaServerId() == null && state.novaOperationId() == null) return CompletableFuture.completedFuture(null);
+    CompletionStage<OpenStackClient.NovaServer> lookup = state.osNovaServerId() == null
         ? client.findServerByOperationId(target(state), state.novaOperationId()).thenApply(OpenStackClient.ServerLookupResult::server)
-        : client.getServer(target(state), state.novaServerId());
+        : client.getServer(target(state), state.osNovaServerId());
     return lookup.thenCompose(server -> {
       if (server == null) return CompletableFuture.completedFuture(null);
       // A journaled acceptance survives restarts. Recovery keeps querying until Nova reports absence.
-      if (state.novaDeletionAccepted()) return CompletableFuture.completedFuture(server.serverId());
-      return client.deleteServer(target(state), server.serverId()).thenApply(ignored -> server.serverId());
+      if (state.novaDeletionAccepted()) return CompletableFuture.completedFuture(server.osServerId());
+      return client.deleteServer(target(state), server.osServerId()).thenApply(ignored -> server.osServerId());
     });
   }
 
@@ -262,9 +262,9 @@ public final class InstanceRecovery {
       return CompletableFuture.completedFuture(true);
     }
     List<CompletableFuture<Boolean>> requests = new ArrayList<>();
-    for (String floatingIpId : state.spec().forwarding().floatingIpIds()) {
+    for (String osFloatingIpId : state.spec().forwarding().osFloatingIpIds()) {
       for (int port : state.spec().forwarding().internalPorts()) {
-        requests.add(forwardings.delete(state.spec().region(), floatingIpId, forwardingClaimId(state, port))
+        requests.add(forwardings.delete(state.spec().region(), osFloatingIpId, forwardingClaimId(state, port))
             .handle((reply, error) -> error == null && reply != null && reply.status() == ForwardingReply.Status.DELETED)
             .toCompletableFuture());
       }
@@ -311,13 +311,13 @@ public final class InstanceRecovery {
   private static boolean hasText(String value) { return value != null && !value.isBlank(); }
 
   private static OpenStackClient.ServerTarget target(InstanceWorkflowState state) {
-    return new OpenStackClient.ServerTarget(state.spec().clusterId(), state.projectId(), state.spec().region());
+    return new OpenStackClient.ServerTarget(state.spec().clusterId(), state.osProjectId(), state.spec().region());
   }
 
   private static ForwardingSpec forwardingSpec(InstanceWorkflowState state) {
     PreparedNetwork network = state.networkPreparation().resources();
-    return new ForwardingSpec(state.instanceId(), state.spec().share().userId(), state.spec().region(),
-        state.projectId(), network.parentPortId(), network.parentFixedIp(), state.currentForwardingPort());
+    return new ForwardingSpec(state.instanceId(), state.userId(), state.spec().region(),
+        state.osProjectId(), network.osParentPortId(), network.parentFixedIp(), state.currentForwardingPort());
   }
 
   private static Throwable rootCause(Throwable error) {

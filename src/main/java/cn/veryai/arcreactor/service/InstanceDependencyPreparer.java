@@ -56,12 +56,12 @@ public class InstanceDependencyPreparer {
                         pollInterval, ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
                 if (project == null || project.status() != ProjectReply.Status.READY
                         || !userId.equals(project.userId()) || !clusterId.equals(project.clusterId())
-                        || !hasText(project.projectId())) {
+                        || !hasText(project.osProjectId())) {
                     throw new BaseException(ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
                 }
-                String projectId = project.projectId();
-                NetworkRequirement resolved = resolveSharedNetwork(region, projectId, network);
-                ShareSpec resolvedShare = shareSpec.withProjectId(projectId);
+                String osProjectId = project.osProjectId();
+                NetworkRequirement resolved = resolveSharedNetwork(region, osProjectId, network);
+                ShareSpec resolvedShare = shareSpec.withOsProjectId(osProjectId);
                 var shareReply = awaitReady(() -> userResources.createShare(userId, shareId, resolvedShare),
                         () -> userResources.getShare(userId, region),
                         reply -> reply.status() == ShareReply.Status.READY,
@@ -93,16 +93,16 @@ public class InstanceDependencyPreparer {
                 UserNetworkState readyNetwork = networkReply.network();
                 if (!userId.equals(networkReply.userId()) || !region.equals(networkReply.regionId())
                         || readyNetwork == null || readyNetwork.phase() != UserNetworkState.Phase.READY
-                        || !network.userNetwork().equals(readyNetwork.spec()) || !projectId.equals(readyNetwork.projectId())
-                        || !hasText(readyNetwork.networkId()) || !hasText(readyNetwork.subnetId())
-                        || !hasText(readyNetwork.routerId()) || !hasText(readyNetwork.localNetworkId())
-                        || !hasText(readyNetwork.routerPortId())) {
+                        || !network.userNetwork().equals(readyNetwork.spec()) || !osProjectId.equals(readyNetwork.osProjectId())
+                        || !hasText(readyNetwork.osNetworkId()) || !hasText(readyNetwork.osSubnetId())
+                        || !hasText(readyNetwork.osRouterId()) || !hasText(readyNetwork.osLocalNetworkId())
+                        || !hasText(readyNetwork.osRouterPortId())) {
                     throw new BaseException(ErrorCode.INSTANCE_USER_NETWORK_PREPARATION_FAILED);
                 }
-                return new PreparedDependencies(projectId,
+                return new PreparedDependencies(osProjectId,
                         new ShareRequirement(userId, share.shareId(), resolvedShare), preparedShare,
-                        resolved.withSubNetwork(readyNetwork.networkId(), readyNetwork.subnetId(),
-                                readyNetwork.localNetworkId()));
+                        resolved.withSubNetwork(readyNetwork.osNetworkId(), readyNetwork.osSubnetId(),
+                                readyNetwork.osLocalNetworkId()));
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 throw new BaseException(ErrorCode.INSTANCE_DEPENDENCY_PREPARATION_INTERRUPTED, exception);
@@ -145,7 +145,7 @@ public class InstanceDependencyPreparer {
         }
     }
 
-    private NetworkRequirement resolveSharedNetwork(String region, String projectId, NetworkRequirement requested) {
+    private NetworkRequirement resolveSharedNetwork(String region, String osProjectId, NetworkRequirement requested) {
         try {
             List<SysNetworkEntity> matches = sysNetworkRepo.findByRegionId(region).stream()
                     .filter(network -> network.getSysNetworkType() == SysNetworkType.SHARED).toList();
@@ -154,8 +154,8 @@ public class InstanceDependencyPreparer {
             if (!preset.isShared() || !hasText(preset.getOsNetId()) || !hasText(preset.getOsSubNetId())) {
                 throw new BaseException(ErrorCode.INSTANCE_SHARED_NETWORK_INVALID);
             }
-            var network = openStackClient.getNetwork(region, projectId, preset.getOsNetId());
-            var subnet = openStackClient.getSubnet(region, projectId, preset.getOsSubNetId());
+            var network = openStackClient.getNetwork(region, osProjectId, preset.getOsNetId());
+            var subnet = openStackClient.getSubnet(region, osProjectId, preset.getOsSubNetId());
             if (network == null || !network.isShared() || !preset.getOsNetId().equals(network.getId())
                     || subnet == null || !preset.getOsSubNetId().equals(subnet.getId())
                     || !network.getId().equals(subnet.getNetworkId())) {

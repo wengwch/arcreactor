@@ -8,5 +8,5 @@ import lombok.experimental.FieldNameConstants;
 public class UserClusterProjectEntity {
   private String userId;
   private String clusterId;
-  private String projectId;
+  private String osProjectId;
 }

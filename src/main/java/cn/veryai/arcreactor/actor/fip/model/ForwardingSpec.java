@@ -4,10 +4,10 @@ import java.io.Serializable;
 import java.util.List;
 
 /** The internal service endpoint; the destination actor identifies the floating IP. */
-public record ForwardingSpec(String instanceId, String userId, String regionId, String projectId,
-    String internalPortId, String fixedIp, int internalPort) implements Serializable {
+public record ForwardingSpec(String instanceId, String userId, String regionId, String osProjectId,
+    String osInternalPortId, String fixedIp, int internalPort) implements Serializable {
   public ForwardingSpec {
-    for (String value : List.of(instanceId, userId, regionId, projectId, internalPortId, fixedIp)) {
+    for (String value : List.of(instanceId, userId, regionId, osProjectId, osInternalPortId, fixedIp)) {
       if (value.isBlank()) throw new IllegalArgumentException("forwarding identifiers must not be blank");
     }
     if (internalPort < 1 || internalPort > 65535) throw new IllegalArgumentException("invalid internal port");
