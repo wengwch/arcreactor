@@ -5,13 +5,15 @@ import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.hypervisor.command.CancelReservation;
 import cn.veryai.arcreactor.actor.hypervisor.command.ConfirmReservation;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
+import cn.veryai.arcreactor.actor.hypervisor.command.ReleaseResources;
 import cn.veryai.arcreactor.actor.hypervisor.model.ResourceRequest;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ActionReply;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ConfirmReply;
+import cn.veryai.arcreactor.actor.hypervisor.reply.ReleaseReply;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerService;
+import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.ClaimResult;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.PlacementConstraints;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.SchedulingRequest;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.SchedulingResult;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import org.apache.pekko.actor.typed.ActorSystem;
@@ -29,14 +31,39 @@ public final class DefaultHypervisorPlacement implements HypervisorPlacement {
 
     @Override
     public CompletionStage<ScheduleResult> schedule(ScheduleRequest request) {
+        return schedulerService.schedule(toSchedulingRequest(request))
+                .thenApply(result -> new ScheduleResult(result.hypervisorIds(), result.detail()));
+    }
+
+    @Override
+    public CompletionStage<ReserveResult> reserve(String hypervisorId, ScheduleRequest request) {
+        return schedulerService.reserve(hypervisorId, toSchedulingRequest(request)).thenApply(result -> {
+            ReserveResult.Status status = switch (result.status()) {
+                case ACCEPTED -> ReserveResult.Status.ACCEPTED;
+                case UNKNOWN -> ReserveResult.Status.UNKNOWN;
+                case REJECTED -> isUnavailable(result)
+                        ? ReserveResult.Status.UNAVAILABLE : ReserveResult.Status.REJECTED;
+            };
+            return new ReserveResult(status, result.detail());
+        });
+    }
+
+    private static SchedulingRequest toSchedulingRequest(ScheduleRequest request) {
         Resources resources = request.resources();
-        SchedulingRequest schedulingRequest = new SchedulingRequest(
+        return new SchedulingRequest(
                 request.requestId(), request.reservationId(), request.instanceId(),
                 new ResourceRequest(resources.vcpus(), resources.memoryGb(), resources.diskGb(),
                         resources.gpuCount()),
                 new PlacementConstraints(request.availabilityZone(), request.regionId(),
                         request.hypervisorType(), request.hostname()));
-        return schedulerService.schedule(schedulingRequest).thenApply(this::toPublicResult);
+    }
+
+    private static boolean isUnavailable(ClaimResult result) {
+        if (result.rejectionReason() == null) return false;
+        return switch (result.rejectionReason()) {
+            case NOT_ACTIVE, INSUFFICIENT_RESOURCE, INVALID_REQUEST, RESERVATION_UNAVAILABLE -> true;
+            case INSTANCE_ALREADY_ALLOCATED, RESERVATION_ID_CONFLICT, RESERVATION_FINALIZED -> false;
+        };
     }
 
     @Override
@@ -70,15 +97,24 @@ public final class DefaultHypervisorPlacement implements HypervisorPlacement {
                 });
     }
 
+    @Override
+    public CompletionStage<ReservationResult> release(String hypervisorId, String instanceId) {
+        return AskPattern.<HypervisorCommand, ReleaseReply>ask(
+                        entityRef(hypervisorId),
+                        replyTo -> new ReleaseResources(instanceId, replyTo),
+                        askTimeout,
+                        system.scheduler())
+                .handle((reply, error) -> {
+                    if (error != null) return ReservationResult.unknown(error.toString());
+                    return reply.success()
+                            ? ReservationResult.succeeded(reply.idempotent(), "released")
+                            : ReservationResult.rejected("resource release rejected");
+                });
+    }
+
     private org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef<HypervisorCommand> entityRef(
             String hypervisorId) {
         return ClusterSharding.get(system).entityRefFor(HypervisorActor.TYPE_KEY, hypervisorId);
     }
 
-    private ScheduleResult toPublicResult(SchedulingResult result) {
-        ScheduleResult.Status status = result.status() == SchedulingResult.Status.RESERVED
-                ? ScheduleResult.Status.RESERVED
-                : ScheduleResult.Status.NO_VALID_HOST;
-        return new ScheduleResult(status, result.hypervisorId(), result.claimAttempts(), result.detail());
-    }
 }

@@ -3,6 +3,7 @@ package cn.veryai.arcreactor.actor.instance.model;
 public enum InstancePhase {
     NEW,
     SCHEDULING,
+    RESERVING_RESOURCES,
     PREPARING_DEPENDENCIES,
     PREPARING_SECURITY_GROUP,
     PREPARING_PARENT_PORT,
@@ -12,7 +13,20 @@ public enum InstancePhase {
     PROVISIONING,
     CONFIRMING,
     ACTIVE,
-    DELETING,
+    DELETING_NOVA,
+    DELETING_FORWARDINGS,
+    DELETING_NETWORK,
+    DELETING_SECURITY_GROUP,
+    CANCELLING_RESERVATION,
+    RELEASING_ALLOCATION,
     DELETED,
-    FAILED
+    FAILED;
+
+    public boolean isDeleting() {
+        return switch (this) {
+            case DELETING_NOVA, DELETING_FORWARDINGS, DELETING_NETWORK,
+                    DELETING_SECURITY_GROUP, CANCELLING_RESERVATION, RELEASING_ALLOCATION -> true;
+            default -> false;
+        };
+    }
 }

@@ -25,10 +25,10 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
-import org.apache.pekko.pattern.AskTimeoutException;
 import org.springframework.stereotype.Service;
 
 /** Asynchronous workflow dependency preparation; reusable resources remain owned by UserActor. */
@@ -60,7 +60,7 @@ public class InstanceDependencyPreparer {
                     throw new BaseException(ErrorCode.INSTANCE_PROJECT_PREPARATION_FAILED);
                 }
                 String osProjectId = project.osProjectId();
-                NetworkRequirement resolved = resolveSharedNetwork(region, osProjectId, network);
+                NetworkRequirement resolved = resolveSharedNetwork(region, network);
                 ShareSpec resolvedShare = shareSpec.withOsProjectId(osProjectId);
                 var shareReply = awaitReady(() -> userResources.createShare(userId, shareId, resolvedShare),
                         () -> userResources.getShare(userId, region),
@@ -123,7 +123,7 @@ public class InstanceDependencyPreparer {
                 if (notFound.test(reply)) request = create;
                 else if (inProgress.test(reply)) request = query;
                 else throw new BaseException(failure);
-            } catch (AskTimeoutException exception) {
+            } catch (TimeoutException exception) {
                 // A reply may be lost during entity recovery; query before submitting another intent.
                 request = query;
             }
@@ -132,20 +132,21 @@ public class InstanceDependencyPreparer {
     }
 
     private <T> T awaitReply(Supplier<CompletionStage<T>> ask, ErrorCode failure)
-            throws InterruptedException, AskTimeoutException {
+            throws InterruptedException, TimeoutException {
         try {
             return ask.get().toCompletableFuture().get();
-        } catch (ExecutionException exception) {
-            Throwable cause = exception.getCause();
-            while (cause instanceof CompletionException && cause.getCause() != null) cause = cause.getCause();
-            if (cause instanceof AskTimeoutException timeout) throw timeout;
+        } catch (ExecutionException | RuntimeException exception) {
+            Throwable cause = exception;
+            while ((cause instanceof CompletionException || cause instanceof ExecutionException)
+                    && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            if (cause instanceof TimeoutException timeout) throw timeout;
             throw new BaseException(failure, cause);
-        } catch (RuntimeException exception) {
-            throw new BaseException(failure, exception);
         }
     }
 
-    private NetworkRequirement resolveSharedNetwork(String region, String osProjectId, NetworkRequirement requested) {
+    private NetworkRequirement resolveSharedNetwork(String region, NetworkRequirement requested) {
         try {
             List<SysNetworkEntity> matches = sysNetworkRepo.findByRegionId(region).stream()
                     .filter(network -> network.getSysNetworkType() == SysNetworkType.SHARED).toList();
@@ -154,8 +155,8 @@ public class InstanceDependencyPreparer {
             if (!preset.isShared() || !hasText(preset.getOsNetId()) || !hasText(preset.getOsSubNetId())) {
                 throw new BaseException(ErrorCode.INSTANCE_SHARED_NETWORK_INVALID);
             }
-            var network = openStackClient.getNetwork(region, osProjectId, preset.getOsNetId());
-            var subnet = openStackClient.getSubnet(region, osProjectId, preset.getOsSubNetId());
+            var network = openStackClient.getNetwork(region, preset.getOsProjectId(), preset.getOsNetId());
+            var subnet = openStackClient.getSubnet(region, preset.getOsProjectId(), preset.getOsSubNetId());
             if (network == null || !network.isShared() || !preset.getOsNetId().equals(network.getId())
                     || subnet == null || !preset.getOsSubNetId().equals(subnet.getId())
                     || !network.getId().equals(subnet.getNetworkId())) {

@@ -59,4 +59,11 @@
         SELECT resource_version FROM hypervisor_host WHERE id = #{hypervisorId}
     </select>
 
+    <update id="advanceVersion">
+        UPDATE hypervisor_host
+        SET resource_version = #{version},
+            updated_at = #{updatedAt}
+        <include refid="newerResource"/>
+    </update>
+
 </mapper>

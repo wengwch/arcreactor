@@ -159,7 +159,7 @@
 
     <update id="updateNovaDeletion">
         UPDATE instance_view SET
-          phase = 'DELETING',
+          phase = 'DELETING_NOVA',
           os_nova_server_id = #{osServerId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}

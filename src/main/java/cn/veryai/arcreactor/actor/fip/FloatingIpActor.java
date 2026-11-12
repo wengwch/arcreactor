@@ -232,7 +232,7 @@ public final class FloatingIpActor
   private void executeDeletion(FloatingIpIdentity identity, ForwardingClaim claim) {
     String token = UUID.randomUUID().toString();
     pipeOperation(claim, token,
-        () -> client.deletePortForwardings(identity, claim.resources()),
+        () -> client.deletePortForwardings(identity, claim.claimId(), claim.spec(), claim.resources()),
         (deleted, error) -> error == null && Boolean.TRUE.equals(deleted)
             ? new DeletionCompleted(claim.claimId(), token, claim.generation())
             : new DeletionFailed(claim.claimId(), token, claim.generation(),
@@ -385,7 +385,7 @@ public final class FloatingIpActor
   private void recoverDeletion(FloatingIpIdentity identity, ForwardingClaim claim) {
     String token = UUID.randomUUID().toString();
     pipeOperation(claim, token,
-        () -> client.recoverPortForwardingDeletion(identity, claim.resources()),
+        () -> client.recoverPortForwardingDeletion(identity, claim.claimId(), claim.spec(), claim.resources()),
         (deleted, error) -> error == null && Boolean.TRUE.equals(deleted)
             ? new DeletionCompleted(claim.claimId(), token, claim.generation())
             : new DeletionFailed(claim.claimId(), token, claim.generation(),

@@ -5,17 +5,23 @@ import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
+import cn.veryai.arcreactor.actor.instance.event.HypervisorReservationStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
 import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceDeletionStarted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceDeleted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingsDeleted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceNetworkDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceReservationCancelled;
+import cn.veryai.arcreactor.actor.instance.event.InstanceSecurityGroupDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
 import cn.veryai.arcreactor.actor.instance.event.NovaDeletionAccepted;
 import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
+import cn.veryai.arcreactor.actor.instance.event.NovaServerDeleted;
 import cn.veryai.arcreactor.actor.instance.event.ParentPortPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.ParentPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
@@ -71,8 +77,11 @@ public final class InstanceProjectionHandler
         } else if (event instanceof ForwardingPreparationStarted
                 || event instanceof ForwardingCandidateSelected || event instanceof ForwardingPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
+        } else if (event instanceof HypervisorReservationStarted started) {
+            mapper.updateHypervisor(instanceId, "RESERVING_RESOURCES", started.hypervisorId(),
+                    started.reservationId(), version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
-            mapper.updateHypervisor(instanceId, "SCHEDULING", selected.hypervisorId(),
+            mapper.updateHypervisor(instanceId, "RESERVING_RESOURCES", selected.hypervisorId(),
                     selected.reservationId(), version, timestamp);
         } else if (event instanceof NovaCreationStarted started) {
             mapper.updateNovaOperation(instanceId, "PROVISIONING", started.operationId(), version, timestamp);
@@ -85,9 +94,19 @@ public final class InstanceProjectionHandler
         } else if (event instanceof ReservationConfirmedForInstance) {
             mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
         } else if (event instanceof InstanceDeletionStarted) {
-            mapper.updatePhase(instanceId, "DELETING", version, timestamp);
+            mapper.updatePhase(instanceId, "DELETING_NOVA", version, timestamp);
         } else if (event instanceof NovaDeletionAccepted accepted) {
             mapper.updateNovaDeletion(instanceId, accepted.osServerId(), version, timestamp);
+        } else if (event instanceof NovaServerDeleted) {
+            mapper.updatePhase(instanceId, "DELETING_FORWARDINGS", version, timestamp);
+        } else if (event instanceof InstanceForwardingsDeleted) {
+            mapper.updatePhase(instanceId, "DELETING_NETWORK", version, timestamp);
+        } else if (event instanceof InstanceNetworkDeleted) {
+            mapper.updatePhase(instanceId, "DELETING_SECURITY_GROUP", version, timestamp);
+        } else if (event instanceof InstanceSecurityGroupDeleted) {
+            mapper.updatePhase(instanceId, "CANCELLING_RESERVATION", version, timestamp);
+        } else if (event instanceof InstanceReservationCancelled) {
+            mapper.updatePhase(instanceId, "RELEASING_ALLOCATION", version, timestamp);
         } else if (event instanceof InstanceDeleted) {
             mapper.updatePhase(instanceId, "DELETED", version, timestamp);
         } else if (event instanceof InstanceActivated) {

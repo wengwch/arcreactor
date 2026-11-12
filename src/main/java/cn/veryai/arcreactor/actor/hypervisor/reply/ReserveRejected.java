@@ -7,6 +7,7 @@ public record ReserveRejected(String reservationId, Reason reason, String detail
         INSTANCE_ALREADY_ALLOCATED,
         RESERVATION_ID_CONFLICT,
         RESERVATION_FINALIZED,
+        RESERVATION_UNAVAILABLE,
         INVALID_REQUEST
     }
 }

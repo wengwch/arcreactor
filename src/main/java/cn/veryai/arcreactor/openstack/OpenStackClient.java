@@ -27,6 +27,7 @@ import org.openstack4j.api.OSClient;
 import org.openstack4j.api.exceptions.ResponseException;
 import org.openstack4j.api.types.Facing;
 import org.openstack4j.api.networking.ext.PortForwardingService;
+import org.openstack4j.api.manila.SharesService;
 import org.openstack4j.model.common.ActionResponse;
 import org.openstack4j.model.common.Identifier;
 import org.openstack4j.model.compute.*;
@@ -43,7 +44,6 @@ import org.openstack4j.model.network.*;
 import org.openstack4j.model.network.SecurityGroup;
 import org.openstack4j.model.network.builder.NetworkBuilder;
 import org.openstack4j.model.network.builder.SubnetBuilder;
-import org.openstack4j.model.network.options.PortListOptions;
 import org.openstack4j.model.network.ext.NetQosPolicy;
 import org.openstack4j.model.network.ext.NetQosPolicyBandwidthLimitRule;
 import org.openstack4j.model.network.ext.PortForwarding;
@@ -156,6 +156,7 @@ public class OpenStackClient {
   }
 
   private OSClient.OSClientV3 getOsClusterAdminClient(OpenstackClusterEntity cluster, String osProjectId) {
+    requireServerText(osProjectId, "osProjectId");
     Token token =
         adminTokenCache
             .asMap()
@@ -192,6 +193,7 @@ public class OpenStackClient {
   }
 
   public List<? extends Hypervisor> listHypervisors(String region) {
+    // Hypervisors are cloud-wide resources without a project_id filter.
     return getOsHypervisorClient(region).compute().hypervisors().list();
   }
 
@@ -286,7 +288,7 @@ public class OpenStackClient {
         client
             .networking()
             .securityrule()
-            .list(Map.of("security_group_id", osSecurityGroupId))
+            .list(Map.of("project_id", osProjectId, "security_group_id", osSecurityGroupId))
             .stream()
             .filter(
                 securityGroupRule ->
@@ -320,11 +322,14 @@ public class OpenStackClient {
   }
 
   /** Reads existing rule IDs and external ports for floating IP activation. */
-  public CompletionStage<List<PortForwardingSnapshot>> listPortForwardings(String region, String osFloatingIpId) {
-    return CompletableFuture.supplyAsync(() -> getOsForwardingClient(region).networking().floatingip()
-        .portForwarding().list(osFloatingIpId).stream()
-        .map(rule -> new PortForwardingSnapshot(rule.getId(), rule.getExternalPort()))
-        .toList(), NETWORK_EXECUTOR);
+  public CompletionStage<List<PortForwardingSnapshot>> listPortForwardings(
+      String region, String osProjectId, String osFloatingIpId) {
+    return CompletableFuture.supplyAsync(() -> {
+      OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
+      requireProjectFloatingIp(client, osProjectId, osFloatingIpId);
+      return client.networking().floatingip().portForwarding().list(osFloatingIpId).stream()
+          .map(rule -> new PortForwardingSnapshot(rule.getId(), rule.getExternalPort())).toList();
+    }, NETWORK_EXECUTOR);
   }
 
   public CompletionStage<Void> deletePortForwarding(String region, String osFloatingIpId, String osForwardingId) {
@@ -359,7 +364,7 @@ public class OpenStackClient {
   public CompletionStage<ForwardingResources> createPortForwardings(FloatingIpIdentity identity,
       String claimId, ForwardingSpec spec, int externalPort) {
     return CompletableFuture.supplyAsync(() -> {
-      var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
+      var service = getOsAdminClient(identity.regionId(), identity.osProjectId()).networking().floatingip().portForwarding();
       String osTcpForwardingId = createPortForwarding(service, identity.osFloatingIpId(), externalPort, spec, NetProtocol.TCP,
           forwardingMarker(claimId, NetProtocol.TCP));
       String osUdpForwardingId = createPortForwarding(service, identity.osFloatingIpId(), externalPort, spec, NetProtocol.UDP,
@@ -372,7 +377,9 @@ public class OpenStackClient {
   public CompletionStage<ForwardingResources> recoverPortForwardings(FloatingIpIdentity identity,
       String claimId, ForwardingSpec spec, int externalPort) {
     return CompletableFuture.supplyAsync(() -> {
-      var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
+      OSClient.OSClientV3 client = getOsAdminClient(identity.regionId(), identity.osProjectId());
+      requireProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId());
+      var service = client.networking().floatingip().portForwarding();
       List<? extends PortForwarding> forwardings = service.list(identity.osFloatingIpId());
       String tcpMarker = forwardingMarker(claimId, NetProtocol.TCP);
       String udpMarker = forwardingMarker(claimId, NetProtocol.UDP);
@@ -396,7 +403,14 @@ public class OpenStackClient {
     if (matches.size() > 1) throw new IllegalStateException("Duplicate forwarding operation marker");
     if (matches.isEmpty()) return null;
     PortForwarding existing = matches.getFirst();
-    if (existing.getExternalPort() != externalPort || existing.getInternalPort() != spec.internalPort()
+    requireForwardingMatches(existing, externalPort, spec, protocol, marker);
+    return existing.getId();
+  }
+
+  private static void requireForwardingMatches(PortForwarding existing, int externalPort,
+      ForwardingSpec spec, NetProtocol protocol, String marker) {
+    if (!marker.equals(existing.getDescription()) || existing.getExternalPort() != externalPort
+        || existing.getInternalPort() != spec.internalPort()
         || !spec.osInternalPortId().equals(existing.getInternalPortId())
         || !spec.fixedIp().equals(existing.getInternalIpAddress())
         || !protocol.name().equalsIgnoreCase(existing.getProtocol())) {
@@ -405,7 +419,6 @@ public class OpenStackClient {
     if (existing.getId() == null || existing.getId().isBlank()) {
       throw new IllegalStateException("Missing forwarding ID");
     }
-    return existing.getId();
   }
 
   private String createPortForwarding(PortForwardingService service, String osFloatingIpId,
@@ -475,7 +488,7 @@ public class OpenStackClient {
       }
       for (int port : ports) {
         for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
-          ensureInstanceSecurityRule(client, group.getId(), port, protocol, marker);
+          ensureInstanceSecurityRule(client, target.osProjectId(), group.getId(), port, protocol, marker);
         }
       }
       return group.getId();
@@ -494,16 +507,17 @@ public class OpenStackClient {
     }
   }
 
-  private void ensureInstanceSecurityRule(OSClient.OSClientV3 client, String osSecurityGroupId, int internalPort,
+  private void ensureInstanceSecurityRule(OSClient.OSClientV3 client, String osProjectId, String osSecurityGroupId, int internalPort,
       NetProtocol protocol, String groupMarker) {
     var service = client.networking().securityrule();
-    if (service.list(Map.of("security_group_id", osSecurityGroupId)).stream()
+    Map<String, String> filters = Map.of("project_id", osProjectId, "security_group_id", osSecurityGroupId);
+    if (service.list(filters).stream()
         .anyMatch(rule -> allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol))) return;
     try {
       createInstanceSecurityRule(client, osSecurityGroupId, internalPort, protocol, groupMarker);
     } catch (ResponseException error) {
       // An earlier request may have completed while recovery was querying the group's rules.
-      if (error.getStatus() != 409 || service.list(Map.of("security_group_id", osSecurityGroupId)).stream()
+      if (error.getStatus() != 409 || service.list(filters).stream()
           .noneMatch(rule -> allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol))) throw error;
     }
   }
@@ -529,44 +543,82 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
-  /** Queries recorded rule IDs before deletion; missing IDs leave deletion incomplete. */
-  public CompletionStage<Boolean> deletePortForwardings(FloatingIpIdentity identity, ForwardingResources resources) {
+  /** Queries recorded rules, resolving missing IDs by claim marker before deleting partial creations. */
+  public CompletionStage<Boolean> deletePortForwardings(FloatingIpIdentity identity, String claimId,
+      ForwardingSpec spec, ForwardingResources resources) {
     return CompletableFuture.supplyAsync(() -> {
-      var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
-      boolean tcpDeleted = deleteManagedPortForwarding(service, identity.osFloatingIpId(), resources.osTcpForwardingId());
-      boolean udpDeleted = deleteManagedPortForwarding(service, identity.osFloatingIpId(), resources.osUdpForwardingId());
+      OSClient.OSClientV3 client = getOsAdminClient(identity.regionId(), identity.osProjectId());
+      // A missing floating IP also has no forwarding rules; keep deletion idempotent.
+      if (getProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId()) == null) return true;
+      var service = client.networking().floatingip().portForwarding();
+      String osTcpForwardingId = resources.osTcpForwardingId();
+      String osUdpForwardingId = resources.osUdpForwardingId();
+      String tcpMarker = forwardingMarker(claimId, NetProtocol.TCP);
+      String udpMarker = forwardingMarker(claimId, NetProtocol.UDP);
+      if (osTcpForwardingId == null || osTcpForwardingId.isBlank()
+          || osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
+        List<? extends PortForwarding> forwardings = service.list(identity.osFloatingIpId());
+        if (osTcpForwardingId == null || osTcpForwardingId.isBlank()) {
+          osTcpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.TCP, tcpMarker);
+        }
+        if (osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
+          osUdpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.UDP, udpMarker);
+        }
+      }
+      boolean tcpDeleted = deleteManagedPortForwarding(service, identity.osFloatingIpId(), osTcpForwardingId,
+          resources.externalPort(), spec, NetProtocol.TCP, tcpMarker);
+      boolean udpDeleted = deleteManagedPortForwarding(service, identity.osFloatingIpId(), osUdpForwardingId,
+          resources.externalPort(), spec, NetProtocol.UDP, udpMarker);
       return tcpDeleted && udpDeleted;
     }, NETWORK_EXECUTOR);
   }
 
-  /** Independently resumes interrupted deletion by checking each recorded rule before removing it. */
+  /** Independently resumes deletion, discovering rules whose creation responses were not persisted. */
   public CompletionStage<Boolean> recoverPortForwardingDeletion(FloatingIpIdentity identity,
-      ForwardingResources resources) {
+      String claimId, ForwardingSpec spec, ForwardingResources resources) {
     return CompletableFuture.supplyAsync(() -> {
-      var service = getOsForwardingClient(identity.regionId()).networking().floatingip().portForwarding();
-      boolean complete = true;
-      for (String osRuleId : new String[] {resources.osTcpForwardingId(), resources.osUdpForwardingId()}) {
-        if (osRuleId == null || osRuleId.isBlank()) {
-          complete = false;
-          continue;
+      OSClient.OSClientV3 client = getOsAdminClient(identity.regionId(), identity.osProjectId());
+      if (getProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId()) == null) return true;
+      var service = client.networking().floatingip().portForwarding();
+      String osTcpForwardingId = resources.osTcpForwardingId();
+      String osUdpForwardingId = resources.osUdpForwardingId();
+      if (osTcpForwardingId == null || osTcpForwardingId.isBlank()
+          || osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
+        List<? extends PortForwarding> forwardings = service.list(identity.osFloatingIpId());
+        if (osTcpForwardingId == null || osTcpForwardingId.isBlank()) {
+          osTcpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.TCP,
+              forwardingMarker(claimId, NetProtocol.TCP));
         }
+        if (osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
+          osUdpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.UDP,
+              forwardingMarker(claimId, NetProtocol.UDP));
+        }
+      }
+      for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
+        String osRuleId = protocol == NetProtocol.TCP ? osTcpForwardingId : osUdpForwardingId;
+        if (osRuleId == null) continue;
         try {
-          if (service.get(identity.osFloatingIpId(), osRuleId) != null) {
+          PortForwarding existing = service.get(identity.osFloatingIpId(), osRuleId);
+          if (existing != null) {
+            requireForwardingMatches(existing, resources.externalPort(), spec, protocol, forwardingMarker(claimId, protocol));
             requireDeleteResponse(service.delete(identity.osFloatingIpId(), osRuleId));
           }
         } catch (ResponseException error) {
           if (error.getStatus() != 404) throw error;
         }
       }
-      return complete;
+      return true;
     }, NETWORK_EXECUTOR);
   }
 
   private boolean deleteManagedPortForwarding(PortForwardingService service, String osFloatingIpId,
-      String osRuleId) {
-    if (osRuleId == null || osRuleId.isBlank()) return false;
+      String osRuleId, int externalPort, ForwardingSpec spec, NetProtocol protocol, String marker) {
+    // Null is only passed after a successful marker lookup confirmed that the rule is absent.
+    if (osRuleId == null) return true;
     try {
-      if (service.get(osFloatingIpId, osRuleId) == null) return true;
+      PortForwarding existing = service.get(osFloatingIpId, osRuleId);
+      if (existing == null) return true;
+      requireForwardingMatches(existing, externalPort, spec, protocol, marker);
       requireDeleteResponse(service.delete(osFloatingIpId, osRuleId));
     } catch (ResponseException error) {
       if (error.getStatus() != 404) throw error;
@@ -578,9 +630,26 @@ public class OpenStackClient {
     return getOsAdminClient(region, getOpenstackCluster(region).getOsAdminDefaultProjectId());
   }
 
-  public CompletionStage<NetFloatingIP> getFloatingIp(String region, String osFloatingIpId) {
+  public CompletionStage<NetFloatingIP> getFloatingIp(String region, String osProjectId, String osFloatingIpId) {
     return CompletableFuture.supplyAsync(
-        () -> getOsForwardingClient(region).networking().floatingip().get(osFloatingIpId), NETWORK_EXECUTOR);
+        () -> getProjectFloatingIp(getOsAdminClient(region, osProjectId), osProjectId, osFloatingIpId), NETWORK_EXECUTOR);
+  }
+
+  private NetFloatingIP getProjectFloatingIp(OSClient.OSClientV3 client, String osProjectId, String osFloatingIpId) {
+    try {
+      NetFloatingIP floatingIp = client.networking().floatingip().get(osFloatingIpId);
+      if (floatingIp != null) requireProjectOwnership(osProjectId, floatingIp.getTenantId(), "floating IP");
+      return floatingIp;
+    } catch (ResponseException error) {
+      if (error.getStatus() == 404) return null;
+      throw error;
+    }
+  }
+
+  private void requireProjectFloatingIp(OSClient.OSClientV3 client, String osProjectId, String osFloatingIpId) {
+    if (getProjectFloatingIp(client, osProjectId, osFloatingIpId) == null) {
+      throw new OpenStackOperationException("Floating IP does not exist in the requested project", null);
+    }
   }
 
   private static void requireDeleteResponse(ActionResponse response) {
@@ -647,7 +716,7 @@ public class OpenStackClient {
   public CompletionStage<NetworkResources> createUserNetwork(NetworkSpec spec, String osProjectId, String name) {
     return CompletableFuture.supplyAsync(() -> {
       String regionId = spec.regionId();
-      String osLocalNetworkId = resolveUserLocalNetwork(regionId, osProjectId);
+      String osLocalNetworkId = resolveUserLocalNetwork(regionId);
 
       Network network = uniqueResource(listNetworks(regionId, osProjectId).stream()
           .filter(item -> osProjectId.equals(item.getTenantId()) && name.equals(item.getName())).toList(),
@@ -724,7 +793,7 @@ public class OpenStackClient {
     return matches.isEmpty() ? null : matches.getFirst();
   }
 
-  private String resolveUserLocalNetwork(String regionId, String osProjectId) {
+  private String resolveUserLocalNetwork(String regionId) {
     List<SysNetworkEntity> localNetworks = sysNetworkRepo.findByRegionId(regionId).stream()
         .filter(network -> network.getSysNetworkType() == SysNetworkType.LOCAL).toList();
     if (localNetworks.size() != 1) {
@@ -735,7 +804,7 @@ public class OpenStackClient {
         || local.getOsNetId() == null || local.getOsNetId().isBlank()) {
       throw new OpenStackOperationException("Preset LOCAL network must be shared and external with an OpenStack ID", null);
     }
-    Network network = getNetwork(regionId, osProjectId, local.getOsNetId());
+    Network network = getNetwork(regionId, local.getOsProjectId(), local.getOsNetId());
     if (network == null || !network.isRouterExternal() || !network.isShared()) {
       throw new OpenStackOperationException("Preset LOCAL network is not a shared external Neutron network", null);
     }
@@ -830,27 +899,31 @@ public class OpenStackClient {
   }
 
   public Network getNetwork(String regionId, String osProjectId, String osNetworkId) {
-    return getOsAdminClient(regionId, osProjectId).networking().network().get(osNetworkId);
+    Network network = getOsAdminClient(regionId, osProjectId).networking().network().get(osNetworkId);
+    if (network != null) requireProjectOwnership(osProjectId, network.getTenantId(), "network");
+    return network;
   }
 
   public Subnet getSubnet(String regionId, String osProjectId, String osSubnetId) {
-    return getOsAdminClient(regionId, osProjectId).networking().subnet().get(osSubnetId);
+    Subnet subnet = getOsAdminClient(regionId, osProjectId).networking().subnet().get(osSubnetId);
+    if (subnet != null) requireProjectOwnership(osProjectId, subnet.getTenantId(), "subnet");
+    return subnet;
   }
 
   public List<? extends Network> listNetworks(String regionId, String osProjectId) {
-    return getOsAdminClient(regionId, osProjectId).networking().network().list();
+    return getOsAdminClient(regionId, osProjectId).networking().network().list(Map.of("project_id", osProjectId));
   }
 
   public List<? extends Subnet> listSubnets(String regionId, String osProjectId) {
-    return getOsAdminClient(regionId, osProjectId).networking().subnet().list();
+    return getOsAdminClient(regionId, osProjectId).networking().subnet().list(Map.of("project_id", osProjectId));
   }
 
   public List<? extends Router> listRouters(String regionId, String osProjectId) {
-    return getOsAdminClient(regionId, osProjectId).networking().router().list();
+    return getOsAdminClient(regionId, osProjectId).networking().router().list(Map.of("project_id", osProjectId));
   }
 
   public List<? extends Port> listPorts(String regionId, String osProjectId) {
-    return getOsAdminClient(regionId, osProjectId).networking().port().list();
+    return getOsAdminClient(regionId, osProjectId).networking().port().list(Map.of("project_id", List.of(osProjectId)));
   }
 
   /** Creates a port using the caller's network, security group and prepared QoS policy. */
@@ -919,19 +992,28 @@ public class OpenStackClient {
     return verifyPortBandwidthRules(client, osPolicyId, bandwidthLimit);
   }
 
-  /** Verifies existing bandwidth rules without filling in missing rules during queries or recovery. */
+  /** Verifies existing bandwidth rules without filling in missing rules during queries. */
   private PreparedPortQos verifyPortBandwidthRules(OSClient.OSClientV3 client, String osPolicyId,
       PortBandwidthLimit bandwidthLimit) {
     List<? extends NetQosPolicyBandwidthLimitRule> rules = client.networking()
         .netQosPolicyBandwidthLimitRule().list(osPolicyId);
+    Map<NetQosPolicyBandwidthLimitRule.Direction, String> ruleIds =
+        portBandwidthRuleIds(rules, bandwidthLimit, false);
+    return new PreparedPortQos(osPolicyId, ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.ingress),
+        ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress));
+  }
+
+  private Map<NetQosPolicyBandwidthLimitRule.Direction, String> portBandwidthRuleIds(
+      List<? extends NetQosPolicyBandwidthLimitRule> rules, PortBandwidthLimit bandwidthLimit,
+      boolean allowMissing) {
+    Map<NetQosPolicyBandwidthLimitRule.Direction, String> ruleIds =
+        new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
     if (!bandwidthLimit.limited()) {
       if (!rules.isEmpty()) {
         throw new OpenStackOperationException("Unlimited port QoS policy contains bandwidth limit rules", null);
       }
-      return new PreparedPortQos(osPolicyId, null, null);
+      return ruleIds;
     }
-    Map<NetQosPolicyBandwidthLimitRule.Direction, String> ruleIds =
-        new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
     for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
       List<? extends NetQosPolicyBandwidthLimitRule> matches = rules.stream()
           .filter(rule -> Objects.requireNonNullElse(rule.getDirection(),
@@ -940,6 +1022,7 @@ public class OpenStackClient {
         throw new OpenStackOperationException("Duplicate port bandwidth limit direction", null);
       }
       if (matches.isEmpty()) {
+        if (allowMissing) continue;
         throw new OpenStackOperationException("Port QoS policy is missing a bandwidth limit rule", null);
       }
       NetQosPolicyBandwidthLimitRule rule = matches.getFirst();
@@ -951,13 +1034,69 @@ public class OpenStackClient {
       }
       ruleIds.put(direction, rule.getId());
     }
-    return new PreparedPortQos(osPolicyId, ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.ingress),
-        ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress));
+    return ruleIds;
+  }
+
+  /** Reuses orphan policies and completes only missing directions after an interrupted preparation. */
+  private PreparedPortQos recoverPortQos(OSClient.OSClientV3 client, String osProjectId, String portName,
+      String boundPolicyId, PortBandwidthLimit bandwidthLimit) {
+    Objects.requireNonNull(bandwidthLimit, "bandwidthLimit");
+    NeutronNetQosPolicy policy = uniqueResource(findPortQosPolicies(client, osProjectId, portName), "instance port QoS policy");
+    if (boundPolicyId != null) {
+      requireServerText(boundPolicyId, "osPolicyId");
+      if (policy != null && !boundPolicyId.equals(policy.getId())) {
+        throw new OpenStackOperationException("Instance port is bound to a different QoS policy", null);
+      }
+      if (policy == null) policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().get(boundPolicyId);
+      if (!isPortQosPolicy(policy, osProjectId, portName)) {
+        throw new OpenStackOperationException("Instance port has a mismatched QoS policy", null);
+      }
+    } else if (policy == null) {
+      String marker = portQosMarker(portName);
+      try {
+        policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().create(NeutronNetQosPolicy.builder()
+            .name(marker).description(marker).tenantId(osProjectId).shared(false).isDefault(false).build());
+      } catch (ResponseException error) {
+        if (error.getStatus() != 409) throw error;
+        policy = uniqueResource(findPortQosPolicies(client, osProjectId, portName), "instance port QoS policy");
+        if (policy == null) throw error;
+      }
+    }
+    if (!isPortQosPolicy(policy, osProjectId, portName)) {
+      throw new OpenStackOperationException("Missing or mismatched instance port QoS policy", null);
+    }
+    requireServerText(policy.getId(), "osPolicyId");
+    String osPolicyId = policy.getId();
+    var service = client.networking().netQosPolicyBandwidthLimitRule();
+    Map<NetQosPolicyBandwidthLimitRule.Direction, String> existing =
+        portBandwidthRuleIds(service.list(osPolicyId), bandwidthLimit, true);
+    if (bandwidthLimit.limited()) {
+      for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
+        if (existing.containsKey(direction)) continue;
+        try {
+          NetQosPolicyBandwidthLimitRule created = service.create(osPolicyId,
+              NeutronNetQosPolicyBandwidthLimitRule.builder().direction(direction)
+                  .maxKbps(bandwidthLimit.maxKbps()).maxBurstKbps(bandwidthLimit.maxBurstKbits()).build());
+          if (created == null) throw new OpenStackOperationException("Neutron returned no bandwidth limit rule", null);
+          Map<NetQosPolicyBandwidthLimitRule.Direction, String> createdIds =
+              portBandwidthRuleIds(List.of(created), bandwidthLimit, true);
+          if (!createdIds.containsKey(direction)) {
+            throw new OpenStackOperationException("Port bandwidth limit direction does not match the request", null);
+          }
+          existing.putAll(createdIds);
+        } catch (ResponseException error) {
+          if (error.getStatus() != 409) throw error;
+          existing = portBandwidthRuleIds(service.list(osPolicyId), bandwidthLimit, true);
+          if (!existing.containsKey(direction)) throw error;
+        }
+      }
+    }
+    return verifyPortBandwidthRules(client, osPolicyId, bandwidthLimit);
   }
 
   private List<NeutronNetQosPolicy> findPortQosPolicies(OSClient.OSClientV3 client,
       String osProjectId, String portName) {
-    return client.networking().netQosPolicy().list().stream()
+    return client.networking().netQosPolicy().list(Map.of("project_id", osProjectId)).stream()
         .filter(policy -> isPortQosPolicy(policy, osProjectId, portName))
         .map(policy -> (NeutronNetQosPolicy) policy).toList();
   }
@@ -1028,10 +1167,10 @@ public class OpenStackClient {
         String osNetworkId = requirement.osParentNetworkId();
         String osSubnetId = requirement.osParentSubnetId();
         List<? extends Port> matches = client.networking().port().list(
-            PortListOptions.create().tenantId(target.osProjectId()).name(marker)).stream()
+            Map.of("project_id", List.of(target.osProjectId()), "name", List.of(marker))).stream()
             .filter(port -> marker.equals(port.getName()) && target.osProjectId().equals(port.getTenantId()))
             .toList();
-        if (matches.size() > 1) throw new IllegalStateException("Duplicate instance port marker");
+        if (matches.size() > 1) throw new OpenStackOperationException("Duplicate instance port marker", null);
         Port port = matches.isEmpty() ? null : matches.getFirst();
         if (port == null) return null;
         if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
@@ -1127,10 +1266,10 @@ public class OpenStackClient {
         String osNetworkId = requirement.osSubNetworkId();
         String osSubnetId = requirement.osSubSubnetId();
         List<? extends Port> matches = client.networking().port().list(
-            PortListOptions.create().tenantId(target.osProjectId()).name(marker)).stream()
+            Map.of("project_id", List.of(target.osProjectId()), "name", List.of(marker))).stream()
             .filter(port -> marker.equals(port.getName()) && target.osProjectId().equals(port.getTenantId()))
             .toList();
-        if (matches.size() > 1) throw new IllegalStateException("Duplicate instance port marker");
+        if (matches.size() > 1) throw new OpenStackOperationException("Duplicate instance port marker", null);
         Port port = matches.isEmpty() ? null : matches.getFirst();
         if (port == null) return null;
         if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
@@ -1221,10 +1360,10 @@ public class OpenStackClient {
       try {
         OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
         String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
-        List<? extends Trunk> matches = client.networking().trunk().list().stream()
+        List<? extends Trunk> matches = client.networking().trunk().list(Map.of("project_id", target.osProjectId())).stream()
             .filter(trunk -> marker.equals(trunk.getDescription())
                 && target.osProjectId().equals(trunk.getTenantId())).toList();
-        if (matches.size() > 1) throw new IllegalStateException("Duplicate instance trunk marker");
+        if (matches.size() > 1) throw new OpenStackOperationException("Duplicate instance trunk marker", null);
         Trunk trunk = matches.isEmpty() ? null : matches.getFirst();
         if (trunk == null) return null;
         if (!prepared.osParentPortId().equals(trunk.getParentPort())
@@ -1244,6 +1383,209 @@ public class OpenStackClient {
         throw error;
       }
     }, NETWORK_EXECUTOR);
+  }
+
+  /** Resumes the parent stage, reusing its policy/rules and creating only the missing port. */
+  public CompletionStage<PreparedNetwork> recoverInstanceParentPort(ServerTarget target,
+      String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
+    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
+    requireServerText(osSecurityGroupId, "osSecurityGroupId");
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
+        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.PARENT_PORT);
+        Port port = findInstancePort(client, target.osProjectId(), marker);
+        if (port != null) validateInstancePort(port, target.osProjectId(), marker,
+            requirement.osParentNetworkId(), requirement.osParentSubnetId(), osSecurityGroupId, null);
+        PreparedPortQos qos = recoverPortQos(client, target.osProjectId(), marker,
+            port == null ? null : port.getQosPolicyId(), requirement.parentPortBandwidthLimit());
+        if (port == null) {
+          Port request = Builders.port().name(marker).tenantId(target.osProjectId())
+              .networkId(requirement.osParentNetworkId()).fixedIp(null, requirement.osParentSubnetId())
+              .adminState(true).portSecurityEnabled(true).securityGroup(osSecurityGroupId)
+              .qosPolicyId(qos.osPolicyId()).build();
+          port = recoverPortCreation(client, target.osProjectId(), marker, request);
+        }
+        String fixedIp = validateInstancePort(port, target.osProjectId(), marker,
+            requirement.osParentNetworkId(), requirement.osParentSubnetId(), osSecurityGroupId, null);
+        if (!qos.osPolicyId().equals(port.getQosPolicyId())) {
+          throw new OpenStackOperationException("Instance port is not bound to its recovered QoS policy", null);
+        }
+        return PreparedNetwork.parentPort(port.getId(), port.getMacAddress(), fixedIp, qos);
+      } catch (ResponseException error) {
+        throw networkRecoveryFailure("parent port", error);
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** Resumes QoS, the subport and its floating IP separately without replacing existing resources. */
+  public CompletionStage<PreparedNetwork> recoverInstanceSubPort(ServerTarget target,
+      String operationId, NetworkRequirement requirement, String osSecurityGroupId, PreparedNetwork prepared) {
+    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
+    Objects.requireNonNull(prepared, "prepared");
+    requireServerText(osSecurityGroupId, "osSecurityGroupId");
+    requireServerText(prepared.osParentPortId(), "osParentPortId");
+    requireServerText(prepared.parentMacAddress(), "parentMacAddress");
+    requireServerText(prepared.parentFixedIp(), "parentFixedIp");
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
+        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT);
+        Port port = findInstancePort(client, target.osProjectId(), marker);
+        if (port != null) validateInstancePort(port, target.osProjectId(), marker,
+            requirement.osSubNetworkId(), requirement.osSubSubnetId(), osSecurityGroupId, prepared.parentMacAddress());
+        PreparedPortQos qos = recoverPortQos(client, target.osProjectId(), marker,
+            port == null ? null : port.getQosPolicyId(), requirement.subPortBandwidthLimit());
+        if (port == null) {
+          Port request = Builders.port().name(marker).tenantId(target.osProjectId())
+              .networkId(requirement.osSubNetworkId()).fixedIp(null, requirement.osSubSubnetId())
+              .adminState(true).portSecurityEnabled(true).securityGroup(osSecurityGroupId)
+              .macAddress(prepared.parentMacAddress()).qosPolicyId(qos.osPolicyId()).build();
+          port = recoverPortCreation(client, target.osProjectId(), marker, request);
+        }
+        String fixedIp = validateInstancePort(port, target.osProjectId(), marker,
+            requirement.osSubNetworkId(), requirement.osSubSubnetId(), osSecurityGroupId, prepared.parentMacAddress());
+        if (!qos.osPolicyId().equals(port.getQosPolicyId())) {
+          throw new OpenStackOperationException("Instance port is not bound to its recovered QoS policy", null);
+        }
+        NetFloatingIP floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
+            requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
+        if (floatingIp == null) {
+          try {
+            floatingIp = createInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
+                requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
+          } catch (ResponseException error) {
+            if (error.getStatus() != 409) throw error;
+            floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
+                requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
+            if (floatingIp == null) throw error;
+          }
+        }
+        return prepared.withSubPort(port.getId(), fixedIp, floatingIp.getId(), floatingIp.getFloatingIpAddress(), qos);
+      } catch (ResponseException error) {
+        throw networkRecoveryFailure("subport", error);
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** Reuses a matching trunk, completing a missing attachment or creating the missing trunk. */
+  public CompletionStage<PreparedNetwork> recoverInstanceTrunk(ServerTarget target,
+      String operationId, NetworkRequirement requirement, PreparedNetwork prepared) {
+    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
+    Objects.requireNonNull(prepared, "prepared");
+    requireServerText(prepared.osParentPortId(), "osParentPortId");
+    requireServerText(prepared.parentMacAddress(), "parentMacAddress");
+    requireServerText(prepared.parentFixedIp(), "parentFixedIp");
+    requireServerText(prepared.osSubPortId(), "osSubPortId");
+    requireServerText(prepared.subFixedIp(), "subFixedIp");
+    requireServerText(prepared.osSubFloatingIpId(), "osSubFloatingIpId");
+    requireServerText(prepared.subFloatingIpAddress(), "subFloatingIpAddress");
+    return CompletableFuture.supplyAsync(() -> {
+      try {
+        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
+        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
+        var service = client.networking().trunk();
+        Trunk trunk = findInstanceTrunk(client, target.osProjectId(), marker);
+        NeutronTrunkSubport subport = NeutronTrunkSubport.fromTrunkSubport(NeutronTrunkSubport.builder()
+            .portId(prepared.osSubPortId()).segmentationType("vlan")
+            .segmentationId(requirement.segmentationId()).build());
+        if (trunk == null) {
+          try {
+            trunk = service.create(Builders.neutron().trunk().name(marker).description(marker)
+                .tenantId(target.osProjectId()).adminState(true).parentPort(prepared.osParentPortId())
+                .trunkSubports(List.of(subport)).build());
+          } catch (ResponseException error) {
+            if (error.getStatus() != 409) throw error;
+            trunk = findInstanceTrunk(client, target.osProjectId(), marker);
+            if (trunk == null) throw error;
+          }
+        }
+        validateInstanceTrunk(trunk, target.osProjectId(), marker, requirement, prepared, true);
+        if (trunk.getTrunkSubports().isEmpty()) {
+          String osTrunkId = trunk.getId();
+          try {
+            service.addTrunkSubport(osTrunkId, subport);
+          } catch (ResponseException error) {
+            if (error.getStatus() != 409) throw error;
+            Trunk observed = service.get(osTrunkId);
+            validateInstanceTrunk(observed, target.osProjectId(), marker, requirement, prepared, false);
+          }
+          trunk = service.get(osTrunkId);
+        }
+        validateInstanceTrunk(trunk, target.osProjectId(), marker, requirement, prepared, false);
+        return prepared.withTrunk(trunk.getId());
+      } catch (ResponseException error) {
+        throw networkRecoveryFailure("trunk", error);
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  private Port findInstancePort(OSClient.OSClientV3 client, String osProjectId, String marker) {
+    return uniqueResource(client.networking().port().list(
+        Map.of("project_id", List.of(osProjectId), "name", List.of(marker))).stream()
+        .filter(port -> marker.equals(port.getName()) && osProjectId.equals(port.getTenantId())).toList(),
+        "instance port");
+  }
+
+  private Port recoverPortCreation(OSClient.OSClientV3 client, String osProjectId, String marker, Port request) {
+    try {
+      return createPort(client, request);
+    } catch (ResponseException error) {
+      if (error.getStatus() != 409) throw error;
+      Port port = findInstancePort(client, osProjectId, marker);
+      if (port == null) throw error;
+      return port;
+    }
+  }
+
+  private String validateInstancePort(Port port, String osProjectId, String marker, String osNetworkId,
+      String osSubnetId, String osSecurityGroupId, String expectedMacAddress) {
+    if (port == null || !osProjectId.equals(port.getTenantId()) || !marker.equals(port.getName())) {
+      throw new OpenStackOperationException("Missing or mismatched instance port ownership", null);
+    }
+    if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
+        || !Set.of(osSecurityGroupId).equals(new HashSet<>(port.getSecurityGroups()))) {
+      throw new OpenStackOperationException("Instance port must use its dedicated security group", null);
+    }
+    if (!osNetworkId.equals(port.getNetworkId()) || port.getFixedIps() == null
+        || expectedMacAddress != null && !expectedMacAddress.equalsIgnoreCase(port.getMacAddress())) {
+      throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
+    }
+    requireServerText(port.getId(), "osPortId");
+    requireServerText(port.getMacAddress(), "portMacAddress");
+    requireServerText(port.getQosPolicyId(), "osPolicyId");
+    return port.getFixedIps().stream().filter(ip -> osSubnetId.equals(ip.getSubnetId()))
+        .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
+        .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
+  }
+
+  private Trunk findInstanceTrunk(OSClient.OSClientV3 client, String osProjectId, String marker) {
+    return uniqueResource(client.networking().trunk().list(Map.of("project_id", osProjectId)).stream()
+        .filter(trunk -> marker.equals(trunk.getDescription()) && osProjectId.equals(trunk.getTenantId())).toList(),
+        "instance trunk");
+  }
+
+  private void validateInstanceTrunk(Trunk trunk, String osProjectId, String marker,
+      NetworkRequirement requirement, PreparedNetwork prepared, boolean allowMissingSubport) {
+    if (trunk == null || !osProjectId.equals(trunk.getTenantId()) || !marker.equals(trunk.getDescription())) {
+      throw new OpenStackOperationException("Missing or mismatched instance trunk ownership", null);
+    }
+    requireServerText(trunk.getId(), "osTrunkId");
+    if (!prepared.osParentPortId().equals(trunk.getParentPort()) || trunk.getTrunkSubports() == null) {
+      throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
+    }
+    if (allowMissingSubport && trunk.getTrunkSubports().isEmpty()) return;
+    if (trunk.getTrunkSubports().size() != 1 || trunk.getTrunkSubports().stream().noneMatch(sub ->
+        prepared.osSubPortId().equals(sub.getPortId()) && "vlan".equals(sub.getSegmentationType())
+            && requirement.segmentationId() == sub.getSegmentationId())) {
+      throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
+    }
+  }
+
+  private RuntimeException networkRecoveryFailure(String resource, ResponseException error) {
+    int status = error.getStatus();
+    return status >= 400 && status < 500 && status != 408 && status != 429
+        ? new OpenStackOperationException("Neutron rejected instance " + resource + " recovery", error) : error;
   }
 
   private NetFloatingIP createInstanceSubPortFloatingIp(OSClient.OSClientV3 client, String osProjectId,
@@ -1267,7 +1609,7 @@ public class OpenStackClient {
     String marker = instanceSubPortFloatingIpMarker(operationId);
     NetFloatingIP floatingIp = uniqueResource(findInstanceSubPortFloatingIps(client, osProjectId, operationId),
         "instance subport floating IP");
-    // A lost response is resolved by lookup; recovery must not allocate another address.
+    // Keep this lookup read-only; recovery separately decides whether the missing address must be created.
     if (floatingIp == null) return null;
     if (!osProjectId.equals(floatingIp.getTenantId()) || !marker.equals(floatingIp.getDescription())
         || !osFloatingNetworkId.equals(floatingIp.getFloatingNetworkId()) || !osPortId.equals(floatingIp.getPortId())
@@ -1282,7 +1624,7 @@ public class OpenStackClient {
   private List<? extends NetFloatingIP> findInstanceSubPortFloatingIps(OSClient.OSClientV3 client,
       String osProjectId, String operationId) {
     String marker = instanceSubPortFloatingIpMarker(operationId);
-    return client.networking().floatingip().list().stream()
+    return client.networking().floatingip().list(Map.of("project_id", osProjectId)).stream()
         .filter(ip -> osProjectId.equals(ip.getTenantId()) && marker.equals(ip.getDescription())).toList();
   }
 
@@ -1299,7 +1641,7 @@ public class OpenStackClient {
         requireDeleteResponse(client.networking().floatingip().delete(floatingIp.getId()));
       }
       String trunkMarker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
-      for (Trunk trunk : client.networking().trunk().list()) {
+      for (Trunk trunk : client.networking().trunk().list(Map.of("project_id", target.osProjectId()))) {
         if (!trunkMarker.equals(trunk.getDescription()) || !target.osProjectId().equals(trunk.getTenantId())) continue;
         if (trunk.getTrunkSubports() != null) {
           for (TrunkSubport sub : trunk.getTrunkSubports()) {
@@ -1311,7 +1653,7 @@ public class OpenStackClient {
       for (InstanceNetworkStep step : List.of(InstanceNetworkStep.SUB_PORT, InstanceNetworkStep.PARENT_PORT)) {
         String marker = instanceNetworkMarker(operationId, step);
         for (Port port : client.networking().port().list(
-            PortListOptions.create().tenantId(target.osProjectId()).name(marker))) {
+            Map.of("project_id", List.of(target.osProjectId()), "name", List.of(marker)))) {
           if (marker.equals(port.getName()) && target.osProjectId().equals(port.getTenantId())) {
             requireDeleteResponse(client.networking().port().delete(port.getId()));
           }
@@ -1512,7 +1854,9 @@ public class OpenStackClient {
 
   public Server getServer(String regionId, String osProjectId, String osServerId) {
     OSClient.OSClientV3 client = getOsAdminClient(regionId, osProjectId);
-    return client.compute().servers().get(osServerId);
+    Server server = client.compute().servers().get(osServerId);
+    if (server != null) requireProjectOwnership(osProjectId, server.getTenantId(), "server");
+    return server;
   }
 
   /** Runs blocking SDK calls on virtual threads so instance actors can await their results. */
@@ -1585,6 +1929,8 @@ public class OpenStackClient {
           OSClient.OSClientV3 client =
               getOsAdminClient(resolveServerRegion(target), target.osProjectId());
           Map<String, String> filters = new HashMap<>();
+          filters.put("project_id", target.osProjectId());
+          filters.put("all_tenants", "true");
           filters.put("limit", "1000");
           NovaServer found = null;
           Set<String> markers = new HashSet<>();
@@ -1597,8 +1943,8 @@ public class OpenStackClient {
                   && server.getMetadata() != null
                   && operationId.equals(server.getMetadata().get(NOVA_OPERATION_ID))) {
                 if (found != null) {
-                  throw new IllegalStateException(
-                      "Multiple Nova servers share operation " + operationId);
+                  throw new OpenStackOperationException(
+                      "Multiple Nova servers share operation " + operationId, null);
                 }
                 found = toNovaServer(server);
               }
@@ -1658,6 +2004,14 @@ public class OpenStackClient {
     }
   }
 
+  /** Detail and nested-resource APIs have no project filter, so validate their owning resource. */
+  private static void requireProjectOwnership(String osProjectId, String ownerProjectId, String resource) {
+    requireServerText(osProjectId, "osProjectId");
+    if (!osProjectId.equals(ownerProjectId)) {
+      throw new OpenStackOperationException("OpenStack " + resource + " does not belong to the requested project", null);
+    }
+  }
+
   private static NovaServer toNovaServer(Server server) {
     if (server == null || server.getId() == null || server.getId().isBlank()) {
       throw new IllegalStateException("Nova returned no server ID");
@@ -1679,6 +2033,7 @@ public class OpenStackClient {
 
   public String getVNCLink(String region, String osProjectId, String osServerId) {
     try {
+      if (getServer(region, osProjectId, osServerId) == null) return null;
       OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
       return client.compute().servers().getVNCConsole(osServerId, VNCConsole.Type.NOVNC).getURL();
     } catch (Exception e) {
@@ -1725,7 +2080,7 @@ public class OpenStackClient {
         String operationId = shareCreate.getMetadata() == null ? null : shareCreate.getMetadata().get(SHARE_OPERATION_ID);
         requireServerText(operationId, "shareOperationId");
         var shares = getOsShareClient(region, osProjectId).share().shares();
-        Share existing = uniqueResource(shares.listDetails().stream()
+        Share existing = uniqueResource(shares.listDetails(Map.of("project_id", osProjectId, "all_tenants", "true")).stream()
             .filter(share -> osProjectId.equals(share.getProjectId()) && share.getMetadata() != null
                 && operationId.equals(share.getMetadata().get(SHARE_OPERATION_ID))).toList(), "user share");
         if (existing != null) {
@@ -1748,25 +2103,32 @@ public class OpenStackClient {
 
   public CompletionStage<Share> getShare(String region, String osProjectId, String osShareId) {
     return CompletableFuture.supplyAsync(
-        () -> getOsShareClient(region, osProjectId).share().shares().get(osShareId), SHARE_EXECUTOR);
+        () -> getProjectShare(getOsShareClient(region, osProjectId).share().shares(), osProjectId, osShareId), SHARE_EXECUTOR);
   }
 
   public CompletionStage<List<? extends Share>> listShares(String region, String osProjectId) {
     return CompletableFuture.supplyAsync(
-        () -> getOsShareClient(region, osProjectId).share().shares().listDetails(), SHARE_EXECUTOR);
+        () -> getOsShareClient(region, osProjectId).share().shares()
+            .listDetails(Map.of("project_id", osProjectId, "all_tenants", "true")).stream()
+            .filter(share -> osProjectId.equals(share.getProjectId())).toList(), SHARE_EXECUTOR);
   }
 
   public CompletionStage<List<? extends Access>> listShareAccess(
       String region, String osProjectId, String osShareId) {
-    return CompletableFuture.supplyAsync(
-        () -> getOsShareClient(region, osProjectId).share().shares().listAccess(osShareId), SHARE_EXECUTOR);
+    return CompletableFuture.supplyAsync(() -> {
+      var shares = getOsShareClient(region, osProjectId).share().shares();
+      requireProjectShare(shares, osProjectId, osShareId);
+      return shares.listAccess(osShareId);
+    }, SHARE_EXECUTOR);
   }
 
   public CompletionStage<List<? extends ShareExportLocation>> getShareExportLocation(
       String region, String osProjectId, String osShareId) {
     return CompletableFuture.supplyAsync(() -> {
       try {
-        return getOsShareClient(region, osProjectId).share().shares().listExportLocations(osShareId);
+        var shares = getOsShareClient(region, osProjectId).share().shares();
+        requireProjectShare(shares, osProjectId, osShareId);
+        return shares.listExportLocations(osShareId);
       } catch (Exception e) {
         log.error("get share export location failed", e);
         throw new OpenStackOperationException("get share export location failed", e);
@@ -1779,6 +2141,7 @@ public class OpenStackClient {
     return CompletableFuture.supplyAsync(() -> {
       try {
         var shares = getOsShareClient(region, osProjectId).share().shares();
+        requireProjectShare(shares, osProjectId, osShareId);
         Access existing = uniqueResource(shares.listAccess(osShareId).stream()
             .filter(access -> accessOptions.getAccessType() == access.getAccessType()
                 && accessOptions.getAccessTo().equals(access.getAccessTo())).toList(), "share access");
@@ -1799,7 +2162,10 @@ public class OpenStackClient {
   public CompletionStage<Access> getShareAccess(String region, String osProjectId, String osGrantAccessId) {
     return CompletableFuture.supplyAsync(() -> {
       try {
-        return getOsShareClient(region, osProjectId).share().shares().getAccess(osGrantAccessId);
+        var shares = getOsShareClient(region, osProjectId).share().shares();
+        Access access = shares.getAccess(osGrantAccessId);
+        if (access != null) requireProjectShare(shares, osProjectId, access.getShareId());
+        return access;
       } catch (Exception e) {
         log.error("get share access failed", e);
         throw new OpenStackOperationException("get share access failed", e);
@@ -1809,5 +2175,18 @@ public class OpenStackClient {
 
   private OSClient.OSClientV3 getOsShareClient(String region, String osProjectId) {
     return getOsAdminClient(region, osProjectId).perspective(Facing.INTERNAL);
+  }
+
+  private Share getProjectShare(SharesService shares, String osProjectId, String osShareId) {
+    requireServerText(osShareId, "osShareId");
+    Share share = shares.get(osShareId);
+    if (share != null) requireProjectOwnership(osProjectId, share.getProjectId(), "share");
+    return share;
+  }
+
+  private void requireProjectShare(SharesService shares, String osProjectId, String osShareId) {
+    if (getProjectShare(shares, osProjectId, osShareId) == null) {
+      throw new OpenStackOperationException("Share does not exist in the requested project", null);
+    }
   }
 }

@@ -89,7 +89,8 @@ public class FloatingIpService {
                 entity.setOsFloatingIpId(floatingIp.getId());
                 entity.setFloatingIp(floatingIp.getFloatingIpAddress());
             } else {
-                forwardings = openStackClient.listPortForwardings(entity.getRegionId(), entity.getOsFloatingIpId())
+                forwardings = openStackClient.listPortForwardings(
+                                entity.getRegionId(), entity.getOsProjectId(), entity.getOsFloatingIpId())
                         .toCompletableFuture().get();
             }
             entity.setPortMask(PortForwardingSnapshot.portMask(forwardings));

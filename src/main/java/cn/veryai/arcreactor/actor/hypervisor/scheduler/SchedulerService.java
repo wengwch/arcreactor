@@ -34,11 +34,39 @@ public final class SchedulerService {
 
     public CompletionStage<SchedulingResult> schedule(SchedulingRequest request) {
         metrics.request();
-        return candidateFinder.find(request).thenCompose(candidates -> {
+        return candidateFinder.find(request).thenApply(candidates -> {
             List<ScoredCandidate> ranked = rank(candidates, request);
             log.info("scheduler ranked requestId={} instanceId={} candidates={} eligible={}",
                     request.requestId(), request.instanceId(), candidates.size(), ranked.size());
-            return tryCandidates(ranked, request, 0, 0, false);
+            List<String> hypervisorIds = ranked.stream()
+                    .limit(maxClaimAttempts)
+                    .map(candidate -> candidate.candidate().hypervisorId())
+                    .toList();
+            if (hypervisorIds.isEmpty()) metrics.noValidHost();
+            return new SchedulingResult(hypervisorIds,
+                    hypervisorIds.isEmpty() ? "no eligible hosts" : "candidates ranked");
+        });
+    }
+
+    /** Attempts one reservation on the already selected host, without querying or changing candidates. */
+    public CompletionStage<ClaimResult> reserve(String hypervisorId, SchedulingRequest request) {
+        Objects.requireNonNull(hypervisorId, "hypervisorId");
+        Objects.requireNonNull(request, "request");
+        CompletionStage<ClaimResult> reservation;
+        try {
+            reservation = allocationClaimer.tryReserve(hypervisorId, request);
+        } catch (RuntimeException error) {
+            reservation = CompletableFuture.failedFuture(error);
+        }
+        return reservation.handle((claim, error) -> {
+            ClaimResult result = error == null && claim != null ? claim
+                    : ClaimResult.unknown(request.reservationId(),
+                            error == null ? "reservation returned no result" : error.toString());
+            if (result.status() == ClaimResult.Status.ACCEPTED) metrics.success();
+            log.info("scheduler claim completed hypervisorId={} requestId={} reservationId={} "
+                            + "instanceId={} outcome={} detail={}", hypervisorId, request.requestId(),
+                    request.reservationId(), request.instanceId(), result.status(), result.detail());
+            return result;
         });
     }
 
@@ -57,49 +85,6 @@ public final class SchedulerService {
                         .sum()))
                 .sorted(order.thenComparing(scored -> scored.candidate().hypervisorId()))
                 .toList();
-    }
-
-    private CompletionStage<SchedulingResult> tryCandidates(List<ScoredCandidate> ranked,
-            SchedulingRequest request, int index, int attempts, boolean timeoutRetried) {
-        if (index >= ranked.size() || attempts >= maxClaimAttempts) {
-            metrics.noValidHost();
-            return CompletableFuture.completedFuture(SchedulingResult.noValidHost(
-                    request.reservationId(), attempts, "all candidates rejected or unavailable"));
-        }
-        HypervisorCandidate candidate = ranked.get(index).candidate();
-        log.info("scheduler candidate selected hypervisorId={} requestId={} reservationId={} "
-                        + "instanceId={} gpuRequest={} availableGpu={} score={}", candidate.hypervisorId(), request.requestId(),
-                request.reservationId(), request.instanceId(), request.resources().gpuRequest(),
-                candidate.availableGpuCount(), ranked.get(index).score());
-        return allocationClaimer.tryReserve(candidate, request)
-                .exceptionally(error -> ClaimResult.failed(request.reservationId(), error.toString()))
-                .thenCompose(claim -> {
-                    int nextAttempts = attempts + 1;
-                    if (claim.status() == ClaimResult.Status.ACCEPTED) {
-                        metrics.success();
-                        log.info("scheduler claim accepted hypervisorId={} requestId={} reservationId={} "
-                                        + "instanceId={}", candidate.hypervisorId(), request.requestId(),
-                                request.reservationId(), request.instanceId());
-                        return CompletableFuture.completedFuture(SchedulingResult.reserved(
-                                candidate.hypervisorId(), request.reservationId(), nextAttempts));
-                    }
-                    log.info("scheduler claim rejected hypervisorId={} requestId={} reservationId={} "
-                                    + "instanceId={} outcome={} detail={}", candidate.hypervisorId(),
-                            request.requestId(), request.reservationId(), request.instanceId(),
-                            claim.status(), claim.detail());
-                    if (claim.status() == ClaimResult.Status.TIMEOUT && !timeoutRetried
-                            && nextAttempts < maxClaimAttempts) {
-                        metrics.claimRetry();
-                        return tryCandidates(ranked, request, index, nextAttempts, true);
-                    }
-                    if (claim.status() == ClaimResult.Status.TIMEOUT || claim.status() == ClaimResult.Status.FAILED) {
-                        return CompletableFuture.failedFuture(new IllegalStateException(
-                                "Reservation outcome is unknown on host " + candidate.hypervisorId()
-                                        + "; stop scheduling to avoid reserving a second host"));
-                    }
-                    metrics.claimRetry();
-                    return tryCandidates(ranked, request, index + 1, nextAttempts, false);
-                });
     }
 
     public record WeightedScorer(CandidateScorer scorer, double weight) {

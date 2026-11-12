@@ -15,15 +15,21 @@ import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
+import java.io.IOException;
 import java.io.Serializable;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import org.openstack4j.api.exceptions.ConnectionException;
+import org.openstack4j.api.exceptions.ResponseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +37,7 @@ import org.slf4j.LoggerFactory;
 public final class InstanceRecovery {
   private static final Logger log = LoggerFactory.getLogger(InstanceRecovery.class);
 
-  public enum Action { RETRY, CONTINUE_CREATION, STOP }
+  public enum Action { RETRY, CONTINUE_CREATION, CONTINUE_DELETION, STOP }
 
   /** Local recovery decision; only its domain events are written to the journal. */
   public record Outcome(List<InstanceWorkflowEvent> events, Action action) implements Serializable {
@@ -57,6 +63,7 @@ public final class InstanceRecovery {
     try {
       CompletionStage<Outcome> request = switch (state.phase()) {
         case SCHEDULING -> recoverScheduling(state);
+        case RESERVING_RESOURCES -> recoverReservation(state);
         case PREPARING_DEPENDENCIES -> recoverDependencies(state);
         case PREPARING_SECURITY_GROUP -> recoverSecurityGroup(state);
         case PREPARING_PARENT_PORT -> recoverParentPort(state);
@@ -65,7 +72,12 @@ public final class InstanceRecovery {
         case PREPARING_FORWARDING -> recoverForwarding(state);
         case PROVISIONING -> recoverProvisioning(state);
         case CONFIRMING -> recoverConfirmation(state);
-        case DELETING -> recoverDeletion(state);
+        case DELETING_NOVA -> recoverNovaDeletion(state);
+        case DELETING_FORWARDINGS -> recoverForwardingDeletion(state);
+        case DELETING_NETWORK -> recoverNetworkDeletion(state);
+        case DELETING_SECURITY_GROUP -> recoverSecurityGroupDeletion(state);
+        case CANCELLING_RESERVATION -> recoverReservationCancellation(state);
+        case RELEASING_ALLOCATION -> recoverAllocationRelease(state);
         default -> CompletableFuture.completedFuture(new Outcome(List.of(), Action.STOP));
       };
       return request.exceptionally(error -> failedRequest(state, rootCause(error)));
@@ -80,13 +92,36 @@ public final class InstanceRecovery {
         state.instanceId(), new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount()),
         null, spec.region(), spec.hypervisorType(), spec.hostname());
     return placement.schedule(request).thenApply(result -> {
-      if (result.status() == HypervisorPlacement.ScheduleResult.Status.NO_VALID_HOST) {
+      List<String> candidates = result.hypervisorIds();
+      if (candidates.isEmpty()) {
         return failed(state, "NO_VALID_HOST", result.detail());
       }
-      Instant now = clock.instant();
-      return proceed(new HypervisorSelected(state.instanceId(), result.hypervisorId(), reservationId(state),
-              now),
-          new DependencyPreparationStarted(state.instanceId()));
+      return proceed(new HypervisorReservationStarted(state.instanceId(), candidates.get(0), reservationId(state),
+          candidates.subList(1, candidates.size()), clock.instant()));
+    });
+  }
+
+  private CompletionStage<Outcome> recoverReservation(InstanceWorkflowState state) {
+    var spec = state.spec();
+    var request = new HypervisorPlacement.ScheduleRequest(state.requestId(), state.reservationId(),
+        state.instanceId(), new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount()),
+        null, spec.region(), spec.hypervisorType(), spec.hostname());
+    // An uncertain reservation must stay on the persisted host until its result is known.
+    return placement.reserve(state.hypervisorId(), request).thenApply(result -> {
+      return switch (result.status()) {
+        case ACCEPTED -> proceed(new HypervisorSelected(state.instanceId(), state.hypervisorId(),
+                state.reservationId(), clock.instant()),
+            new DependencyPreparationStarted(state.instanceId()));
+        case UNAVAILABLE -> {
+          List<String> candidates = state.remainingHypervisorIds();
+          yield candidates.isEmpty()
+              ? failed(state, "NO_VALID_HOST", result.detail())
+              : proceed(new HypervisorReservationStarted(state.instanceId(), candidates.get(0), state.reservationId(),
+                  candidates.subList(1, candidates.size()), clock.instant()));
+        }
+        case REJECTED -> failed(state, "RESERVATION_REJECTED", result.detail());
+        case UNKNOWN -> retry();
+      };
     });
   }
 
@@ -108,31 +143,31 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<Outcome> recoverParentPort(InstanceWorkflowState state) {
-    // Discover the parent port and its QoS without resubmitting creation.
-    return client.findInstanceParentPort(target(state), networkOperationId(state),
+    return client.recoverInstanceParentPort(target(state), networkOperationId(state),
         state.dependencies().network(), state.osSecurityGroupId()).thenApply(resources -> {
-          if (resources == null) return retry();
+          if (resources == null) return failed(state, "NETWORK_RECOVERY_INCOMPLETE",
+              "Parent port recovery returned no resource state");
           return proceed(new ParentPortPrepared(state.instanceId(), resources),
               new SubPortPreparationStarted(state.instanceId()));
         });
   }
 
   private CompletionStage<Outcome> recoverSubPort(InstanceWorkflowState state) {
-    // Discover the subport, its QoS and floating IP using the recorded parent port.
-    return client.findInstanceSubPort(target(state), networkOperationId(state),
+    return client.recoverInstanceSubPort(target(state), networkOperationId(state),
         state.dependencies().network(), state.osSecurityGroupId(), state.networkPreparation().resources())
         .thenApply(resources -> {
-          if (resources == null) return retry();
+          if (resources == null) return failed(state, "NETWORK_RECOVERY_INCOMPLETE",
+              "Subport recovery returned no resource state");
           return proceed(new SubPortPrepared(state.instanceId(), resources),
               new TrunkPreparationStarted(state.instanceId()));
         });
   }
 
   private CompletionStage<Outcome> recoverTrunk(InstanceWorkflowState state) {
-    // Discover the trunk using the recorded ports without resubmitting creation.
-    return client.findInstanceTrunk(target(state), networkOperationId(state),
+    return client.recoverInstanceTrunk(target(state), networkOperationId(state),
         state.dependencies().network(), state.networkPreparation().resources()).thenApply(resources -> {
-          if (resources == null) return retry();
+          if (resources == null) return failed(state, "NETWORK_RECOVERY_INCOMPLETE",
+              "Trunk recovery returned no resource state");
           return proceed(new TrunkPrepared(state.instanceId(), resources),
               state.spec().forwarding() == null ? novaStarted(state)
                   : new ForwardingPreparationStarted(state.instanceId()));
@@ -188,7 +223,13 @@ public final class InstanceRecovery {
         ? client.findServerByOperationId(target(state), state.novaOperationId()).thenApply(OpenStackClient.ServerLookupResult::server)
         : client.getServer(target(state), state.osNovaServerId());
     return lookup.thenApply(server -> {
-      if (server == null) return retry();
+      if (server == null) {
+        return state.osNovaServerId() == null
+            ? failed(state, "NOVA_CREATION_UNCONFIRMED",
+                "Nova creation outcome is unconfirmed; verify OpenStack manually before deleting retained resources. "
+                    + "Recovery will not submit another server creation")
+            : failed(state, "NOVA_SERVER_MISSING", "The recorded Nova server no longer exists; resources are retained");
+      }
       Instant now = clock.instant();
       List<InstanceWorkflowEvent> events = new ArrayList<>();
       if (!server.osServerId().equals(state.osNovaServerId()) || server.status() != state.novaStatus()) {
@@ -219,78 +260,146 @@ public final class InstanceRecovery {
     });
   }
 
-  private CompletionStage<Outcome> recoverDeletion(InstanceWorkflowState state) {
-    // Recovery owns this ordering independently of normal externally requested deletion.
-    return recoverNovaDeletion(state).thenCompose(osServerId -> {
-      if (osServerId != null) {
-        return CompletableFuture.completedFuture(state.novaDeletionAccepted() ? retry()
-            : new Outcome(List.of(new NovaDeletionAccepted(state.instanceId(), osServerId, clock.instant())), Action.RETRY));
+  private CompletionStage<Outcome> recoverNovaDeletion(InstanceWorkflowState state) {
+    return checkNovaDeletionStatus(state).thenCompose(osServerId -> {
+      if (osServerId == null) {
+        return CompletableFuture.completedFuture(continueDeletion(
+            new NovaServerDeleted(state.instanceId(), clock.instant())));
       }
-      return recoverForwardingDeletion(state).thenCompose(deleted -> {
-        if (!deleted) return CompletableFuture.completedFuture(false);
-        return state.networkPreparation() == null ? CompletableFuture.completedFuture(true)
-            : client.deleteInstanceNetwork(target(state), networkOperationId(state)).thenApply(ignored -> true);
-      }).thenCompose(deleted -> {
-        if (!deleted) return CompletableFuture.completedFuture(false);
-        return state.securityGroupPreparation() == null ? CompletableFuture.completedFuture(true)
-            : client.deleteInstanceSecurityGroup(target(state), state.instanceId()).thenApply(ignored -> true);
-      }).thenCompose(deleted -> {
-        if (!deleted) return CompletableFuture.completedFuture(false);
-        return state.hypervisorId() == null || state.reservationId() == null ? CompletableFuture.completedFuture(true)
-            : placement.cancel(state.hypervisorId(), state.reservationId())
-                .thenApply(result -> result.status() == HypervisorPlacement.ReservationResult.Status.SUCCEEDED);
-      }).thenApply(deleted -> deleted
-          ? new Outcome(List.of(new InstanceDeleted(state.instanceId(), clock.instant())), Action.STOP) : retry());
+      return state.novaDeletionAccepted() ? CompletableFuture.completedFuture(retry())
+          : recoverNovaDeletion(state, osServerId);
     });
   }
 
-  private CompletionStage<String> recoverNovaDeletion(InstanceWorkflowState state) {
+  private CompletionStage<String> checkNovaDeletionStatus(InstanceWorkflowState state) {
     if (state.osNovaServerId() == null && state.novaOperationId() == null) return CompletableFuture.completedFuture(null);
     CompletionStage<OpenStackClient.NovaServer> lookup = state.osNovaServerId() == null
         ? client.findServerByOperationId(target(state), state.novaOperationId()).thenApply(OpenStackClient.ServerLookupResult::server)
         : client.getServer(target(state), state.osNovaServerId());
-    return lookup.thenCompose(server -> {
-      if (server == null) return CompletableFuture.completedFuture(null);
-      // A journaled acceptance survives restarts. Recovery keeps querying until Nova reports absence.
-      if (state.novaDeletionAccepted()) return CompletableFuture.completedFuture(server.osServerId());
-      return client.deleteServer(target(state), server.osServerId()).thenApply(ignored -> server.osServerId());
-    });
+    return lookup.thenApply(server -> server == null ? null : server.osServerId());
   }
 
-  private CompletionStage<Boolean> recoverForwardingDeletion(InstanceWorkflowState state) {
-    if (state.spec().forwarding() == null || !state.forwardingPreparationStarted()) {
-      return CompletableFuture.completedFuture(true);
-    }
+  private CompletionStage<Outcome> recoverNovaDeletion(InstanceWorkflowState state, String osServerId) {
+    return client.deleteServer(target(state), osServerId).thenApply(ignored -> new Outcome(
+        List.of(new NovaDeletionAccepted(state.instanceId(), osServerId, clock.instant())), Action.RETRY));
+  }
+
+  private CompletionStage<Outcome> recoverForwardingDeletion(InstanceWorkflowState state) {
     List<CompletableFuture<Boolean>> requests = new ArrayList<>();
-    for (String osFloatingIpId : state.spec().forwarding().osFloatingIpIds()) {
-      for (int port : state.spec().forwarding().internalPorts()) {
-        requests.add(forwardings.delete(state.spec().region(), osFloatingIpId, forwardingClaimId(state, port))
-            .handle((reply, error) -> error == null && reply != null && reply.status() == ForwardingReply.Status.DELETED)
-            .toCompletableFuture());
-      }
+    for (PreparedForwarding forwarding : state.preparedForwardings()) {
+      requests.add(checkForwardingDeletionStatus(state, forwarding).thenCompose(reply -> {
+        if (reply == null) return CompletableFuture.completedFuture(false);
+        return switch (reply.status()) {
+          case DELETED -> CompletableFuture.completedFuture(true);
+          case IN_PROGRESS, REJECTED -> CompletableFuture.completedFuture(false);
+          case READY, FAILED, DELETE_FAILED, NOT_FOUND ->
+              submitForwardingDeletion(state, forwarding).thenApply(deleted ->
+                  deleted != null && deleted.status() == ForwardingReply.Status.DELETED);
+        };
+      }).toCompletableFuture());
     }
     return CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new))
-        .thenApply(ignored -> requests.stream().allMatch(CompletableFuture::join));
+        .thenApply(ignored -> requests.stream().allMatch(CompletableFuture::join)
+            ? continueDeletion(new InstanceForwardingsDeleted(state.instanceId(), clock.instant())) : retry());
+  }
+
+  private CompletionStage<ForwardingReply> checkForwardingDeletionStatus(
+      InstanceWorkflowState state, PreparedForwarding forwarding) {
+    return forwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId());
+  }
+
+  private CompletionStage<ForwardingReply> submitForwardingDeletion(
+      InstanceWorkflowState state, PreparedForwarding forwarding) {
+    return forwardings.delete(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId());
+  }
+
+  private CompletionStage<Outcome> recoverNetworkDeletion(InstanceWorkflowState state) {
+    CompletionStage<Void> request = state.networkPreparation() == null
+        ? CompletableFuture.completedFuture(null)
+        : client.deleteInstanceNetwork(target(state), networkOperationId(state));
+    return request.thenApply(ignored -> continueDeletion(new InstanceNetworkDeleted(state.instanceId(), clock.instant())));
+  }
+
+  private CompletionStage<Outcome> recoverSecurityGroupDeletion(InstanceWorkflowState state) {
+    CompletionStage<Void> request = state.securityGroupPreparation() == null
+        ? CompletableFuture.completedFuture(null)
+        : client.deleteInstanceSecurityGroup(target(state), state.instanceId());
+    return request.thenApply(ignored -> continueDeletion(
+        new InstanceSecurityGroupDeleted(state.instanceId(), clock.instant())));
+  }
+
+  private CompletionStage<Outcome> recoverReservationCancellation(InstanceWorkflowState state) {
+    if (state.hypervisorId() == null || state.reservationId() == null) {
+      return CompletableFuture.completedFuture(continueDeletion(
+          new InstanceReservationCancelled(state.instanceId(), clock.instant())));
+    }
+    return placement.cancel(state.hypervisorId(), state.reservationId()).thenApply(result ->
+        result.status() == HypervisorPlacement.ReservationResult.Status.SUCCEEDED
+            ? continueDeletion(new InstanceReservationCancelled(state.instanceId(), clock.instant())) : retry());
+  }
+
+  private CompletionStage<Outcome> recoverAllocationRelease(InstanceWorkflowState state) {
+    if (state.hypervisorId() == null) {
+      return CompletableFuture.completedFuture(new Outcome(
+          List.of(new InstanceDeleted(state.instanceId(), clock.instant())), Action.STOP));
+    }
+    return placement.release(state.hypervisorId(), state.instanceId()).thenApply(result ->
+        result.status() == HypervisorPlacement.ReservationResult.Status.SUCCEEDED
+            ? new Outcome(List.of(new InstanceDeleted(state.instanceId(), clock.instant())), Action.STOP) : retry());
   }
 
   private Outcome failedRequest(InstanceWorkflowState state, Throwable error) {
+    if (state.phase().isDeleting()) {
+      log.warn("Instance deletion recovery incomplete: instanceId={} phase={} reason={}",
+          state.instanceId(), state.phase(), error.toString());
+      return retry();
+    }
+    if (hasTransientCause(error)) return retry();
     return switch (state.phase()) {
       case SCHEDULING -> failed(state, "SCHEDULING_FAILED", error.toString());
+      case RESERVING_RESOURCES -> {
+        log.warn("Instance reservation recovery incomplete: instanceId={} hypervisorId={} reservationId={} reason={}",
+            state.instanceId(), state.hypervisorId(), state.reservationId(), error.toString());
+        yield retry();
+      }
       case PREPARING_DEPENDENCIES -> {
         String code = error instanceof BaseException business ? Integer.toString(business.getCode()) : "DEPENDENCY_PREPARATION_FAILED";
         yield failed(state, code, "Dependency preparation failed: " + code + " (" + error.getClass().getSimpleName() + ")");
       }
-      case PREPARING_SECURITY_GROUP -> failed(state, "SECURITY_GROUP_PREPARATION_FAILED", error instanceof OpenStackOperationException
-              ? error.getMessage() : "Security group preparation failed: " + error.getClass().getSimpleName());
-      case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> error instanceof OpenStackOperationException
+      case PREPARING_SECURITY_GROUP -> hasDefinitiveCause(error)
+          ? failed(state, "SECURITY_GROUP_PREPARATION_FAILED", error.toString()) : retry();
+      case PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK -> hasDefinitiveCause(error)
           ? failed(state, "NETWORK_PREPARATION_FAILED", error.toString())
           : retry();
-      case DELETING -> {
-        log.warn("Instance deletion recovery incomplete: instanceId={} reason={}", state.instanceId(), error.toString());
-        yield retry();
-      }
+      case PROVISIONING -> hasDefinitiveCause(error)
+          ? failed(state, "NOVA_RECOVERY_FAILED", error.toString()) : retry();
       default -> retry();
     };
+  }
+
+  private static boolean hasTransientCause(Throwable error) {
+    Set<Throwable> visited = new HashSet<>();
+    for (Throwable cause = error; cause != null && visited.add(cause); cause = cause.getCause()) {
+      if (cause instanceof IOException || cause instanceof TimeoutException
+          || cause instanceof InterruptedException || cause instanceof ConnectionException) return true;
+      if (cause instanceof ResponseException response) {
+        int status = response.getStatus();
+        if (status == 408 || status == 429 || (status >= 500 && status < 600)) return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean hasDefinitiveCause(Throwable error) {
+    Set<Throwable> visited = new HashSet<>();
+    for (Throwable cause = error; cause != null && visited.add(cause); cause = cause.getCause()) {
+      if (cause instanceof OpenStackOperationException || cause instanceof BaseException
+          || cause instanceof IllegalArgumentException || cause instanceof IllegalStateException
+          || cause instanceof NullPointerException || cause instanceof IndexOutOfBoundsException) return true;
+      if (cause instanceof ResponseException response
+          && response.getStatus() >= 400 && response.getStatus() < 500) return true;
+    }
+    return false;
   }
 
   private Outcome failed(InstanceWorkflowState state, String code, String detail) {
@@ -304,6 +413,10 @@ public final class InstanceRecovery {
 
   private static Outcome proceed(InstanceWorkflowEvent... events) {
     return new Outcome(List.of(events), Action.CONTINUE_CREATION);
+  }
+
+  private static Outcome continueDeletion(InstanceWorkflowEvent... events) {
+    return new Outcome(List.of(events), Action.CONTINUE_DELETION);
   }
 
   private static Outcome retry() { return new Outcome(List.of(), Action.RETRY); }

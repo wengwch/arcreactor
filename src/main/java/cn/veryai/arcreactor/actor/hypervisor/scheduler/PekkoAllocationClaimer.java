@@ -7,7 +7,6 @@ import cn.veryai.arcreactor.actor.hypervisor.reply.ReserveAccepted;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ReserveRejected;
 import cn.veryai.arcreactor.actor.hypervisor.reply.ReserveReply;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.ClaimResult;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.HypervisorCandidate;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.model.SchedulingRequest;
 import lombok.RequiredArgsConstructor;
 import org.apache.pekko.actor.typed.ActorSystem;
@@ -23,10 +22,10 @@ public final class PekkoAllocationClaimer implements AllocationClaimer {
     private final Duration askTimeout;
 
     @Override
-    public CompletionStage<ClaimResult> tryReserve(HypervisorCandidate candidate, SchedulingRequest request) {
+    public CompletionStage<ClaimResult> tryReserve(String hypervisorId, SchedulingRequest request) {
         return AskPattern.<HypervisorCommand, ReserveReply>ask(
                         ClusterSharding.get(system).entityRefFor(
-                                HypervisorActor.TYPE_KEY, candidate.hypervisorId()),
+                                HypervisorActor.TYPE_KEY, hypervisorId),
                         replyTo -> new ReserveResources(request.requestId(), request.reservationId(),
                                 request.instanceId(), request.resources(), replyTo,
                                 request.constraints().availabilityZone()),
@@ -34,9 +33,7 @@ public final class PekkoAllocationClaimer implements AllocationClaimer {
                         system.scheduler())
                 .handle((reply, error) -> {
                     if (error != null) {
-                        return isTimeout(error)
-                                ? ClaimResult.timeout(request.reservationId(), error.toString())
-                                : ClaimResult.failed(request.reservationId(), error.toString());
+                        return ClaimResult.unknown(request.reservationId(), error.toString());
                     }
                     if (reply instanceof ReserveAccepted accepted) {
                         return ClaimResult.accepted(accepted.reservationId());
@@ -46,11 +43,4 @@ public final class PekkoAllocationClaimer implements AllocationClaimer {
                 });
     }
 
-    private static boolean isTimeout(Throwable error) {
-        for (Throwable current = error; current != null; current = current.getCause()) {
-            if (current instanceof java.util.concurrent.TimeoutException
-                    || current.getClass().getSimpleName().contains("Timeout")) return true;
-        }
-        return false;
-    }
 }

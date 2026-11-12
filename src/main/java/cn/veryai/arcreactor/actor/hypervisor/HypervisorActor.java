@@ -100,9 +100,13 @@ public final class HypervisorActor
             command.replyTo().tell(new ReserveAccepted(command.reservationId(), true));
             return Effect().none();
         }
-        if (state.reservationOutcomes().containsKey(command.reservationId())) {
-            command.replyTo().tell(rejected(command, ReserveRejected.Reason.RESERVATION_FINALIZED,
-                    "reservation was already finalized"));
+        ReservationOutcome outcome = state.reservationOutcomes().get(command.reservationId());
+        if (outcome != null) {
+            command.replyTo().tell(outcome == ReservationOutcome.REJECTED
+                    ? rejected(command, ReserveRejected.Reason.RESERVATION_UNAVAILABLE,
+                            "reservation was already rejected on this hypervisor")
+                    : rejected(command, ReserveRejected.Reason.RESERVATION_FINALIZED,
+                            "reservation was already finalized"));
             return Effect().none();
         }
         if (allocation != null) {
@@ -111,21 +115,18 @@ public final class HypervisorActor
             return Effect().none();
         }
         if (state.status() != HypervisorStatus.ACTIVE) {
-            command.replyTo().tell(rejected(command, ReserveRejected.Reason.NOT_ACTIVE,
-                    "hypervisor status is " + state.status()));
-            return Effect().none();
+            return rejectUnavailable(command, ReserveRejected.Reason.NOT_ACTIVE,
+                    "hypervisor status is " + state.status());
         }
         if (command.availabilityZone() != null
                 && !command.availabilityZone().equals(state.capacity().availabilityZone())) {
-            command.replyTo().tell(rejected(command, ReserveRejected.Reason.INVALID_REQUEST,
-                    "host no longer matches placement constraints"));
-            return Effect().none();
+            return rejectUnavailable(command, ReserveRejected.Reason.INVALID_REQUEST,
+                    "host no longer matches placement constraints");
         }
         var assigned = state.assignResources(command.resources());
         if (assigned.isEmpty()) {
-            command.replyTo().tell(rejected(command, ReserveRejected.Reason.INSUFFICIENT_RESOURCE,
-                    "insufficient CPU, memory, disk, or matching GPU"));
-            return Effect().none();
+            return rejectUnavailable(command, ReserveRejected.Reason.INSUFFICIENT_RESOURCE,
+                    "insufficient CPU, memory, disk, or matching GPU");
         }
         Reservation reservation = new Reservation(command.reservationId(), command.requestId(),
                 command.instanceId(), assigned.orElseThrow());
@@ -135,6 +136,13 @@ public final class HypervisorActor
                     command.reservationId(), command.instanceId(), nextState.version());
             command.replyTo().tell(new ReserveAccepted(reservation.reservationId(), false));
         });
+    }
+
+    private Effect<HypervisorEvent, HypervisorState> rejectUnavailable(
+            ReserveResources command, ReserveRejected.Reason reason, String detail) {
+        // Persist the refusal before allowing the caller to move to another host.
+        return Effect().persist(new ReservationRejected(command.reservationId(), clock.instant()))
+                .thenRun(next -> command.replyTo().tell(rejected(command, reason, detail)));
     }
 
     private Effect<HypervisorEvent, HypervisorState> onConfirm(HypervisorState state, ConfirmReservation command) {
@@ -268,6 +276,8 @@ public final class HypervisorActor
                         (state, event) -> state.confirm(event.reservation().reservationId(), event.allocatedAt()))
                 .onEvent(ReservationCancelled.class, (state, event) -> state.removeReservation(
                         event.reservation().reservationId(), ReservationOutcome.CANCELLED, event.cancelledAt()))
+                .onEvent(ReservationRejected.class,
+                        (state, event) -> state.rejectReservation(event.reservationId(), event.rejectedAt()))
                 .onEvent(ResourcesReleased.class,
                         (state, event) -> state.removeAllocation(event.allocation().instanceId(), event.releasedAt()))
                 .onEvent(ReservationOutcomesCleaned.class,

@@ -8,6 +8,8 @@ import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorEvent;
 import cn.veryai.arcreactor.actor.hypervisor.event.HypervisorMaintenanceEntered;
 import cn.veryai.arcreactor.actor.hypervisor.event.ReservationCancelled;
 import cn.veryai.arcreactor.actor.hypervisor.event.ReservationConfirmed;
+import cn.veryai.arcreactor.actor.hypervisor.event.ReservationOutcomesCleaned;
+import cn.veryai.arcreactor.actor.hypervisor.event.ReservationRejected;
 import cn.veryai.arcreactor.actor.hypervisor.event.ResourcesReleased;
 import cn.veryai.arcreactor.actor.hypervisor.event.ResourcesReserved;
 import cn.veryai.arcreactor.actor.hypervisor.projection.mybatis.HypervisorProjectionMapper;
@@ -47,9 +49,10 @@ public final class HypervisorProjectionHandler
                     started.expectedMaintenanceTime(), version, timestamp);
         } else if (event instanceof HypervisorMaintenanceEntered) {
             written = mapper.updateStatus(hypervisorId, HypervisorStatus.MAINTENANCE, null, version, timestamp);
+        } else if (event instanceof ReservationRejected || event instanceof ReservationOutcomesCleaned) {
+            written = mapper.advanceVersion(hypervisorId, version, timestamp);
         } else {
-            // ReservationOutcomesCleaned only changes the actor's deduplication history.
-            return;
+            throw new IllegalArgumentException("unsupported hypervisor event: " + event.getClass().getName());
         }
         if (written == 0) {
             Long projectedVersion = mapper.findResourceVersion(hypervisorId);

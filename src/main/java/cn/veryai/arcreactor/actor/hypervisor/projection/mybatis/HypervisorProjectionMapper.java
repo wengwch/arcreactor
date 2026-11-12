@@ -34,5 +34,10 @@ public interface HypervisorProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int advanceVersion(
+            @Param("hypervisorId") String hypervisorId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     Long findResourceVersion(@Param("hypervisorId") String hypervisorId);
 }

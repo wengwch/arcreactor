@@ -29,16 +29,18 @@ public record InstanceWorkflowState(
         int forwardingCandidateIndex,
         PreparedDependencies dependencies,
         SecurityGroupPreparation securityGroupPreparation,
-        boolean novaDeletionAccepted) implements Serializable {
+        boolean novaDeletionAccepted,
+        List<String> remainingHypervisorIds) implements Serializable {
 
     public InstanceWorkflowState {
         preparedForwardings = List.copyOf(preparedForwardings);
+        remainingHypervisorIds = List.copyOf(remainingHypervisorIds);
     }
 
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, 0, null, null, 0, false, List.of(), null, 0, null, null, false);
+                null, null, null, null, 0, null, null, 0, false, List.of(), null, 0, null, null, false, List.of());
     }
 
     public String osProjectId() { return dependencies == null ? null : dependencies.osProjectId(); }
@@ -61,7 +63,7 @@ public record InstanceWorkflowState(
                 provisioningStartedAt, pollingGeneration + 1,
                 failureCode, failureMessage, version + 1, forwardingPreparationStarted, preparedForwardings,
                 networkPreparation, forwardingCandidateIndex, dependencies, preparation,
-                novaDeletionAccepted);
+                novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public String shareId() {
@@ -82,7 +84,7 @@ public record InstanceWorkflowState(
                 provisioningStartedAt, pollingGeneration + 1,
                 failureCode, failureMessage, version + 1, forwardingPreparationStarted, preparedForwardings,
                 networkPreparation, forwardingCandidateIndex, dependencies, securityGroupPreparation,
-                novaDeletionAccepted);
+                novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public InstanceWorkflowState dependenciesPrepared(PreparedDependencies prepared) {
@@ -90,7 +92,7 @@ public record InstanceWorkflowState(
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, failureCode, failureMessage, version + 1,
                 forwardingPreparationStarted, preparedForwardings, networkPreparation, forwardingCandidateIndex, prepared,
-                securityGroupPreparation, novaDeletionAccepted);
+                securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public InstanceWorkflowState preparingForwarding() {
@@ -98,7 +100,7 @@ public record InstanceWorkflowState(
                 hypervisorId, reservationId, novaOperationId, osNovaServerId, novaStatus,
                 provisioningStartedAt, pollingGeneration + 1,
                 failureCode, failureMessage, version + 1, true, List.of(), networkPreparation, 0, dependencies,
-                securityGroupPreparation, novaDeletionAccepted);
+                securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public InstanceWorkflowState forwardingPrepared(PreparedForwarding forwarding) {
@@ -111,7 +113,7 @@ public record InstanceWorkflowState(
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
                 forwardingPreparationStarted, next, networkPreparation, 0, dependencies,
-                securityGroupPreparation, novaDeletionAccepted);
+                securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public int currentForwardingPort() {
@@ -124,7 +126,7 @@ public record InstanceWorkflowState(
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
                 forwardingPreparationStarted, preparedForwardings,
                 networkPreparation, candidateIndex, dependencies, securityGroupPreparation,
-                novaDeletionAccepted);
+                novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public InstanceWorkflowState preparingParentPort() {
@@ -149,7 +151,7 @@ public record InstanceWorkflowState(
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
                 forwardingPreparationStarted, preparedForwardings, preparation, forwardingCandidateIndex, dependencies,
-                securityGroupPreparation, novaDeletionAccepted);
+                securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public InstanceWorkflowState created(String nextRequestId, InstanceSpec nextSpec) {
@@ -159,7 +161,7 @@ public record InstanceWorkflowState(
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, null, null, version + 1, forwardingPreparationStarted,
                 preparedForwardings, networkPreparation, forwardingCandidateIndex, dependencies, securityGroupPreparation,
-                novaDeletionAccepted);
+                novaDeletionAccepted, remainingHypervisorIds);
     }
 
     public InstanceWorkflowState scheduling() {
@@ -168,10 +170,23 @@ public record InstanceWorkflowState(
                 pollingGeneration, failureCode, failureMessage);
     }
 
-    public InstanceWorkflowState hypervisorSelected(String nextHypervisorId, String nextReservationId) {
-        return copy(requestId, InstancePhase.SCHEDULING, spec, nextHypervisorId, nextReservationId,
+    public InstanceWorkflowState reservingResources(String nextHypervisorId, String nextReservationId,
+            List<String> nextRemainingHypervisorIds) {
+        return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.RESERVING_RESOURCES, spec,
+                nextHypervisorId, nextReservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
-                pollingGeneration, failureCode, failureMessage);
+                pollingGeneration + 1, failureCode, failureMessage, version + 1,
+                forwardingPreparationStarted, preparedForwardings, networkPreparation, forwardingCandidateIndex,
+                dependencies, securityGroupPreparation, novaDeletionAccepted, nextRemainingHypervisorIds);
+    }
+
+    public InstanceWorkflowState hypervisorSelected(String nextHypervisorId, String nextReservationId) {
+        return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.RESERVING_RESOURCES, spec,
+                nextHypervisorId, nextReservationId,
+                novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
+                pollingGeneration, failureCode, failureMessage, version + 1,
+                forwardingPreparationStarted, preparedForwardings, networkPreparation, forwardingCandidateIndex,
+                dependencies, securityGroupPreparation, novaDeletionAccepted, List.of());
     }
 
     public InstanceWorkflowState provisioning(String operationId, Instant startedAt) {
@@ -194,22 +209,44 @@ public record InstanceWorkflowState(
     }
 
     public InstanceWorkflowState deleting() {
-        return copy(requestId, InstancePhase.DELETING, spec, hypervisorId, reservationId,
-                novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
-                pollingGeneration + 1, failureCode, failureMessage);
+        return withDeletionPhase(InstancePhase.DELETING_NOVA);
     }
 
     public InstanceWorkflowState novaDeletionAccepted(String osServerId) {
-        return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.DELETING, spec,
+        return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.DELETING_NOVA, spec,
                 hypervisorId, reservationId,
                 novaOperationId, osServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
                 forwardingPreparationStarted, preparedForwardings, networkPreparation, forwardingCandidateIndex,
-                dependencies, securityGroupPreparation, true);
+                dependencies, securityGroupPreparation, true, remainingHypervisorIds);
+    }
+
+    public InstanceWorkflowState novaDeleted() {
+        return withDeletionPhase(InstancePhase.DELETING_FORWARDINGS);
+    }
+
+    public InstanceWorkflowState forwardingsDeleted() {
+        return withDeletionPhase(InstancePhase.DELETING_NETWORK);
+    }
+
+    public InstanceWorkflowState networkDeleted() {
+        return withDeletionPhase(InstancePhase.DELETING_SECURITY_GROUP);
+    }
+
+    public InstanceWorkflowState securityGroupDeleted() {
+        return withDeletionPhase(InstancePhase.CANCELLING_RESERVATION);
+    }
+
+    public InstanceWorkflowState reservationCancelled() {
+        return withDeletionPhase(InstancePhase.RELEASING_ALLOCATION);
     }
 
     public InstanceWorkflowState deleted() {
-        return copy(requestId, InstancePhase.DELETED, spec, hypervisorId, reservationId,
+        return withDeletionPhase(InstancePhase.DELETED);
+    }
+
+    private InstanceWorkflowState withDeletionPhase(InstancePhase nextPhase) {
+        return copy(requestId, nextPhase, spec, hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage);
     }
@@ -243,6 +280,6 @@ public record InstanceWorkflowState(
                 nextStartedAt, nextGeneration,
                 nextFailureCode, nextFailureMessage, version + 1, forwardingPreparationStarted, preparedForwardings,
                 networkPreparation, forwardingCandidateIndex, dependencies, securityGroupPreparation,
-                novaDeletionAccepted);
+                novaDeletionAccepted, remainingHypervisorIds);
     }
 }

@@ -156,6 +156,18 @@ public record HypervisorState(
     return copy(status, capacity, next, allocations, outcomes, times);
   }
 
+  public HypervisorState rejectReservation(String reservationId, Instant rejectedAt) {
+    if (reservations.containsKey(reservationId) || reservationOutcomes.containsKey(reservationId)
+        || allocations.values().stream().anyMatch(allocation -> reservationId.equals(allocation.reservationId()))) {
+      throw new IllegalStateException("reservation already exists or was finalized");
+    }
+    Map<String, ReservationOutcome> outcomes = new HashMap<>(reservationOutcomes);
+    outcomes.put(reservationId, ReservationOutcome.REJECTED);
+    Map<String, Instant> times = new HashMap<>(reservationOutcomeTimes);
+    times.put(reservationId, rejectedAt);
+    return copy(status, capacity, reservations, allocations, outcomes, times);
+  }
+
   public HypervisorState removeAllocation(String instanceId, Instant releasedAt) {
     Map<String, Allocation> next = new HashMap<>(allocations);
     Allocation removed = next.remove(instanceId);

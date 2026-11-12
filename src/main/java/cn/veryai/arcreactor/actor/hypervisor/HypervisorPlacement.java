@@ -1,16 +1,23 @@
 package cn.veryai.arcreactor.actor.hypervisor;
 
 import java.io.Serializable;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 
 /** Public hypervisor module facade used by instance lifecycle coordinators. */
 public interface HypervisorPlacement {
+    /** Returns ranked candidates without reserving resources. */
     CompletionStage<ScheduleResult> schedule(ScheduleRequest request);
+
+    /** Reserves only the specified host; callers must persist that host before invoking this method. */
+    CompletionStage<ReserveResult> reserve(String hypervisorId, ScheduleRequest request);
 
     CompletionStage<ReservationResult> confirm(String hypervisorId, String reservationId, String instanceId);
 
     CompletionStage<ReservationResult> cancel(String hypervisorId, String reservationId);
+
+    CompletionStage<ReservationResult> release(String hypervisorId, String instanceId);
 
     /** Memory and disk are measured in GB. */
     record Resources(int vcpus, long memoryGb, long diskGb, int gpuCount)
@@ -39,9 +46,14 @@ public interface HypervisorPlacement {
         }
     }
 
-    record ScheduleResult(Status status, String hypervisorId, int attempts, String detail)
-            implements Serializable {
-        public enum Status { RESERVED, NO_VALID_HOST }
+    record ScheduleResult(List<String> hypervisorIds, String detail) implements Serializable {
+        public ScheduleResult {
+            hypervisorIds = List.copyOf(hypervisorIds);
+        }
+    }
+
+    record ReserveResult(Status status, String detail) implements Serializable {
+        public enum Status { ACCEPTED, UNAVAILABLE, REJECTED, UNKNOWN }
     }
 
     record ReservationResult(Status status, boolean idempotent, String detail) implements Serializable {
