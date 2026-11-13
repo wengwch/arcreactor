@@ -30,7 +30,8 @@ public record UserShareState(
   }
 
   public UserShareState retry() {
-    return new UserShareState(shareId, spec, Phase.CREATING, null, null, null, null, null,
+    return new UserShareState(shareId, spec, Phase.CREATING, osShareId, osExportLocationId,
+        exportLocationPath, osGrantAccessId, null,
         generation + 1, null);
   }
 

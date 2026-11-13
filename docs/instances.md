@@ -155,9 +155,9 @@ InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，�
 候选耗尽或预留被明确拒绝时进入 `FAILED`，不启动依赖和实例专属资源的创建。
 预留成功后持久化 `HypervisorSelected` 和 `DependencyPreparationStarted`，清空剩余候选，
 进入 `PREPARING_DEPENDENCIES` 后异步调用 `InstanceDependencyPreparer.prepare()`，准备用户项目、检查区域 SHARED 网络，
-再等待 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createShare()`、`createNetwork()`，
+再等待系统 Share 和用户网络就绪。准备器依次调用 `createProject()`、`createSystemShare()`、`createNetwork()`，
 创建请求持久化后即返回当前状态，首次受理为 `IN_PROGRESS`，已有资源直接返回其当前状态。
-准备器每隔 `dependency-poll-interval` 调用对应的 `getProject()`、`getShare()`、`getNetwork()`；
+准备器每隔 `dependency-poll-interval` 调用对应的 `getProject()`、`getSystemShare()`、`getNetwork()`；
 仅 `READY` 才继续下一步，`FAILED`、`REJECTED` 直接结束准备。
 ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时才重新提交幂等创建命令。
 准备器识别 Pekko typed ask 返回的 `java.util.concurrent.TimeoutException`，
@@ -179,7 +179,9 @@ ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时
 当前 `pekko.cluster.sharding.remember-entities = off`，应用启动不会主动唤醒所有历史实例。
 实例收到消息（例如 `InstanceService.get(instanceId)`）后才恢复，准备器的创建和查询消息会唤醒对应 UserActor。
 这些资源由 UserActor 持久化管理：`projects` 以 OpenStack `clusterId` 为 key，
-同一用户在同一集群的多个区域复用一个项目；Share 和用户网络仍按 `regionId` 复用。
+同一用户在同一集群的多个区域复用一个项目；用户网络按 `regionId` 复用。
+Share 状态按逻辑 `shareId` 保存，系统 Share 在每个用户、每个区域内唯一，用户 Share 在同一区域可以有多个。
+实例依赖准备只创建或复用 `SYSTEM` Share，不会选取用户通过 API 创建的 `USER` Share。
 UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Domain 中按名称查询项目，
 存在则复用，不存在才创建，然后授予管理员角色，全部成功后才标记 `READY`。
 `CreateProject` 先持久化创建意图，再异步调用 OpenStack；结果通过 `ProjectReady` 或
@@ -218,41 +220,81 @@ UserActor 调用 `createProjectWithAdminRole()`，先在集群配置的默认 Do
 网络仍只有创建、就绪、失败三类事件，不逐步持久化资源 ID，不自动重试已失败流程或回滚。
 调用失败仍可能留下部分已创建的远端资源。
 
+Share 的应用类型由 `ShareKind` 区分：`SYSTEM` 用于实例依赖，每个用户在同一区域最多一个；
+`USER` 由用户通过 API 创建，同一用户、同一区域允许多个。两者都属于对应的 UserActor。
+用户 Share 通过以下接口创建和查询：
+
+```http
+POST /api/v1/users/{userId}/shares
+Content-Type: application/json
+
+{
+  "regionId": "<区域 ID>",
+  "size": 100,
+  "shareType": "<Manila CEPHFS Share Type>"
+}
+
+GET /api/v1/users/{userId}/shares/{shareId}
+```
+
+创建接口固定使用 `USER` 类型和 `CEPHFS` 协议，`size` 为正整数，单位为 GiB。
+创建请求不接收 `shareId`，由 UserActor 内部生成并随响应返回。
+每次用户 Share 创建请求都申请新资源，即使区域和规格相同也互不复用；重复提交不具备幂等性。
+接口先准备该区域所属集群的用户项目，再提交 Share 创建命令，受理后返回 HTTP `202`；
+Share 的实际创建和访问授权异步进行，使用返回的逻辑 `shareId` 查询进度。
+用户 Share 独立保存，实例创建继续复用该用户在区域内的系统 Share。
+创建与查询返回 `ShareView`，包含 `shareId`、`userId`、`regionId`、`kind`、`phase`、规格、
+`osShareId`、`exportLocationPath` 和失败原因；不返回 `accessKey`。查询成功使用 HTTP `200`。
+
 Share 的创建和访问授权都由 Manila 异步完成，流程只保留三种状态：
 
 ```text
 CREATING → READY
     └──→ FAILED
-FAILED ──同规格 CreateShare──→ CREATING
+系统 Share：FAILED ──同规格普通 CreateShare──→ CREATING
 ```
 
-`ShareSpec` 只包含区域、项目 ID、容量、协议和类型。名称和描述统一为 `veryai:sys:<userId>`，
-CephX 访问用户名为 `veryai_<userId>`，由 `UserShareNaming` 根据 UserActor 的用户 ID 生成，
-不再从调用方规格读取。实例依赖准备完成时，将访问用户名连同资源 ID、导出路径和 access key
+`ShareSpec.kind` 表示应用类型，原 `shareType` 仍表示 Manila 的存储类型，两者分别保存。
+规格还包含区域、项目 ID、容量和协议。系统 Share 的名称和描述为 `veryai:sys:<userId>`，
+CephX 访问用户名为 `veryai_<userId>`；用户 Share 的名称和描述为 `veryai:user:<token>`，
+访问用户名为 `veryai_user_<token>`。`token` 使用用户 ID 与逻辑 Share ID 的无歧义组合生成稳定 UUID，
+保证重试和恢复使用相同名称，同时限制名称长度并区分同区域的不同 Share。
+名称、描述与访问用户名通过 `UserShareNaming` 的静态方法 `name`、`description` 和 `accessTo` 生成，
+每次调用直接传入用户 ID、应用类型和逻辑 Share ID。
+实例依赖准备完成时，将系统 Share 的访问用户名连同资源 ID、导出路径和 access key
 保存到 `PreparedShare`；cloud-init 使用该准备结果中的 `accessTo`。
 
-`CreateShare` 只携带规格和回复地址，不接收调用方提供的 `shareId`。首次创建时，UserActor 生成 UUID
-作为逻辑 `shareId`，随 `ShareCreationRequested` 持久化后立即回复 `IN_PROGRESS`，再异步创建；
-重复创建、Actor 恢复和事件回放均沿用已持久化的 ID，不重新生成。Manila 返回 `osShareId` 时持久化
+内部 `CreateShare` 携带规格、回复地址和可选的 `shareId`。正常创建通过不带 ID 的构造方法提交，
+HTTP 创建接口和服务层均不接收该 ID；UserActor 首次创建系统 Share 或每次创建用户 Share 时生成 UUID。
+系统 Share 的普通创建请求按区域查找已有记录，同规格且处于 `CREATING` 或 `READY` 时直接返回当前状态，
+不会重复推进正在创建的流程；处于 `FAILED` 时允许同规格重试。
+恢复命令携带已持久化的 ID，按 ID 查找原 Share，
+记录不存在或规格不一致时拒绝，不会生成新资源。
+创建意图随 `ShareCreationRequested` 持久化后立即回复 `IN_PROGRESS`，再异步创建；
+系统 Share 的重复请求、Actor 恢复和事件回放沿用已持久化的 ID。Manila 返回 `osShareId` 时持久化
 `ShareCreated`。定时查询 Share，待状态为 `AVAILABLE` 且存在非管理员
 专用、包含 ID 和路径的 export location 后，持久化 `ShareExportBecameReady`，再提交一次
 CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`；这些中间步骤均保持 `CREATING`，
 分别保存已确认的资源字段并递增 generation。访问规则变为 `ACTIVE` 且 access key 非空时，
 持久化 `ShareBecameReady`，进入 `READY`。
 调用错误或远端失败状态产生 `ShareCreationFailed`，保留已确认的资源 ID；调用方通过 `getShare()` 查询。
-`FAILED` 收到外部同规格 `CreateShare` 时，再次持久化 `ShareCreationRequested`，保留逻辑 `shareId` 和规格，
-清空本地的 `osShareId`、导出位置和授权规则 ID、导出路径、access key 和失败信息，递增 generation，回复 `IN_PROGRESS`。
-新一轮从 Share 创建步骤重新查找并复用远端资源，后续授权也先查找复用；不删除远端资源。
-上一轮异步回调因 generation 不匹配而被忽略。
+系统 Share 在 `FAILED` 时收到不带 ID 的同规格 `CreateShare`，再次持久化 `ShareCreationRequested`，
+沿用逻辑 `shareId` 和规格，保留已确认的 Manila Share、导出位置、授权规则 ID 和导出路径，
+清空 access key 和失败信息，递增 generation，回复 `IN_PROGRESS`，从首个未完成步骤继续。
+旧一轮异步回调因 generation 不匹配而被忽略；已确认的资源不会重新创建。
+用户 Share 的新建命令始终创建独立资源，不通过创建请求重试已有的失败 Share。
 
 等待阶段统一通过单次定时器查询：首次查询、恢复后的查询和阶段切换后的查询，
 均先等待 `share.poll-interval`（默认 2 秒）。正常轮询在查询完成后，若资源尚未就绪或暂不可见（404），
 再安排下一次单次定时器；本次查询完成到下一次查询之间等待 `share.poll-interval`，其他调用错误直接失败。
 `PollShare` 仅由定时器触发查询；`ShareExportChecked`、`ShareAccessChecked` 的空结果字段表示未就绪，
 结果处理器据此安排下一轮，字段有效时则持久化对应的就绪事件。
-恢复时仅对 `CREATING` Share 使用已持久化的规格向自身发送 `CreateShare`，命令不携带 `shareId`，
-回复交给 `ignoreRef()`。同规格的 `CREATING` 创建命令先回复当前状态，再通过 `advanceShare`
-按以下顺序检查已持久化字段并继续推进；沿用当前 generation，不重复记录创建事件：
+恢复时仅对 `CREATING` Share 向自身发送携带原 `shareId` 和规格的 `CreateShare`，回复地址使用 `ignoreRef()`。
+只有携带 ID 的恢复命令在回复已有状态后，才对 `CREATING` Share 调用 `advanceShare`，
+按以下顺序检查已持久化字段并继续推进；沿用原 ID、资源字段和 generation，不重复记录创建事件。
+每次恢复为每个未完成 Share 发送一条恢复命令，后续由异步结果和单次定时器衔接流程；已启动的轮询定时器不会重复启动。
+异步回调按 `shareId` 查找状态，并校验 generation、创建状态和对应步骤的资源字段。
+带 ID 的恢复命令遇到终态只返回状态，不重试失败流程：
 
 | 已持久化字段 | 下一步 |
 | --- | --- |
@@ -262,10 +304,12 @@ CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`；�
 | Share、export location 和访问规则 ID 均完整 | 查询访问规则，等待 `ACTIVE` 和 access key |
 
 已有授权的权限级别必须匹配；多个匹配资源直接失败，不任意选择一个继续。
-异步回调校验 generation 和对应步骤的资源字段，避免旧步骤的结果覆盖后续进度。
+Share 的定时器、轮询命令和异步回调均使用 `shareId` 定位，同一区域多个 Share 独立推进。
+读取旧规格时，缺少 `kind` 默认归为 `SYSTEM`；恢复旧的区域键快照时，Share 集合按已存储的 `shareId` 重建索引。
+异步回调校验 generation 和对应步骤的资源字段，避免旧步骤或其他 Share 的结果覆盖当前进度。
 Share 流程等待 OpenStack 调用结果，不设置业务超时或截止时间；异步资源尚未就绪时持续轮询。
-同规格的重复创建命令可能重复触发未完成操作，沿用已有资源查找复用与 generation 校验。
-`READY` 的同规格创建命令只返回当前状态；规格不同的命令仍被拒绝。
+系统 Share 收到不带 ID 的同规格创建命令时，`CREATING`、`READY` 只返回当前状态，`FAILED` 发起重试；规格不同则拒绝。
+用户 Share 的重复创建命令各自创建新资源，恢复仍使用事件中持久化的 ID 继续原有资源。
 UserActor 恢复仅继续 `CREATING`，不会自动重试 `FAILED`，也不执行自动回滚。
 
 创建前查询已有资源用于恢复和复用；OpenStack 查询与创建不是一个原子操作。
@@ -608,12 +652,16 @@ cloud-init 和实例内服务已完成启动，连接应在对应服务就绪后
 ## 用户资源读模型
 
 `UserProjection` 同时处理项目、Share 和网络事件。用户从事件持久化 ID `User|<userId>`
-解析；Share、网络和路由按 `(user_id, region_id)` 唯一保存，支持同一用户跨区域使用资源。
+解析；Share 按 `(user_id, share_id)` 唯一保存，网络和路由仍按 `(user_id, region_id)` 唯一保存。
+`user_region_share.share_kind` 保存 `SYSTEM` 或 `USER`，`share_type` 继续保存 Manila 类型。
+生成列 `system_region_id` 仅对 `SYSTEM` 返回区域 ID，`USER` 为 NULL；唯一键
+`(user_id, system_region_id)` 限制每个用户在每个区域只能有一个系统 Share，同时允许多个用户 Share。
+若不同逻辑 Share ID 冲突于系统 Share 唯一键，投影不会覆盖已有 Share，而是报错并回滚当前事务与 offset。
 
 | 表 | 事件 | 保存内容 |
 | --- | --- | --- |
 | `user_cluster_project` | `ProjectCreationRequested`、`ProjectBecameReady`、`ProjectCreationFailed` | 项目名称、OpenStack 项目 ID、状态和失败原因 |
-| `user_region_share` | `ShareCreationRequested`、`ShareCreated`、`ShareExportBecameReady`、`ShareAccessCreated`、`ShareBecameReady`、`ShareCreationFailed` | Share 规格、名称、描述、访问用户名、Manila ID、导出路径、授权规则 ID、access key、状态和失败原因 |
+| `user_region_share` | `ShareCreationRequested`、`ShareCreated`、`ShareExportBecameReady`、`ShareAccessCreated`、`ShareBecameReady`、`ShareCreationFailed` | Share 应用类型、规格、名称、描述、访问用户名、Manila ID、导出路径、授权规则 ID、access key、状态和失败原因 |
 | `user_region_network` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 请求的网段、DNS、网关，以及项目、LOCAL 网络、用户网络和子网 ID、状态和失败原因 |
 | `user_region_router` | `NetworkCreationRequested`、`NetworkBecameReady`、`NetworkCreationFailed` | 路由、接口端口及关联网络/子网 ID，以及所属网络流程的状态和失败原因 |
 
@@ -623,8 +671,10 @@ cloud-init 和实例内服务已完成启动，连接应在对应服务就绪后
 Share 的每个创建步骤仍使用独立事件，携带请求规格和当前已确认的资源 ID，能够独立 upsert。
 `ShareCreated`、`ShareExportBecameReady`、`ShareAccessCreated` 逐步补齐字段，投影状态始终为 `CREATING`；
 `ShareBecameReady` 和 `ShareCreationFailed` 才写入对应终态。
-失败后重试的 `ShareCreationRequested` 会将 Share 投影重置为 `CREATING`，清空上一轮资源字段和失败信息，保留逻辑 Share ID。
-名称、描述和 `access_to` 使用 `UserShareNaming` 从事件所属用户 ID 生成，与创建和授权流程保持一致。
+系统 Share 失败后重试的 `ShareCreationRequested` 会将投影重置为 `CREATING`，清空 access key 和失败信息，
+保留逻辑 Share ID 及已确认的 Manila、导出位置和授权规则字段，与 Actor 的重试状态一致。
+名称、描述和 `access_to` 通过 `UserShareNaming` 的静态方法传入事件所属用户 ID、Share 应用类型和逻辑 ID 生成，
+再作为独立字符串参数传给 Mapper，与创建和授权流程保持一致。
 等待查询没有改变状态时不写事件；查询次数不作为持久化状态或投影字段。
 
 router 由用户网络流程创建，没有单独的路由事件。每个网络事件在同一个 JDBC 事务内
@@ -644,6 +694,8 @@ Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状�
 
 执行 `sql/read-model.sql` 初始化读模型表。`user-resources` 投影消费 User 事件更新读模型，
 查询结果在投影追上事件日志后完整可见。
+已有 `user_region_share` 表在升级前执行 `sql/migrations/add-share-kind.sql`，增加应用类型、修改主键及唯一约束。
+历史记录归为 `SYSTEM`，已有资源、凭据和投影偏移量保留；已执行新建表 SQL 的数据库无需再次执行该迁移。
 已有 `instance_view` 表需执行 `sql/migrations/add-instance-subport-floating-ip.sql` 增加子端口浮动 IP 字段。
 QoS 资源记录对应 `os_parent_qos_policy_id`、`os_parent_qos_ingress_rule_id`、`os_parent_qos_egress_rule_id`
 及同名 `os_sub_qos_*` 字段；已有表先使用 `sql/migrations/add-instance-port-qos.sql` 增加这六个字段，

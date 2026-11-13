@@ -14,6 +14,7 @@ import cn.veryai.arcreactor.actor.user.event.ShareAccessCreated;
 import cn.veryai.arcreactor.actor.user.event.ShareBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ShareCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
+import cn.veryai.arcreactor.actor.user.model.ShareKind;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.model.UserProjectState;
 import cn.veryai.arcreactor.actor.user.model.UserShareNaming;
@@ -87,7 +88,18 @@ public final class UserProjectionHandler
 
   private static void upsertShare(UserProjectionMapper mapper, String userId, UserShareState share,
       long version, Timestamp timestamp) {
-    mapper.upsertShare(userId, share, new UserShareNaming(userId), version, timestamp);
+    ShareKind kind = share.spec().kind();
+    String shareId = share.shareId();
+    mapper.upsertShare(userId, share,
+        UserShareNaming.name(userId, kind, shareId),
+        UserShareNaming.description(userId, kind, shareId),
+        UserShareNaming.accessTo(userId, kind, shareId),
+        version, timestamp);
+    if (kind == ShareKind.SYSTEM && !shareId.equals(mapper.findSystemShareId(userId, share.regionId()))) {
+      // A different share may conflict on the regional SYSTEM unique key. Do not advance the offset.
+      throw new IllegalStateException("Multiple system shares exist for user " + userId
+          + " in region " + share.regionId());
+    }
   }
 
   private static void upsertNetwork(UserProjectionMapper mapper, String userId, UserNetworkState network,

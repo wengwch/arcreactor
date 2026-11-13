@@ -6,6 +6,7 @@ import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.user.UserResources;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
+import cn.veryai.arcreactor.actor.user.model.ShareKind;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
@@ -43,6 +44,9 @@ public class InstanceDependencyPreparer {
 
     public CompletionStage<PreparedDependencies> prepare(String userId, String clusterId,
             ShareSpec shareSpec, NetworkRequirement network) {
+        if (shareSpec.kind() != ShareKind.SYSTEM) {
+            throw new IllegalArgumentException("Instance dependencies require a system share");
+        }
         Duration pollInterval = properties.getDependencyPollInterval();
         requirePositive(pollInterval);
         return CompletableFuture.supplyAsync(() -> {
@@ -62,8 +66,8 @@ public class InstanceDependencyPreparer {
                 String osProjectId = project.osProjectId();
                 NetworkRequirement resolved = resolveSharedNetwork(region, network);
                 ShareSpec resolvedShare = shareSpec.withOsProjectId(osProjectId);
-                var shareReply = awaitReady(() -> userResources.createShare(userId, resolvedShare),
-                        () -> userResources.getShare(userId, region),
+                var shareReply = awaitReady(() -> userResources.createSystemShare(userId, resolvedShare),
+                        () -> userResources.getSystemShare(userId, region),
                         reply -> reply.status() == ShareReply.Status.READY,
                         reply -> reply.status() == ShareReply.Status.IN_PROGRESS,
                         reply -> reply.status() == ShareReply.Status.NOT_FOUND,

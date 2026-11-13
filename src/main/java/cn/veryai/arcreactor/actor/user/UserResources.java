@@ -4,10 +4,12 @@ import cn.veryai.arcreactor.actor.user.command.CreateProject;
 import cn.veryai.arcreactor.actor.user.command.CreateShare;
 import cn.veryai.arcreactor.actor.user.command.GetProject;
 import cn.veryai.arcreactor.actor.user.command.GetShare;
+import cn.veryai.arcreactor.actor.user.command.GetSystemShare;
 import cn.veryai.arcreactor.actor.user.command.CreateNetwork;
 import cn.veryai.arcreactor.actor.user.command.GetNetwork;
 import cn.veryai.arcreactor.actor.user.command.UserCommand;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
+import cn.veryai.arcreactor.actor.user.model.ShareKind;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
@@ -46,7 +48,7 @@ public final class UserResources {
             context -> UserActor.create(context.getEntityId(), client, settings)));
   }
 
-  /** Returns after the request is persisted; use getShare to observe progress and the access key. */
+  /** Returns after persistence; UserActor assigns the share ID and returns it in the reply. */
   public CompletionStage<ShareReply> createShare(String userId, ShareSpec spec) {
     return AskPattern.<UserCommand, ShareReply>ask(
         entityRef(userId),
@@ -55,10 +57,24 @@ public final class UserResources {
         system.scheduler());
   }
 
-  public CompletionStage<ShareReply> getShare(String userId, String regionId) {
+  /** Ensures the user's single system share in the region. */
+  public CompletionStage<ShareReply> createSystemShare(String userId, ShareSpec spec) {
+    if (spec.kind() != ShareKind.SYSTEM) throw new IllegalArgumentException("A system share is required");
+    return createShare(userId, spec);
+  }
+
+  public CompletionStage<ShareReply> getShare(String userId, String shareId) {
     return AskPattern.<UserCommand, ShareReply>ask(
         entityRef(userId),
-        replyTo -> new GetShare(regionId, replyTo),
+        replyTo -> new GetShare(shareId, replyTo),
+        askTimeout,
+        system.scheduler());
+  }
+
+  public CompletionStage<ShareReply> getSystemShare(String userId, String regionId) {
+    return AskPattern.<UserCommand, ShareReply>ask(
+        entityRef(userId),
+        replyTo -> new GetSystemShare(regionId, replyTo),
         askTimeout,
         system.scheduler());
   }

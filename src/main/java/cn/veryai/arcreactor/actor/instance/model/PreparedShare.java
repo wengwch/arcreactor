@@ -18,7 +18,7 @@ public record PreparedShare(String osShareId, String osExportLocationId, String 
       throw new IllegalArgumentException("Share must be READY");
     }
     return new PreparedShare(share.osShareId(), share.osExportLocationId(), share.exportLocationPath(),
-        share.osGrantAccessId(), new UserShareNaming(userId).accessTo(), share.accessKey());
+        share.osGrantAccessId(), UserShareNaming.accessTo(userId, share.spec().kind(), share.shareId()), share.accessKey());
   }
 
   @Override

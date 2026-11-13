@@ -39,6 +39,7 @@
           user_id,
           region_id,
           share_id,
+          share_kind,
           os_project_id,
           name,
           description,
@@ -60,13 +61,14 @@
           #{userId,jdbcType=VARCHAR},
           #{share.spec.regionId,jdbcType=VARCHAR},
           #{share.shareId,jdbcType=VARCHAR},
+          #{share.spec.kind,jdbcType=VARCHAR},
           #{share.spec.osProjectId,jdbcType=VARCHAR},
-          #{naming.name,jdbcType=VARCHAR},
-          #{naming.description,jdbcType=LONGVARCHAR},
+          #{name,jdbcType=VARCHAR},
+          #{description,jdbcType=LONGVARCHAR},
           #{share.spec.size,jdbcType=INTEGER},
           #{share.spec.shareProto,jdbcType=VARCHAR},
           #{share.spec.shareType,jdbcType=VARCHAR},
-          #{naming.accessTo,jdbcType=VARCHAR},
+          #{accessTo,jdbcType=VARCHAR},
           #{share.osShareId,jdbcType=VARCHAR},
           #{share.osExportLocationId,jdbcType=VARCHAR},
           #{share.exportLocationPath,jdbcType=LONGVARCHAR},
@@ -78,25 +80,30 @@
           #{updatedAt,jdbcType=TIMESTAMP},
           #{updatedAt,jdbcType=TIMESTAMP})
         ON DUPLICATE KEY UPDATE
-          share_id = IF(resource_version &lt; VALUES(resource_version), VALUES(share_id), share_id),
-          os_project_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_project_id), os_project_id),
-          name = IF(resource_version &lt; VALUES(resource_version), VALUES(name), name),
-          description = IF(resource_version &lt; VALUES(resource_version), VALUES(description), description),
-          size_gib = IF(resource_version &lt; VALUES(resource_version), VALUES(size_gib), size_gib),
-          share_proto = IF(resource_version &lt; VALUES(resource_version), VALUES(share_proto), share_proto),
-          share_type = IF(resource_version &lt; VALUES(resource_version), VALUES(share_type), share_type),
-          access_to = IF(resource_version &lt; VALUES(resource_version), VALUES(access_to), access_to),
-          os_share_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_share_id), os_share_id),
-          os_export_location_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_export_location_id), os_export_location_id),
-          export_location_path = IF(resource_version &lt; VALUES(resource_version), VALUES(export_location_path), export_location_path),
-          os_grant_access_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_grant_access_id), os_grant_access_id),
-          access_key = IF(resource_version &lt; VALUES(resource_version), VALUES(access_key), access_key),
-          phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
-          failure_message = IF(resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
-          updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
-          created_at = LEAST(created_at, VALUES(created_at)),
-          resource_version = GREATEST(resource_version, VALUES(resource_version))
+          os_project_id = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(os_project_id), os_project_id),
+          name = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(name), name),
+          description = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(description), description),
+          size_gib = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(size_gib), size_gib),
+          share_proto = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(share_proto), share_proto),
+          share_type = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(share_type), share_type),
+          access_to = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(access_to), access_to),
+          os_share_id = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), COALESCE(VALUES(os_share_id), os_share_id), os_share_id),
+          os_export_location_id = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), COALESCE(VALUES(os_export_location_id), os_export_location_id), os_export_location_id),
+          export_location_path = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), COALESCE(VALUES(export_location_path), export_location_path), export_location_path),
+          os_grant_access_id = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), COALESCE(VALUES(os_grant_access_id), os_grant_access_id), os_grant_access_id),
+          access_key = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(access_key), access_key),
+          phase = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
+          failure_message = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(failure_message), failure_message),
+          updated_at = IF(share_id = VALUES(share_id) AND resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
+          created_at = IF(share_id = VALUES(share_id), LEAST(created_at, VALUES(created_at)), created_at),
+          resource_version = IF(share_id = VALUES(share_id), GREATEST(resource_version, VALUES(resource_version)), resource_version)
     </insert>
+
+    <select id="findSystemShareId" resultType="java.lang.String">
+        SELECT share_id FROM user_region_share
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND system_region_id = #{regionId,jdbcType=VARCHAR}
+    </select>
 
     <insert id="upsertNetwork">
         INSERT INTO user_region_network (

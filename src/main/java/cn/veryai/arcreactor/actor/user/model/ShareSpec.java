@@ -4,15 +4,17 @@ import java.io.Serializable;
 import java.util.Objects;
 import org.openstack4j.model.manila.Share;
 
-/** Configurable share attributes; naming is derived from the owning user by UserShareNaming.
+/** Share attributes; UserShareNaming derives remote names from the user, kind and logical ID.
  * osProjectId may be unresolved in instance requirements; CreateShare requires a resolved ID. */
 public record ShareSpec(
     String regionId,
     String osProjectId,
     int size,
     Share.Protocol shareProto,
-    String shareType) implements Serializable {
+    String shareType,
+    ShareKind kind) implements Serializable {
   public ShareSpec {
+    kind = Objects.requireNonNullElse(kind, ShareKind.SYSTEM);
     requireText(regionId, "regionId");
     if (osProjectId != null) requireText(osProjectId, "osProjectId");
     requireText(shareType, "shareType");
@@ -24,12 +26,16 @@ public record ShareSpec(
   }
 
   public ShareSpec(String regionId, int size, Share.Protocol shareProto, String shareType) {
-    this(regionId, null, size, shareProto, shareType);
+    this(regionId, null, size, shareProto, shareType, ShareKind.SYSTEM);
+  }
+
+  public ShareSpec(String regionId, String osProjectId, int size, Share.Protocol shareProto, String shareType) {
+    this(regionId, osProjectId, size, shareProto, shareType, ShareKind.SYSTEM);
   }
 
   public ShareSpec withOsProjectId(String osProjectId) {
     requireText(osProjectId, "osProjectId");
-    return new ShareSpec(regionId, osProjectId, size, shareProto, shareType);
+    return new ShareSpec(regionId, osProjectId, size, shareProto, shareType, kind);
   }
 
   private static void requireText(String value, String name) {

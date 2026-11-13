@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS user_region_share (
   user_id VARCHAR(255) NOT NULL,
   region_id VARCHAR(255) NOT NULL,
   share_id VARCHAR(255) NOT NULL COMMENT 'Logical share ID within the user',
+  share_kind VARCHAR(16) NOT NULL DEFAULT 'SYSTEM' COMMENT 'SYSTEM or USER; not the Manila share type',
+  system_region_id VARCHAR(255) GENERATED ALWAYS AS
+    (CASE WHEN share_kind = 'SYSTEM' THEN region_id ELSE NULL END) STORED,
   os_project_id VARCHAR(255),
   name VARCHAR(512) NOT NULL,
   description TEXT,
@@ -36,7 +39,9 @@ CREATE TABLE IF NOT EXISTS user_region_share (
   resource_version BIGINT NOT NULL,
   created_at TIMESTAMP(6) NOT NULL,
   updated_at TIMESTAMP(6) NOT NULL,
-  PRIMARY KEY (user_id, region_id),
+  PRIMARY KEY (user_id, share_id),
+  UNIQUE KEY uk_user_system_share_region (user_id, system_region_id),
+  INDEX idx_user_share_region_kind (user_id, region_id, share_kind),
   INDEX idx_user_share_region_phase (region_id, phase),
   INDEX idx_user_share_os_id (region_id, os_share_id)
 ) ENGINE=InnoDB;

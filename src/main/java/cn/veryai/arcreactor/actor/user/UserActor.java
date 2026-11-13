@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.actor.user;
 
 import cn.veryai.arcreactor.actor.user.command.CreateShare;
 import cn.veryai.arcreactor.actor.user.command.GetShare;
+import cn.veryai.arcreactor.actor.user.command.GetSystemShare;
 import cn.veryai.arcreactor.actor.user.command.CreateProject;
 import cn.veryai.arcreactor.actor.user.command.GetProject;
 import cn.veryai.arcreactor.actor.user.command.CreateNetwork;
@@ -21,6 +22,7 @@ import cn.veryai.arcreactor.actor.user.event.NetworkCreationRequested;
 import cn.veryai.arcreactor.actor.user.event.NetworkBecameReady;
 import cn.veryai.arcreactor.actor.user.event.NetworkCreationFailed;
 import cn.veryai.arcreactor.actor.user.model.NetworkResources;
+import cn.veryai.arcreactor.actor.user.model.ShareKind;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.actor.user.model.UserShareNaming;
 import cn.veryai.arcreactor.actor.user.model.UserShareState;
@@ -71,26 +73,24 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private final TimerScheduler<UserCommand> timers;
   private final OpenStackClient client;
   private final UserShareSettings settings;
-  private final UserShareNaming shareNaming;
 
-  public record ShareCreateCompleted(String regionId, long generation, String osShareId)
+  public record ShareCreateCompleted(String shareId, long generation, String osShareId)
       implements UserCommand {}
   /** Null export fields mean the share or export location is not ready yet. */
-  public record ShareExportChecked(String regionId, long generation,
+  public record ShareExportChecked(String shareId, long generation,
       String osExportLocationId, String exportPath)
       implements UserCommand {}
-  public record ShareAccessCreateCompleted(String regionId, long generation, String osGrantAccessId)
+  public record ShareAccessCreateCompleted(String shareId, long generation, String osGrantAccessId)
       implements UserCommand {}
   /** A null access key means the access rule is not ready yet. */
-  public record ShareAccessChecked(String regionId, long generation, String accessKey) implements UserCommand {
+  public record ShareAccessChecked(String shareId, long generation, String accessKey) implements UserCommand {
     @Override
     public String toString() {
-      return "ShareAccessChecked[regionId=" + regionId + ", generation=" + generation + ", accessKey=<redacted>]";
+      return "ShareAccessChecked[shareId=" + shareId + ", generation=" + generation + ", accessKey=<redacted>]";
     }
   }
-  public record ShareFailed(String regionId, long generation, String failure) implements UserCommand {}
-  public record PollShare(String regionId, long generation) implements UserCommand {}
-  private record SharePollTimerKey(String regionId) {}
+  public record ShareFailed(String shareId, long generation, String failure) implements UserCommand {}
+  public record PollShare(String shareId, long generation) implements UserCommand {}
   public record ProjectReady(String clusterId, long generation, String osProjectId)
       implements UserCommand {}
   public record ProjectFailed(String clusterId, long generation, String failure)
@@ -112,7 +112,6 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     super(PersistenceId.of(ENTITY_TYPE, userId));
     if (!hasText(userId)) throw new IllegalArgumentException("userId is required");
     this.userId = userId;
-    this.shareNaming = new UserShareNaming(userId);
     this.context = context;
     this.timers = timers;
     this.client = Objects.requireNonNull(client, "client");
@@ -129,6 +128,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return newCommandHandlerBuilder().forAnyState()
         .onCommand(CreateShare.class, this::onCreateShare)
         .onCommand(GetShare.class, this::onGetShare)
+        .onCommand(GetSystemShare.class, this::onGetSystemShare)
         .onCommand(ShareCreateCompleted.class, this::onShareCreated)
         .onCommand(ShareExportChecked.class, this::onShareExportChecked)
         .onCommand(ShareAccessCreateCompleted.class, this::onShareAccessCreated)
@@ -289,46 +289,60 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onCreateShare(UserState state, CreateShare command) {
-    UserShareState existing = state.shares().get(command.spec().regionId());
-    if (existing != null) {
-      if (!existing.spec().equals(command.spec())) {
-        command.replyTo().tell(new ShareReply(ShareReply.Status.REJECTED, null,
-            "This user already has a share specification in this region"));
-        return Effect().none();
-      }
-      if (existing.phase() != Phase.FAILED) {
-        command.replyTo().tell(ShareReply.from(existing));
-        if (existing.phase() == Phase.CREATING) {
-          return Effect().none().thenRun(next -> advanceShare(existing));
-        }
-        return Effect().none();
-      }
+    UserShareState existing = command.shareId() != null ? state.shares().get(command.shareId())
+        : command.spec().kind() == ShareKind.SYSTEM
+        ? state.systemShare(command.spec().regionId()) : state.userShare(command.spec().regionId());
+    if (command.shareId() != null && existing == null) {
+      command.replyTo().tell(new ShareReply(ShareReply.Status.REJECTED, null,
+          "The share to resume does not exist"));
+      return Effect().none();
     }
-    String shareId = existing == null ? UUID.randomUUID().toString() : existing.shareId();
+    if (existing != null && !existing.spec().equals(command.spec())) {
+      command.replyTo().tell(new ShareReply(ShareReply.Status.REJECTED, null,
+          "The existing share has a different specification"));
+      return Effect().none();
+    }
+    if (existing != null && (command.shareId() != null || existing.phase() != Phase.FAILED)) {
+      command.replyTo().tell(ShareReply.from(existing));
+      // Only recovery resumes a creation already in progress.
+      if (command.shareId() != null && existing.phase() == Phase.CREATING) {
+        return Effect().none().thenRun(next -> advanceShare(existing));
+      }
+      return Effect().none();
+    }
+    String shareId = existing != null ? existing.shareId() : UUID.randomUUID().toString();
     return Effect().persist(new ShareCreationRequested(shareId, command.spec())).thenRun(next -> {
-      UserShareState share = next.shares().get(command.spec().regionId());
+      UserShareState share = next.shares().get(shareId);
       command.replyTo().tell(ShareReply.from(share));
       advanceShare(share);
     });
   }
 
   private Effect<UserEvent, UserState> onGetShare(UserState state, GetShare command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     command.replyTo().tell(share == null
         ? new ShareReply(ShareReply.Status.NOT_FOUND, null, "share not found")
         : ShareReply.from(share));
     return Effect().none();
   }
 
+  private Effect<UserEvent, UserState> onGetSystemShare(UserState state, GetSystemShare command) {
+    UserShareState share = state.systemShare(command.regionId());
+    command.replyTo().tell(share == null
+        ? new ShareReply(ShareReply.Status.NOT_FOUND, null, "system share not found")
+        : ShareReply.from(share));
+    return Effect().none();
+  }
+
   private Effect<UserEvent, UserState> onShareCreated(UserState state, ShareCreateCompleted command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation()) || share.hasShare()) return Effect().none();
     return Effect().persist(new ShareCreated(share.shareId(), share.spec(), command.osShareId()))
-        .thenRun(next -> advanceShare(next.shares().get(command.regionId())));
+        .thenRun(next -> advanceShare(next.shares().get(command.shareId())));
   }
 
   private Effect<UserEvent, UserState> onShareExportChecked(UserState state, ShareExportChecked command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation())
         || !share.hasShare() || share.hasExportLocation()) return Effect().none();
     if (!hasText(command.osExportLocationId()) || !hasText(command.exportPath())) {
@@ -337,20 +351,20 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     }
     return Effect().persist(new ShareExportBecameReady(share.shareId(), share.spec(), share.osShareId(),
         command.osExportLocationId(), command.exportPath()))
-        .thenRun(next -> advanceShare(next.shares().get(command.regionId())));
+        .thenRun(next -> advanceShare(next.shares().get(command.shareId())));
   }
 
   private Effect<UserEvent, UserState> onShareAccessCreated(UserState state, ShareAccessCreateCompleted command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation())
         || !share.hasExportLocation() || share.hasAccessRule()) return Effect().none();
     return Effect().persist(new ShareAccessCreated(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), command.osGrantAccessId()))
-        .thenRun(next -> advanceShare(next.shares().get(command.regionId())));
+        .thenRun(next -> advanceShare(next.shares().get(command.shareId())));
   }
 
   private Effect<UserEvent, UserState> onShareAccessChecked(UserState state, ShareAccessChecked command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation()) || !share.hasAccessRule()) return Effect().none();
     if (!hasText(command.accessKey())) {
       scheduleSharePoll(share);
@@ -358,19 +372,19 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     }
     return Effect().persist(new ShareBecameReady(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), share.osGrantAccessId(), command.accessKey()))
-        .thenRun(next -> stopSharePolling(command.regionId()));
+        .thenRun(next -> stopSharePolling(command.shareId()));
   }
 
   private Effect<UserEvent, UserState> onShareFailed(UserState state, ShareFailed command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation())) return Effect().none();
     return Effect().persist(new ShareCreationFailed(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), share.osGrantAccessId(), command.failure()))
-        .thenRun(next -> stopSharePolling(command.regionId()));
+        .thenRun(next -> stopSharePolling(command.shareId()));
   }
 
   private Effect<UserEvent, UserState> onPollShare(UserState state, PollShare command) {
-    UserShareState share = state.shares().get(command.regionId());
+    UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation()) || !shareNeedsPolling(share)) return Effect().none();
     if (!share.hasExportLocation()) checkShareExport(share);
     else checkShareAccess(share);
@@ -382,15 +396,17 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     CompletionStage<String> operation;
     try {
       operation = client.createShare(spec.regionId(), spec.osProjectId(),
-          ManilaShareCreate.builder().name(shareNaming.name()).description(shareNaming.description())
+          ManilaShareCreate.builder()
+              .name(UserShareNaming.name(userId, spec.kind(), share.shareId()))
+              .description(UserShareNaming.description(userId, spec.kind(), share.shareId()))
               .size(spec.size()).shareProto(spec.shareProto()).shareType(spec.shareType()).build())
           .thenApply(created -> created == null ? null : created.getId());
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation, (osShareId, error) -> {
       if (error != null) return shareFailure(share, error);
       return hasText(osShareId)
-          ? new ShareCreateCompleted(share.regionId(), share.generation(), osShareId)
-          : new ShareFailed(share.regionId(), share.generation(), "Manila returned no share ID");
+          ? new ShareCreateCompleted(share.shareId(), share.generation(), osShareId)
+          : new ShareFailed(share.shareId(), share.generation(), "Manila returned no share ID");
     });
   }
 
@@ -420,13 +436,13 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       if (error != null) {
         ResponseException response = responseCause(error);
         if (response != null && response.getStatus() == 404) {
-          return new ShareExportChecked(share.regionId(), share.generation(), null, null);
+          return new ShareExportChecked(share.shareId(), share.generation(), null, null);
         }
         return shareFailure(share, error);
       }
       return location == null
-          ? new ShareExportChecked(share.regionId(), share.generation(), null, null)
-          : new ShareExportChecked(share.regionId(), share.generation(), location.getId(), location.getPath());
+          ? new ShareExportChecked(share.shareId(), share.generation(), null, null)
+          : new ShareExportChecked(share.shareId(), share.generation(), location.getId(), location.getPath());
     });
   }
 
@@ -435,14 +451,15 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     CompletionStage<String> operation;
     try {
       operation = client.grantShareAccess(spec.regionId(), spec.osProjectId(), share.osShareId(),
-          AccessOptions.create(Access.Level.RW, Access.Type.CEPHX, shareNaming.accessTo()))
+          AccessOptions.create(Access.Level.RW, Access.Type.CEPHX,
+              UserShareNaming.accessTo(userId, spec.kind(), share.shareId())))
           .thenApply(access -> access == null ? null : access.getId());
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation, (osGrantAccessId, error) -> {
       if (error != null) return shareFailure(share, error);
       return hasText(osGrantAccessId)
-          ? new ShareAccessCreateCompleted(share.regionId(), share.generation(), osGrantAccessId)
-          : new ShareFailed(share.regionId(), share.generation(), "Manila returned no access ID");
+          ? new ShareAccessCreateCompleted(share.shareId(), share.generation(), osGrantAccessId)
+          : new ShareFailed(share.shareId(), share.generation(), "Manila returned no access ID");
     });
   }
 
@@ -451,7 +468,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     try {
       operation = client.getShareAccess(share.regionId(), share.spec().osProjectId(), share.osGrantAccessId())
           .thenApply(access -> {
-            if (access == null) return new ShareAccessChecked(share.regionId(), share.generation(), null);
+            if (access == null) return new ShareAccessChecked(share.shareId(), share.generation(), null);
             if (!share.osGrantAccessId().equals(access.getId())) {
               throw new InvalidShareState("Manila returned a different access rule");
             }
@@ -460,15 +477,15 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
               throw new InvalidShareState("Share access entered " + access.getState());
             }
             return access.getState() == Access.State.ACTIVE && hasText(access.getAccessKey())
-                ? new ShareAccessChecked(share.regionId(), share.generation(), access.getAccessKey())
-                : new ShareAccessChecked(share.regionId(), share.generation(), null);
+                ? new ShareAccessChecked(share.shareId(), share.generation(), access.getAccessKey())
+                : new ShareAccessChecked(share.shareId(), share.generation(), null);
           });
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation, (result, error) -> {
       if (error == null) return result;
       ResponseException response = responseCause(error);
       if (response != null && response.getStatus() == 404) {
-        return new ShareAccessChecked(share.regionId(), share.generation(), null);
+        return new ShareAccessChecked(share.shareId(), share.generation(), null);
       }
       return shareFailure(share, error);
     });
@@ -481,7 +498,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     String detail = cause instanceof InvalidShareState ? cause.getMessage()
         : "Share operation failed at " + share.phase() + ": " + cause.getClass().getSimpleName()
             + (response == null ? "" : " (HTTP " + response.getStatus() + ")");
-    return new ShareFailed(share.regionId(), share.generation(), detail);
+    return new ShareFailed(share.shareId(), share.generation(), detail);
   }
 
   private static boolean matchesShare(UserShareState share, long generation) {
@@ -493,16 +510,16 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private void scheduleSharePoll(UserShareState share) {
-    timers.startSingleTimer(new SharePollTimerKey(share.regionId()),
-        new PollShare(share.regionId(), share.generation()), settings.pollInterval());
+    timers.startSingleTimer(share.shareId(),
+        new PollShare(share.shareId(), share.generation()), settings.pollInterval());
   }
 
-  private void stopSharePolling(String regionId) {
-    timers.cancel(new SharePollTimerKey(regionId));
+  private void stopSharePolling(String shareId) {
+    timers.cancel(shareId);
   }
 
   private void advanceShare(UserShareState share) {
-    if (share.terminal()) return;
+    if (share.terminal() || timers.isTimerActive(share.shareId())) return;
     if (!share.hasShare()) executeShareCreate(share);
     else if (!share.hasExportLocation()) scheduleSharePoll(share);
     else if (!share.hasAccessRule()) executeShareAccessCreate(share);
@@ -513,22 +530,22 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   public EventHandler<UserState, UserEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
         .onEvent(ShareCreationRequested.class, (state, event) -> {
-          UserShareState existing = state.shares().get(event.spec().regionId());
+          UserShareState existing = state.shares().get(event.shareId());
           return state.updated(existing == null
               ? UserShareState.requested(event.shareId(), event.spec())
               : existing.retry());
         })
         .onEvent(ShareCreated.class, (state, event) ->
-            state.updated(state.shares().get(event.spec().regionId()).created(event.osShareId())))
+            state.updated(state.shares().get(event.shareId()).created(event.osShareId())))
         .onEvent(ShareExportBecameReady.class, (state, event) ->
-            state.updated(state.shares().get(event.spec().regionId())
+            state.updated(state.shares().get(event.shareId())
                 .exportReady(event.osExportLocationId(), event.exportLocationPath())))
         .onEvent(ShareAccessCreated.class, (state, event) ->
-            state.updated(state.shares().get(event.spec().regionId()).accessCreated(event.osGrantAccessId())))
+            state.updated(state.shares().get(event.shareId()).accessCreated(event.osGrantAccessId())))
         .onEvent(ShareBecameReady.class, (state, event) ->
-            state.updated(state.shares().get(event.spec().regionId()).ready(event.accessKey())))
+            state.updated(state.shares().get(event.shareId()).ready(event.accessKey())))
         .onEvent(ShareCreationFailed.class, (state, event) ->
-            state.updated(state.shares().get(event.spec().regionId()).failed(event.failure())))
+            state.updated(state.shares().get(event.shareId()).failed(event.failure())))
         .onEvent(ProjectCreationRequested.class, (state, event) -> {
           UserProjectState existing = state.projects().get(event.clusterId());
           return state.updated(existing == null
@@ -557,7 +574,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return newSignalHandlerBuilder().onSignal(RecoveryCompleted.class, (state, signal) -> {
       state.shares().values().stream().filter(share -> share.phase() == Phase.CREATING)
           .forEach(share -> context.getSelf().tell(new CreateShare(
-              share.spec(), context.getSystem().ignoreRef())));
+              share.shareId(), share.spec(), context.getSystem().ignoreRef())));
       state.projects().values().stream().filter(project -> project.phase() == UserProjectState.Phase.CREATING)
           .forEach(project -> context.getSelf().tell(new CreateProject(
               project.clusterId(), project.name(), context.getSystem().ignoreRef())));

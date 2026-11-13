@@ -4,24 +4,51 @@ import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Projects are indexed by OpenStack clusterId; shares and networks are indexed by regionId. */
+/** Shares are indexed by shareId, projects by clusterId and networks by regionId. */
 public record UserState(Map<String, UserShareState> shares,
     Map<String, UserProjectState> projects,
     Map<String, UserNetworkState> networks) implements Serializable {
   public UserState {
-    shares = Map.copyOf(shares);
+    // Reindex older snapshots whose shares were keyed by regionId.
+    Map<String, UserShareState> indexedShares = new HashMap<>();
+    Map<String, String> systemRegions = new HashMap<>();
+    for (UserShareState share : shares.values()) {
+      UserShareState previous = indexedShares.putIfAbsent(share.shareId(), share);
+      if (previous != null && !previous.equals(share)) {
+        throw new IllegalStateException("Conflicting share ID " + share.shareId());
+      }
+      if (share.spec().kind() == ShareKind.SYSTEM) {
+        String existingId = systemRegions.putIfAbsent(share.regionId(), share.shareId());
+        if (existingId != null && !existingId.equals(share.shareId())) {
+          throw new IllegalStateException("Multiple system shares exist in region " + share.regionId());
+        }
+      }
+    }
+    shares = Map.copyOf(indexedShares);
     projects = Map.copyOf(projects);
     networks = Map.copyOf(networks);
   }
 
   public UserState updated(UserShareState share) {
-    UserShareState existing = shares.get(share.regionId());
-    if (existing != null && !existing.shareId().equals(share.shareId())) {
-      throw new IllegalStateException("Multiple shares exist in region " + share.regionId());
+    UserShareState existing = shares.get(share.shareId());
+    if (existing != null && !existing.spec().equals(share.spec())) {
+      throw new IllegalStateException("Share specification cannot change: " + share.shareId());
     }
     Map<String, UserShareState> next = new HashMap<>(shares);
-    next.put(share.regionId(), share);
+    next.put(share.shareId(), share);
     return new UserState(next, projects, networks);
+  }
+
+  public UserShareState systemShare(String regionId) {
+    return shares.values().stream()
+        .filter(share -> share.spec().kind() == ShareKind.SYSTEM && share.regionId().equals(regionId))
+        .findFirst().orElse(null);
+  }
+
+  public UserShareState userShare(String regionId) {
+    return shares.values().stream()
+        .filter(share -> share.spec().kind() == ShareKind.USER && share.regionId().equals(regionId))
+        .findFirst().orElse(null);
   }
 
   public UserState updated(UserProjectState project) {

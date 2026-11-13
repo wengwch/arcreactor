@@ -39,7 +39,34 @@
         <mybatis-spring-boot.version>4.0.0</mybatis-spring-boot.version>
         <openstack4j.version>3.13-ENQ-SNAPSHOT</openstack4j.version>
         <r2dbc-mysql.version>1.4.1</r2dbc-mysql.version>
+        <nexus.repository.url>http://nexus.veryai.cn/repository/maven-public/</nexus.repository.url>
     </properties>
+
+    <repositories>
+        <repository>
+            <id>veryai</id>
+            <url>${nexus.repository.url}</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <pluginRepositories>
+        <pluginRepository>
+            <id>veryai</id>
+            <url>${nexus.repository.url}</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
 
     <dependencyManagement>
         <dependencies>

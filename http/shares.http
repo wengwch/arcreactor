@@ -1,0 +1,32 @@
+# 用户 Share API。执行 POST 会创建真实的 Manila Share，业务类型固定为 USER，协议为 CEPHFS。
+# regionId 是本地已启用区域的业务 ID；shareType 是该区域可用的 Manila 后端类型名称或 ID。
+# 同一用户、同一区域可创建多个 USER Share；SYSTEM Share 由实例依赖流程创建，每个用户每区域最多一个。
+# 创建请求不接收 shareId，由 UserActor 内部生成并随响应返回，供后续查询。
+# 相同参数每次提交都会创建新的 USER Share，不具备创建请求幂等性。
+# 新建用户项目最多等待30秒，超时返回业务 code=504；Share 本身由 Actor 异步创建，不等待就绪。
+# 接口超时不代表创建失败，再次提交会作为新的创建请求处理。
+@baseUrl = http://localhost:8080
+@userId = test-user-002
+@regionId = Test-SH-01
+@shareId = {{createUserShare.response.body.$.result.shareId}}
+@shareType = cephfs
+
+### 创建用户 Share
+# @name createUserShare
+# HTTP 202 表示 Share 创建意图已持久化，返回包装为 {"code":200,"result":{...}}。
+# 再次提交即可在同一 region 创建另一份用户 Share。
+POST {{baseUrl}}/api/v1/users/{{userId}}/shares
+Content-Type: application/json
+Accept: application/json
+
+{
+  "regionId": "{{regionId}}",
+  "size": 10,
+  "shareType": "{{shareType}}"
+}
+
+### 查询创建进度
+# phase 为 CREATING、READY 或 FAILED；就绪后包含 osShareId 和 exportLocationPath，不返回 accessKey。
+# shareId 为应用中的逻辑 ID，不是 Manila Share ID。查询不存在的 ID 返回业务 code=404。
+GET {{baseUrl}}/api/v1/users/{{userId}}/shares/{{shareId}}
+Accept: application/json
