@@ -309,7 +309,7 @@ public final class InstanceWorkflowActor
     var share = state.spec().share();
     CompletionStage<PreparedDependencies> request;
     try {
-      request = dependencyPreparer.prepare(state.userId(), state.spec().clusterId(), share.shareId(),
+      request = dependencyPreparer.prepare(state.userId(), state.spec().clusterId(),
           share.spec(), state.spec().network());
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
@@ -1035,7 +1035,7 @@ public final class InstanceWorkflowActor
     return Map.ofEntries(
         Map.entry("share_access_key", share.accessKey()),
         Map.entry("share_export_location", share.exportLocationPath()),
-        Map.entry("share_access_to", state.shareSpec().accessTo()),
+        Map.entry("share_access_to", share.accessTo()),
         Map.entry("segmentId", state.spec().network().segmentationId()),
         Map.entry("macaddress", network.subMacAddress()),
         Map.entry("ipv4", network.subFixedIp() + cidr.substring(cidr.lastIndexOf('/'))),

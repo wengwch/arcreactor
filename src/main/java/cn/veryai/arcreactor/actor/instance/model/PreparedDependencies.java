@@ -11,6 +11,9 @@ public record PreparedDependencies(String osProjectId, ShareRequirement share, P
     Objects.requireNonNull(share, "share");
     Objects.requireNonNull(preparedShare, "preparedShare");
     Objects.requireNonNull(network, "network");
+    if (share.shareId() == null || share.shareId().isBlank()) {
+      throw new IllegalArgumentException("prepared shareId is required");
+    }
     if (!osProjectId.equals(share.spec().osProjectId())) {
       throw new IllegalArgumentException("prepared share must belong to the resolved project");
     }

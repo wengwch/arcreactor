@@ -41,7 +41,7 @@ public class InstanceDependencyPreparer {
     private final SysNetworkRepo sysNetworkRepo;
     private final InstanceCreationProperties properties;
 
-    public CompletionStage<PreparedDependencies> prepare(String userId, String clusterId, String shareId,
+    public CompletionStage<PreparedDependencies> prepare(String userId, String clusterId,
             ShareSpec shareSpec, NetworkRequirement network) {
         Duration pollInterval = properties.getDependencyPollInterval();
         requirePositive(pollInterval);
@@ -62,7 +62,7 @@ public class InstanceDependencyPreparer {
                 String osProjectId = project.osProjectId();
                 NetworkRequirement resolved = resolveSharedNetwork(region, network);
                 ShareSpec resolvedShare = shareSpec.withOsProjectId(osProjectId);
-                var shareReply = awaitReady(() -> userResources.createShare(userId, shareId, resolvedShare),
+                var shareReply = awaitReady(() -> userResources.createShare(userId, resolvedShare),
                         () -> userResources.getShare(userId, region),
                         reply -> reply.status() == ShareReply.Status.READY,
                         reply -> reply.status() == ShareReply.Status.IN_PROGRESS,
@@ -77,7 +77,7 @@ public class InstanceDependencyPreparer {
                 }
                 PreparedShare preparedShare;
                 try {
-                    preparedShare = PreparedShare.from(share);
+                    preparedShare = PreparedShare.from(userId, share);
                 } catch (IllegalArgumentException exception) {
                     throw new BaseException(ErrorCode.INSTANCE_SHARE_PREPARATION_FAILED, exception);
                 }
@@ -110,7 +110,7 @@ public class InstanceDependencyPreparer {
         }, EXECUTOR);
     }
 
-    /** Re-submitting an intent only returns existing state; all subsequent waiting uses queries. */
+    /** Submit the creation intent once, then query until ready; re-submit only when absent. */
     private <T> T awaitReady(Supplier<CompletionStage<T>> create, Supplier<CompletionStage<T>> query,
             Predicate<T> ready, Predicate<T> inProgress, Predicate<T> notFound,
             Duration pollInterval, ErrorCode failure) throws InterruptedException {

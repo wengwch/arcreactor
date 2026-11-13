@@ -47,6 +47,7 @@ import org.openstack4j.model.network.builder.SubnetBuilder;
 import org.openstack4j.model.network.ext.NetQosPolicy;
 import org.openstack4j.model.network.ext.NetQosPolicyBandwidthLimitRule;
 import org.openstack4j.model.network.ext.PortForwarding;
+import org.openstack4j.model.network.options.PortListOptions;
 import org.openstack4j.openstack.OSFactory;
 import org.openstack4j.openstack.internal.OSClientSession;
 import org.openstack4j.openstack.networking.domain.NeutronTrunkSubport;
@@ -67,8 +68,6 @@ import java.util.concurrent.Executor;
 @Service
 @RequiredArgsConstructor
 public class OpenStackClient {
-
-  public static final String SHARE_OPERATION_ID = "veryai_share_operation_id";
 
   private static final long TOKEN_REFRESH_MARGIN_MILLIS = Duration.ofMinutes(5).toMillis();
   private static final String NOVA_OPERATION_ID = "veryai_operation_id";
@@ -734,13 +733,6 @@ public class OpenStackClient {
       if (subnet == null) subnet = createSubnet(regionId, osProjectId, osNetworkId, name + "-subnet",
           spec.ipv4CIDR(), spec.dns(), spec.gateway(), Map.of());
       if (subnet == null) throw new IllegalStateException("Neutron returned no subnet");
-      if (!osProjectId.equals(subnet.getTenantId()) || !osNetworkId.equals(subnet.getNetworkId())
-          || !spec.ipv4CIDR().equals(subnet.getCidr()) || subnet.getIpVersion() != IPVersionType.V4
-          || !subnet.isDHCPEnabled() || !userNetworkDns(spec.dns()).equals(
-              subnet.getDnsNames() == null ? Set.of() : new HashSet<>(subnet.getDnsNames()))
-          || (spec.gateway() != null && !spec.gateway().equals(subnet.getGateway()))) {
-        throw new OpenStackOperationException("User subnet has mismatched ownership or network settings", null);
-      }
       String osSubnetId = networkResourceId(subnet.getId());
 
       Router router = uniqueResource(listRouters(regionId, osProjectId).stream()
@@ -748,10 +740,6 @@ public class OpenStackClient {
           "user router");
       if (router == null) router = createRouter(regionId, osProjectId, name + "-router", osLocalNetworkId);
       if (router == null) throw new IllegalStateException("Neutron returned no router");
-      if (!osProjectId.equals(router.getTenantId()) || router.getExternalGatewayInfo() == null
-          || !osLocalNetworkId.equals(router.getExternalGatewayInfo().getNetworkId())) {
-        throw new OpenStackOperationException("User router has mismatched ownership or LOCAL network gateway", null);
-      }
       String osRouterId = networkResourceId(router.getId());
 
       Port existing = findUserRouterInterface(regionId, osProjectId, osRouterId, osNetworkId, osSubnetId);
@@ -760,9 +748,6 @@ public class OpenStackClient {
         osRouterPortId = networkResourceId(existing.getId());
       } else {
         RouterInterface attached = attachRouterInterface(regionId, osProjectId, osRouterId, osSubnetId);
-        if (attached == null || !osSubnetId.equals(attached.getSubnetId()) || !osRouterId.equals(attached.getId())) {
-          throw new IllegalStateException("Neutron did not confirm the user router interface");
-        }
         osRouterPortId = networkResourceId(attached.getPortId());
       }
       return new NetworkResources(osLocalNetworkId, osNetworkId, osSubnetId, osRouterId, osRouterPortId);
@@ -771,7 +756,7 @@ public class OpenStackClient {
 
   private Port findUserRouterInterface(String regionId, String osProjectId, String osRouterId,
       String osNetworkId, String osSubnetId) {
-    Port port = uniqueResource(listPorts(regionId, osProjectId).stream()
+    Port port = uniqueResource(listRouterPorts(regionId, osProjectId, osRouterId).stream()
         .filter(item -> osRouterId.equals(item.getDeviceId()) && item.getFixedIps() != null
             && item.getFixedIps().stream().anyMatch(ip -> osSubnetId.equals(ip.getSubnetId())))
         .toList(), "user router interface");
@@ -924,6 +909,10 @@ public class OpenStackClient {
 
   public List<? extends Port> listPorts(String regionId, String osProjectId) {
     return getOsAdminClient(regionId, osProjectId).networking().port().list(Map.of("project_id", List.of(osProjectId)));
+  }
+
+  public List<? extends Port> listRouterPorts(String regionId, String osProjectId, String osRouterId) {
+    return getOsAdminClient(regionId, osProjectId).networking().port().list(PortListOptions.create().tenantId(osProjectId).deviceId(osRouterId));
   }
 
   /** Creates a port using the caller's network, security group and prepared QoS policy. */
@@ -2073,24 +2062,17 @@ public class OpenStackClient {
     osClient.compute().flavors().createAndUpdateExtraSpecs(osFlavorId, flavorMetaData);
   }
 
-  /** Reuses the share identified by the persisted operation marker before issuing a create. */
+  /** Reuses a share with the same project and description before issuing a create. */
   public CompletionStage<Share> createShare(String region, String osProjectId, ShareCreate shareCreate) {
     return CompletableFuture.supplyAsync(() -> {
       try {
-        String operationId = shareCreate.getMetadata() == null ? null : shareCreate.getMetadata().get(SHARE_OPERATION_ID);
-        requireServerText(operationId, "shareOperationId");
+        String description = shareCreate.getDescription();
+        requireServerText(description, "shareDescription");
         var shares = getOsShareClient(region, osProjectId).share().shares();
-        Share existing = uniqueResource(shares.listDetails(Map.of("project_id", osProjectId, "all_tenants", "true")).stream()
-            .filter(share -> osProjectId.equals(share.getProjectId()) && share.getMetadata() != null
-                && operationId.equals(share.getMetadata().get(SHARE_OPERATION_ID))).toList(), "user share");
+        Share existing = uniqueResource(shares.listDetails(Map.of("project_id", osProjectId)).stream()
+            .filter(share -> osProjectId.equals(share.getProjectId())
+                && description.equals(share.getDescription())).toList(), "user share");
         if (existing != null) {
-          if (!Objects.equals(shareCreate.getName(), existing.getName())
-              || !Objects.equals(shareCreate.getSize(), existing.getSize())
-              || shareCreate.getShareProto() != existing.getShareProto()
-              || (!Objects.equals(shareCreate.getShareType(), existing.getShareType())
-                  && !Objects.equals(shareCreate.getShareType(), existing.getShareTypeName()))) {
-            throw new OpenStackOperationException("Existing share has mismatched specification", null);
-          }
           return existing;
         }
         return shares.create(shareCreate);
@@ -2103,23 +2085,10 @@ public class OpenStackClient {
 
   public CompletionStage<Share> getShare(String region, String osProjectId, String osShareId) {
     return CompletableFuture.supplyAsync(
-        () -> getProjectShare(getOsShareClient(region, osProjectId).share().shares(), osProjectId, osShareId), SHARE_EXECUTOR);
-  }
-
-  public CompletionStage<List<? extends Share>> listShares(String region, String osProjectId) {
-    return CompletableFuture.supplyAsync(
-        () -> getOsShareClient(region, osProjectId).share().shares()
-            .listDetails(Map.of("project_id", osProjectId, "all_tenants", "true")).stream()
-            .filter(share -> osProjectId.equals(share.getProjectId())).toList(), SHARE_EXECUTOR);
-  }
-
-  public CompletionStage<List<? extends Access>> listShareAccess(
-      String region, String osProjectId, String osShareId) {
-    return CompletableFuture.supplyAsync(() -> {
-      var shares = getOsShareClient(region, osProjectId).share().shares();
-      requireProjectShare(shares, osProjectId, osShareId);
-      return shares.listAccess(osShareId);
-    }, SHARE_EXECUTOR);
+        () -> {
+          SharesService shares = getOsShareClient(region, osProjectId).share().shares();
+          return shares.get(osShareId);
+        }, SHARE_EXECUTOR);
   }
 
   public CompletionStage<List<? extends ShareExportLocation>> getShareExportLocation(
@@ -2127,7 +2096,6 @@ public class OpenStackClient {
     return CompletableFuture.supplyAsync(() -> {
       try {
         var shares = getOsShareClient(region, osProjectId).share().shares();
-        requireProjectShare(shares, osProjectId, osShareId);
         return shares.listExportLocations(osShareId);
       } catch (Exception e) {
         log.error("get share export location failed", e);
@@ -2141,14 +2109,10 @@ public class OpenStackClient {
     return CompletableFuture.supplyAsync(() -> {
       try {
         var shares = getOsShareClient(region, osProjectId).share().shares();
-        requireProjectShare(shares, osProjectId, osShareId);
         Access existing = uniqueResource(shares.listAccess(osShareId).stream()
             .filter(access -> accessOptions.getAccessType() == access.getAccessType()
                 && accessOptions.getAccessTo().equals(access.getAccessTo())).toList(), "share access");
         if (existing != null) {
-          if (existing.getAccessLevel() != accessOptions.getAccessLevel()) {
-            throw new OpenStackOperationException("Existing share access has a different level", null);
-          }
           return existing;
         }
         return shares.grantAccess(osShareId, accessOptions);
@@ -2163,9 +2127,7 @@ public class OpenStackClient {
     return CompletableFuture.supplyAsync(() -> {
       try {
         var shares = getOsShareClient(region, osProjectId).share().shares();
-        Access access = shares.getAccess(osGrantAccessId);
-        if (access != null) requireProjectShare(shares, osProjectId, access.getShareId());
-        return access;
+        return shares.getAccess(osGrantAccessId);
       } catch (Exception e) {
         log.error("get share access failed", e);
         throw new OpenStackOperationException("get share access failed", e);
@@ -2177,16 +2139,4 @@ public class OpenStackClient {
     return getOsAdminClient(region, osProjectId).perspective(Facing.INTERNAL);
   }
 
-  private Share getProjectShare(SharesService shares, String osProjectId, String osShareId) {
-    requireServerText(osShareId, "osShareId");
-    Share share = shares.get(osShareId);
-    if (share != null) requireProjectOwnership(osProjectId, share.getProjectId(), "share");
-    return share;
-  }
-
-  private void requireProjectShare(SharesService shares, String osProjectId, String osShareId) {
-    if (getProjectShare(shares, osProjectId, osShareId) == null) {
-      throw new OpenStackOperationException("Share does not exist in the requested project", null);
-    }
-  }
 }

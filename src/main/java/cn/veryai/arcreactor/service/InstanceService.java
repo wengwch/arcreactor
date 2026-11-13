@@ -90,7 +90,7 @@ public class InstanceService {
         InstanceSpec spec = new InstanceSpec(region.getClusterId(), region.getId(), param.getName(),
                 image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getDisk(), flavor.getGpus(),
                 StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
-                new ShareRequirement(param.getUserId(), defaults.resourceId(), defaults.share()),
+                new ShareRequirement(param.getUserId(), defaults.share()),
                 defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType(), param.getHostname());
         return submit(requestId, instanceId, spec);
     }
@@ -177,7 +177,6 @@ public class InstanceService {
 
     private CreationDefaults creationDefaults(CreateInstanceParam param, RegionEntity region) {
         // A user's instances reuse the same regional share and network specification.
-        String resourceId = param.getUserId();
         List<String> osFloatingIpIds = floatingIpRepo.findByRegionId(region.getId()).stream()
                 .filter(FloatingIpEntity::isEnabled)
                 .filter(ip -> StringUtils.isNoneBlank(ip.getOsFloatingIpId(), ip.getFloatingIp(), ip.getOsProjectId()))
@@ -190,11 +189,10 @@ public class InstanceService {
         try {
             cloudInitRenderer.validateConfiguration();
             forwarding = new ForwardingRequirement(osFloatingIpIds, creationProperties.getForwardingPorts());
-            share = new ShareSpec(region.getId(), "share-" + resourceId, "Managed user share",
-                            creationProperties.getShareSize(), Share.Protocol.CEPHFS,
-                            creationProperties.getShareType(), "user-" + resourceId);
+            share = new ShareSpec(region.getId(), creationProperties.getShareSize(),
+                    Share.Protocol.CEPHFS, creationProperties.getShareType());
             network = new NetworkRequirement(creationProperties.getSegmentationId(),
-                    new NetworkSpec(region.getId(), "network-" + resourceId,
+                    new NetworkSpec(region.getId(), "veryai:net:" + param.getUserId(),
                             creationProperties.getNetworkCidr(), creationProperties.getNetworkDns(),
                             creationProperties.getNetworkGateway()),
                     creationProperties.getParentPortBandwidthLimit(), creationProperties.getSubPortBandwidthLimit());
@@ -203,10 +201,10 @@ public class InstanceService {
         } catch (IllegalArgumentException | NullPointerException | CloudInitRenderer.RenderingException exception) {
             throw new BaseException(ErrorCode.INSTANCE_CREATION_CONFIG_INVALID, exception);
         }
-        return new CreationDefaults(resourceId, share, network, cloudInit, forwarding);
+        return new CreationDefaults(share, network, cloudInit, forwarding);
     }
 
-    private record CreationDefaults(String resourceId, ShareSpec share, NetworkRequirement network,
+    private record CreationDefaults(ShareSpec share, NetworkRequirement network,
             CloudInitSpec cloudInit, ForwardingRequirement forwarding) {}
 
     private static String secret(int byteCount) {

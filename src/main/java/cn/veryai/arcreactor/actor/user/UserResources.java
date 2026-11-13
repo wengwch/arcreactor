@@ -39,25 +39,18 @@ public final class UserResources {
     this.sharding = ClusterSharding.get(system);
     Config config = system.settings().config().getConfig("cloud.user");
     this.askTimeout = config.getDuration("ask-timeout");
-    UserShareSettings settings =
-        new UserShareSettings(
-            config.getDuration("share.poll-interval"),
-            config.getDuration("share.operation-timeout"),
-            config.getDuration("share.creation-timeout"));
-    UserProjectSettings projectSettings = new UserProjectSettings(config.getDuration("project.operation-timeout"));
-    UserNetworkSettings networkSettings = new UserNetworkSettings(config.getDuration("network.operation-timeout"));
+    UserShareSettings settings = new UserShareSettings(config.getDuration("share.poll-interval"));
     sharding.init(
         Entity.of(
             UserActor.TYPE_KEY,
-            context -> UserActor.create(context.getEntityId(), client, settings,
-                projectSettings, networkSettings)));
+            context -> UserActor.create(context.getEntityId(), client, settings)));
   }
 
   /** Returns after the request is persisted; use getShare to observe progress and the access key. */
-  public CompletionStage<ShareReply> createShare(String userId, String shareId, ShareSpec spec) {
+  public CompletionStage<ShareReply> createShare(String userId, ShareSpec spec) {
     return AskPattern.<UserCommand, ShareReply>ask(
         entityRef(userId),
-        replyTo -> new CreateShare(shareId, spec, replyTo),
+        replyTo -> new CreateShare(spec, replyTo),
         askTimeout,
         system.scheduler());
   }

@@ -46,7 +46,7 @@
           #{spec.memoryGb,jdbcType=BIGINT},
           #{spec.diskGb,jdbcType=BIGINT},
           #{spec.gpuCount,jdbcType=INTEGER},
-          #{spec.share.shareId,jdbcType=VARCHAR},
+          NULL,
           #{spec.network.segmentationId,jdbcType=INTEGER},
           #{phase},
           #{version},

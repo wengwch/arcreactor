@@ -12,7 +12,7 @@ public record ShareReply(Status status, UserShareState share, String detail) imp
     Status status = switch (share.phase()) {
       case READY -> Status.READY;
       case FAILED -> Status.FAILED;
-      case CREATING, WAITING_EXPORT, GRANTING_ACCESS, WAITING_ACCESS -> Status.IN_PROGRESS;
+      case CREATING -> Status.IN_PROGRESS;
     };
     return new ShareReply(status, share, share.failureMessage());
   }

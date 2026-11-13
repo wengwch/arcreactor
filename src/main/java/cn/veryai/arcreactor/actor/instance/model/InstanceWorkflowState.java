@@ -1,6 +1,5 @@
 package cn.veryai.arcreactor.actor.instance.model;
 
-import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import java.io.Serializable;
 import java.time.Instant;
@@ -67,15 +66,11 @@ public record InstanceWorkflowState(
     }
 
     public String shareId() {
-        return dependencies != null ? dependencies.share().shareId() : spec == null ? null : spec.share().shareId();
+        return dependencies == null ? null : dependencies.share().shareId();
     }
 
     public PreparedShare preparedShare() {
         return dependencies == null ? null : dependencies.preparedShare();
-    }
-
-    public ShareSpec shareSpec() {
-        return dependencies == null ? spec.share().spec() : dependencies.share().spec();
     }
 
     public InstanceWorkflowState preparingDependencies() {

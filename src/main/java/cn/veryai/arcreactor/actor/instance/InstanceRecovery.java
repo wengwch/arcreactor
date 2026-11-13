@@ -127,7 +127,7 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverDependencies(InstanceWorkflowState state) {
     var share = state.spec().share();
-    return dependencies.prepare(state.userId(), state.spec().clusterId(), share.shareId(), share.spec(),
+    return dependencies.prepare(state.userId(), state.spec().clusterId(), share.spec(),
         state.spec().network()).thenApply(prepared ->
         proceed(new DependenciesPrepared(state.instanceId(), prepared),
             new SecurityGroupPreparationStarted(state.instanceId())));
