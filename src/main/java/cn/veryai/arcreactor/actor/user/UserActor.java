@@ -67,6 +67,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   public static final String ENTITY_TYPE = "User";
   public static final EntityTypeKey<UserCommand> TYPE_KEY =
       EntityTypeKey.create(UserCommand.class, ENTITY_TYPE);
+  private static final int MAX_SHARE_POLL_ATTEMPTS = 15;
 
   private final String userId;
   private final ActorContext<UserCommand> context;
@@ -77,20 +78,21 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   public record ShareCreateCompleted(String shareId, long generation, String osShareId)
       implements UserCommand {}
   /** Null export fields mean the share or export location is not ready yet. */
-  public record ShareExportChecked(String shareId, long generation,
+  public record ShareExportChecked(String shareId, long generation, int attempt,
       String osExportLocationId, String exportPath)
       implements UserCommand {}
   public record ShareAccessCreateCompleted(String shareId, long generation, String osGrantAccessId)
       implements UserCommand {}
   /** A null access key means the access rule is not ready yet. */
-  public record ShareAccessChecked(String shareId, long generation, String accessKey) implements UserCommand {
+  public record ShareAccessChecked(String shareId, long generation, int attempt, String accessKey) implements UserCommand {
     @Override
     public String toString() {
-      return "ShareAccessChecked[shareId=" + shareId + ", generation=" + generation + ", accessKey=<redacted>]";
+      return "ShareAccessChecked[shareId=" + shareId + ", generation=" + generation
+          + ", attempt=" + attempt + ", accessKey=<redacted>]";
     }
   }
   public record ShareFailed(String shareId, long generation, String failure) implements UserCommand {}
-  public record PollShare(String shareId, long generation) implements UserCommand {}
+  public record PollShare(String shareId, long generation, int attempt) implements UserCommand {}
   public record ProjectReady(String clusterId, long generation, String osProjectId)
       implements UserCommand {}
   public record ProjectFailed(String clusterId, long generation, String failure)
@@ -346,7 +348,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     if (!matchesShare(share, command.generation())
         || !share.hasShare() || share.hasExportLocation()) return Effect().none();
     if (!hasText(command.osExportLocationId()) || !hasText(command.exportPath())) {
-      scheduleSharePoll(share);
+      scheduleSharePoll(share, command.attempt() + 1);
       return Effect().none();
     }
     return Effect().persist(new ShareExportBecameReady(share.shareId(), share.spec(), share.osShareId(),
@@ -367,7 +369,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation()) || !share.hasAccessRule()) return Effect().none();
     if (!hasText(command.accessKey())) {
-      scheduleSharePoll(share);
+      scheduleSharePoll(share, command.attempt() + 1);
       return Effect().none();
     }
     return Effect().persist(new ShareBecameReady(share.shareId(), share.spec(), share.osShareId(),
@@ -386,8 +388,13 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private Effect<UserEvent, UserState> onPollShare(UserState state, PollShare command) {
     UserShareState share = state.shares().get(command.shareId());
     if (!matchesShare(share, command.generation()) || !shareNeedsPolling(share)) return Effect().none();
-    if (!share.hasExportLocation()) checkShareExport(share);
-    else checkShareAccess(share);
+    if (command.attempt() > MAX_SHARE_POLL_ATTEMPTS) {
+      String step = share.hasExportLocation() ? "access rule" : "export location";
+      return onShareFailed(state, new ShareFailed(share.shareId(), share.generation(),
+          "Share " + step + " was not ready after " + MAX_SHARE_POLL_ATTEMPTS + " polling attempts"));
+    }
+    if (!share.hasExportLocation()) checkShareExport(share, command.attempt());
+    else checkShareAccess(share, command.attempt());
     return Effect().none();
   }
 
@@ -410,7 +417,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     });
   }
 
-  private void checkShareExport(UserShareState share) {
+  private void checkShareExport(UserShareState share, int attempt) {
     ShareSpec spec = share.spec();
     CompletionStage<ShareExportLocation> operation;
     try {
@@ -436,13 +443,13 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       if (error != null) {
         ResponseException response = responseCause(error);
         if (response != null && response.getStatus() == 404) {
-          return new ShareExportChecked(share.shareId(), share.generation(), null, null);
+          return new ShareExportChecked(share.shareId(), share.generation(), attempt, null, null);
         }
         return shareFailure(share, error);
       }
       return location == null
-          ? new ShareExportChecked(share.shareId(), share.generation(), null, null)
-          : new ShareExportChecked(share.shareId(), share.generation(), location.getId(), location.getPath());
+          ? new ShareExportChecked(share.shareId(), share.generation(), attempt, null, null)
+          : new ShareExportChecked(share.shareId(), share.generation(), attempt, location.getId(), location.getPath());
     });
   }
 
@@ -463,12 +470,12 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     });
   }
 
-  private void checkShareAccess(UserShareState share) {
+  private void checkShareAccess(UserShareState share, int attempt) {
     CompletionStage<UserCommand> operation;
     try {
       operation = client.getShareAccess(share.regionId(), share.spec().osProjectId(), share.osGrantAccessId())
           .thenApply(access -> {
-            if (access == null) return new ShareAccessChecked(share.shareId(), share.generation(), null);
+            if (access == null) return new ShareAccessChecked(share.shareId(), share.generation(), attempt, null);
             if (!share.osGrantAccessId().equals(access.getId())) {
               throw new InvalidShareState("Manila returned a different access rule");
             }
@@ -477,15 +484,15 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
               throw new InvalidShareState("Share access entered " + access.getState());
             }
             return access.getState() == Access.State.ACTIVE && hasText(access.getAccessKey())
-                ? new ShareAccessChecked(share.shareId(), share.generation(), access.getAccessKey())
-                : new ShareAccessChecked(share.shareId(), share.generation(), null);
+                ? new ShareAccessChecked(share.shareId(), share.generation(), attempt, access.getAccessKey())
+                : new ShareAccessChecked(share.shareId(), share.generation(), attempt, null);
           });
     } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(operation, (result, error) -> {
       if (error == null) return result;
       ResponseException response = responseCause(error);
       if (response != null && response.getStatus() == 404) {
-        return new ShareAccessChecked(share.shareId(), share.generation(), null);
+        return new ShareAccessChecked(share.shareId(), share.generation(), attempt, null);
       }
       return shareFailure(share, error);
     });
@@ -509,9 +516,9 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return share.hasShare() && (!share.hasExportLocation() || share.hasAccessRule());
   }
 
-  private void scheduleSharePoll(UserShareState share) {
+  private void scheduleSharePoll(UserShareState share, int attempt) {
     timers.startSingleTimer(share.shareId(),
-        new PollShare(share.shareId(), share.generation()), settings.pollInterval());
+        new PollShare(share.shareId(), share.generation(), attempt), settings.pollInterval());
   }
 
   private void stopSharePolling(String shareId) {
@@ -521,9 +528,9 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private void advanceShare(UserShareState share) {
     if (share.terminal() || timers.isTimerActive(share.shareId())) return;
     if (!share.hasShare()) executeShareCreate(share);
-    else if (!share.hasExportLocation()) scheduleSharePoll(share);
+    else if (!share.hasExportLocation()) scheduleSharePoll(share, 1);
     else if (!share.hasAccessRule()) executeShareAccessCreate(share);
-    else scheduleSharePoll(share);
+    else scheduleSharePoll(share, 1);
   }
 
   @Override

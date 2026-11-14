@@ -287,8 +287,11 @@ CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`；�
 等待阶段统一通过单次定时器查询：首次查询、恢复后的查询和阶段切换后的查询，
 均先等待 `share.poll-interval`（默认 2 秒）。正常轮询在查询完成后，若资源尚未就绪或暂不可见（404），
 再安排下一次单次定时器；本次查询完成到下一次查询之间等待 `share.poll-interval`，其他调用错误直接失败。
-`PollShare` 仅由定时器触发查询；`ShareExportChecked`、`ShareAccessChecked` 的空结果字段表示未就绪，
-结果处理器据此安排下一轮，字段有效时则持久化对应的就绪事件。
+`PollShare` 携带从 1 开始的 `attempt`，仅由定时器触发查询；`ShareExportChecked`、`ShareAccessChecked`
+透传本次尝试次数，空结果字段表示未就绪，结果处理器据此安排 `attempt + 1` 的下一轮，字段有效时则持久化对应的就绪事件。
+等待导出位置和等待访问授权两个阶段各最多执行 15 次轮询，404 和其他未就绪结果都计入次数。
+第 16 次 `PollShare` 触发时不再查询 OpenStack，直接持久化 `ShareCreationFailed`、记录未就绪阶段并取消轮询定时器。
+进入新的轮询阶段、失败重试或 Actor 恢复时，从第 1 次开始；尝试次数只随消息传递，不持久化。
 恢复时仅对 `CREATING` Share 向自身发送携带原 `shareId` 和规格的 `CreateShare`，回复地址使用 `ignoreRef()`。
 只有携带 ID 的恢复命令在回复已有状态后，才对 `CREATING` Share 调用 `advanceShare`，
 按以下顺序检查已持久化字段并继续推进；沿用原 ID、资源字段和 generation，不重复记录创建事件。
@@ -307,7 +310,7 @@ CephX 授权请求。获得访问规则 ID 后持久化 `ShareAccessCreated`；�
 Share 的定时器、轮询命令和异步回调均使用 `shareId` 定位，同一区域多个 Share 独立推进。
 读取旧规格时，缺少 `kind` 默认归为 `SYSTEM`；恢复旧的区域键快照时，Share 集合按已存储的 `shareId` 重建索引。
 异步回调校验 generation 和对应步骤的资源字段，避免旧步骤或其他 Share 的结果覆盖当前进度。
-Share 流程等待 OpenStack 调用结果，不设置业务超时或截止时间；异步资源尚未就绪时持续轮询。
+Share 流程等待 OpenStack 调用结果，不设置业务超时或截止时间；异步资源尚未就绪时按上述尝试次数上限轮询。
 系统 Share 收到不带 ID 的同规格创建命令时，`CREATING`、`READY` 只返回当前状态，`FAILED` 发起重试；规格不同则拒绝。
 用户 Share 的重复创建命令各自创建新资源，恢复仍使用事件中持久化的 ID 继续原有资源。
 UserActor 恢复仅继续 `CREATING`，不会自动重试 `FAILED`，也不执行自动回滚。
