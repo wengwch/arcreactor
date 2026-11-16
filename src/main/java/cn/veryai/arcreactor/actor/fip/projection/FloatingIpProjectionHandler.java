@@ -15,6 +15,7 @@ import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
 import cn.veryai.arcreactor.actor.fip.projection.mybatis.FloatingIpProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Base64;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
 import org.apache.pekko.projection.jdbc.javadsl.JdbcHandler;
 
@@ -55,7 +56,8 @@ public final class FloatingIpProjectionHandler
     }
 
     // Port changes also carry enabled, so cleanup cannot overwrite a disabled actor's status.
-    if (mapper.updateState(identity, enabled, portMask, version) == 0) {
+    String encodedPortMask = Base64.getEncoder().encodeToString(portMask);
+    if (mapper.updateState(identity, enabled, encodedPortMask, version) == 0) {
       Long projectedVersion = mapper.findResourceVersion(identity);
       if (projectedVersion == null || projectedVersion < version) {
         // Registration and actor persistence use separate transactions. Do not lose an early event.

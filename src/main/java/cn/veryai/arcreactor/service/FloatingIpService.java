@@ -16,6 +16,7 @@ import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.repo.SysNetworkRepo;
 import cn.veryai.arcreactor.web.params.SaveFloatingIpParam;
 import cn.veryai.arcreactor.web.params.EnableFloatingIpParam;
+import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -81,7 +82,7 @@ public class FloatingIpService {
             List<PortForwardingSnapshot> forwardings = List.of();
             if (param.isInitOpenstack()) {
                 NetFloatingIP floatingIp = openStackClient.createPortForwardingFloatingIP(
-                        entity.getRegionId(), osProjectId, entity.getOsExtNetId());
+                        entity.getRegionId(), osProjectId, entity.getOsExtNetId(), "veryai:" + entity.getId());
                 if (floatingIp == null
                         || StringUtils.isAnyBlank(floatingIp.getId(), floatingIp.getFloatingIpAddress())) {
                     throw new IllegalStateException("OpenStack returned an incomplete floating IP");
@@ -93,7 +94,7 @@ public class FloatingIpService {
                                 entity.getRegionId(), entity.getOsProjectId(), entity.getOsFloatingIpId())
                         .toCompletableFuture().get();
             }
-            entity.setPortMask(PortForwardingSnapshot.portMask(forwardings));
+            entity.setPortMask(Base64.getEncoder().encodeToString(PortForwardingSnapshot.portMask(forwardings)));
             floatingIpRepo.insert(entity);
             Boolean enabled = floatingIpForwardings.enable(
                     new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),

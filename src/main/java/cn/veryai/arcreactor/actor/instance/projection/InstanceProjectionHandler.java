@@ -28,6 +28,7 @@ import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
+import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
 import cn.veryai.arcreactor.actor.instance.event.SubPortPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
@@ -89,8 +90,10 @@ public final class InstanceProjectionHandler
             mapper.updateNovaServer(instanceId, "PROVISIONING", created.osServerId(),
                     created.status().name(), version, timestamp);
         } else if (event instanceof NovaReachedActive active) {
-            mapper.updateNovaServer(instanceId, "CONFIRMING", active.osServerId(),
+            mapper.updateNovaServer(instanceId, "CHECKING_SSH", active.osServerId(),
                     "ACTIVE", version, timestamp);
+        } else if (event instanceof SshConnectivityVerified) {
+            mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
         } else if (event instanceof ReservationConfirmedForInstance) {
             mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
         } else if (event instanceof InstanceDeletionStarted) {

@@ -4,7 +4,7 @@
     <update id="updateState">
         UPDATE floating_ip
         SET enabled = #{enabled,jdbcType=BOOLEAN},
-            port_mask = #{portMask,jdbcType=BLOB},
+            port_mask = #{portMask,jdbcType=LONGVARCHAR},
             resource_version = #{version,jdbcType=BIGINT}
         WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
           AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}

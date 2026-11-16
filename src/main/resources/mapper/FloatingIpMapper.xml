@@ -21,6 +21,6 @@
                                  os_ext_net_id, os_project_id, os_floating_ip_id, floating_ip, enabled, port_mask)
         VALUES (#{id}, #{name}, #{description}, #{regionId}, #{extNetId},
                 #{osExtNetId}, #{osProjectId}, #{osFloatingIpId}, #{floatingIp}, #{enabled,jdbcType=BOOLEAN},
-                #{portMask,jdbcType=BLOB})
+                #{portMask,jdbcType=LONGVARCHAR})
     </insert>
 </mapper>

@@ -81,6 +81,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   public static final EntityTypeKey<UserCommand> TYPE_KEY =
       EntityTypeKey.create(UserCommand.class, ENTITY_TYPE);
   private static final int MAX_SHARE_POLL_ATTEMPTS = 15;
+  // Temporarily retain projects during cleanup; set true to restore project deletion.
+  private static final boolean CLEANUP_PROJECT_DELETION_ENABLED = false;
 
   private final String userId;
   private final ActorContext<UserCommand> context;
@@ -189,7 +191,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     }
     if (state.cleanup() != null && (state.cleanup().active()
         || state.cleanup().phase() == UserCleanupState.Phase.COMPLETED
-            && state.networks().isEmpty() && state.shares().isEmpty() && state.projects().isEmpty())) {
+            && state.networks().isEmpty() && state.shares().isEmpty()
+            && (!CLEANUP_PROJECT_DELETION_ENABLED || state.projects().isEmpty()))) {
       command.replyTo().tell(cleanupReply(state, UserCleanupReply.Status.ACCEPTED, null));
       return Effect().none();
     }
@@ -216,7 +219,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return switch (state.cleanup().phase()) {
       case NETWORKS -> state.networks().keySet().stream().sorted().findFirst().orElse(null);
       case SHARES -> state.shares().keySet().stream().sorted().findFirst().orElse(null);
-      case PROJECTS -> state.projects().keySet().stream().sorted().findFirst().orElse(null);
+      case PROJECTS -> CLEANUP_PROJECT_DELETION_ENABLED
+          ? state.projects().keySet().stream().sorted().findFirst().orElse(null) : null;
       case FAILED -> state.cleanup().resourceId();
       case COMPLETED -> null;
     };

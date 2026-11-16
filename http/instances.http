@@ -17,12 +17,12 @@
 # INSTANCE_CREATE_REQUEST_TIMEOUT 默认 30 秒，仅覆盖受理等待；超时后先核实结果再重试。
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
-@userId = test-user-002
+@userId = test-user-003
 @flavorId = demo-flavor-medium
 @imageId = demo-image-debian
 @hypervisorType = demo-hv-t4
-@instanceName = test-instance-002
-@instanceId = {{createTestInstance.response.body.$.result.instanceId}}
+@instanceName = test-instance-003
+@instanceId = fa346042-5c3d-4b35-929c-40ab1a735d09
 
 ### 1. 查询区域内的规格，从 result 中选择 enabled=true 的记录
 # 记录 id 和 hypervisorType，分别填写 flavorId 和 hypervisorType。
@@ -66,15 +66,17 @@ Accept: application/json
 # forwardings 按 internalPort 区分 22 和 8888，每项都有自己的 floatingIp/externalPort。
 # 创建中可能只出现一条映射；映射创建成功后还需要等待 Nova 和实例内服务启动。
 # SSH: ssh -p <22 对应的 externalPort> <创建响应中的 username>@<22 对应的 floatingIp>
+# Nova ACTIVE 后进入 CHECKING_SSH，探测 internalPort=22 对应的 floatingIp:externalPort。
+# SSH 连通性检查通过、资源预留确认后才进入 ACTIVE；未连通时继续定时检查，不代表 JupyterLab 已就绪。
 # Jupyter: http://<8888 对应的 floatingIp>:<8888 对应的 externalPort>/lab?token=<jupyterToken>
 GET {{baseUrl}}/api/v1/instances/{{instanceId}}
 Accept: application/json
 
-### 6. 人工删除创建失败的实例
+### 6. 删除运行中或创建失败的实例
 # 创建失败停留在 FAILED，保留资源和失败原因，不自动清理；先排查，再单独执行此请求。
-# 仅允许 FAILED 开始删除，创建中或 ACTIVE 返回业务 code=11721。
-# 返回 HTTP 202 表示删除意图已持久化；通过上方 GET 查询 DELETING / DELETED。
-# DELETING、DELETED 下重复删除幂等；已受理的删除在重启后继续。
+# 允许 ACTIVE、FAILED 开始删除，创建中返回业务 code=11721。
+# 返回 HTTP 202 表示删除意图已持久化；通过上方 GET 查询具体删除阶段和 DELETED。
+# 各删除阶段及 DELETED 下重复删除幂等；已受理的删除在重启后继续。
 # 未完成的删除会继续检查和重试，用户级项目、Share 和网络保持不变。
 DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}
 Accept: application/json

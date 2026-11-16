@@ -48,14 +48,16 @@ public final class InstanceRecovery {
   private final OpenStackClient client;
   private final FloatingIpForwardings forwardings;
   private final InstanceDependencyPreparer dependencies;
+  private final InstanceSshChecker sshChecker;
   private final Clock clock;
 
   InstanceRecovery(HypervisorPlacement placement, OpenStackClient client, FloatingIpForwardings forwardings,
-      InstanceDependencyPreparer dependencies, Clock clock) {
+      InstanceDependencyPreparer dependencies, InstanceSshChecker sshChecker, Clock clock) {
     this.placement = placement;
     this.client = client;
     this.forwardings = forwardings;
     this.dependencies = dependencies;
+    this.sshChecker = sshChecker;
     this.clock = clock;
   }
 
@@ -71,6 +73,7 @@ public final class InstanceRecovery {
         case PREPARING_TRUNK -> recoverTrunk(state);
         case PREPARING_FORWARDING -> recoverForwarding(state);
         case PROVISIONING -> recoverProvisioning(state);
+        case CHECKING_SSH -> recoverSshConnectivity(state);
         case CONFIRMING -> recoverConfirmation(state);
         case DELETING_NOVA -> recoverNovaDeletion(state);
         case DELETING_FORWARDINGS -> recoverForwardingDeletion(state);
@@ -247,6 +250,11 @@ public final class InstanceRecovery {
     });
   }
 
+  private CompletionStage<Outcome> recoverSshConnectivity(InstanceWorkflowState state) {
+    return sshChecker.check(state).thenApply(connected -> connected
+        ? proceed(new SshConnectivityVerified(state.instanceId(), clock.instant())) : retry());
+  }
+
   private CompletionStage<Outcome> recoverConfirmation(InstanceWorkflowState state) {
     return placement.confirm(state.hypervisorId(), state.reservationId(), state.instanceId()).thenApply(result -> {
       Instant now = clock.instant();
@@ -316,7 +324,7 @@ public final class InstanceRecovery {
   private CompletionStage<Outcome> recoverNetworkDeletion(InstanceWorkflowState state) {
     CompletionStage<Void> request = state.networkPreparation() == null
         ? CompletableFuture.completedFuture(null)
-        : client.deleteInstanceNetwork(target(state), networkOperationId(state));
+        : client.deleteInstanceNetwork(target(state), networkOperationId(state), state.networkPreparation().resources());
     return request.thenApply(ignored -> continueDeletion(new InstanceNetworkDeleted(state.instanceId(), clock.instant())));
   }
 
@@ -373,6 +381,7 @@ public final class InstanceRecovery {
           : retry();
       case PROVISIONING -> hasDefinitiveCause(error)
           ? failed(state, "NOVA_RECOVERY_FAILED", error.toString()) : retry();
+      case CHECKING_SSH -> failed(state, "SSH_CHECK_FAILED", error.toString());
       default -> retry();
     };
   }

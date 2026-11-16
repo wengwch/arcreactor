@@ -17,7 +17,7 @@ public interface FloatingIpProjectionMapper {
   int updateState(
       @Param("identity") FloatingIpIdentity identity,
       @Param("enabled") boolean enabled,
-      @Param("portMask") byte[] portMask,
+      @Param("portMask") String portMask,
       @Param("version") long version);
 
   Long findResourceVersion(@Param("identity") FloatingIpIdentity identity);

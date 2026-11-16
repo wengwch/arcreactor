@@ -1,0 +1,63 @@
+# 用户资源清理接口测试。按每个场景的前提单独执行请求。
+# userId 是应用用户 ID，与 instances.http 中的 userId 对应，不是 OpenStack Project ID。
+# 清理范围是该 UserActor 管理的全部区域网络、SYSTEM Share 和 USER Share。
+# 当前 CLEANUP_PROJECT_DELETION_ENABLED=false，Project 及其 Actor 状态和投影记录会保留。
+# 先通过 instances.http 删除使用这些资源的实例，等待实例进入 DELETED，再清理用户资源。
+# 任一 Project、Share 或网络仍在创建时会拒绝清理；资源处于 READY 或 FAILED 时允许开始。
+# POST 会实际发起资源删除；HTTP 202 只表示清理意图已持久化，最终结果通过 GET 查询。
+# 请求超时或返回 code=502/504 时先 GET 核实进度，不代表清理已撤销。
+@baseUrl = http://localhost:8080
+@userId = test-user-002
+@creatingUserId = replace-with-user-id-with-creating-resources
+
+### 1. 查询清理前的状态
+# @name getUserCleanupBefore
+# 成功返回 HTTP 200，包装为 {"code":200,"result":{...}}。
+# 尚未发起过清理时 phase=IDLE；首次查询没有资源的新用户也返回 IDLE，不返回 404。
+# result 包含 userId、phase、currentResourceId、remainingNetworks、remainingShares、remainingProjects、failureMessage。
+GET {{baseUrl}}/api/v1/users/{{userId}}/cleanup
+Accept: application/json
+
+### 2. 发起用户资源清理
+# @name startUserCleanup
+# 无请求体。成功返回 HTTP 202、code=200；新一轮清理的 phase=NETWORKS。
+# 按 NETWORKS → SHARES → PROJECTS → COMPLETED 推进，当前 PROJECTS 阶段直接跳过删除。
+# 清理进行中和 FAILED 时拒绝创建用户资源；COMPLETED 后可创建网络和 Share，并复用保留的 Project。
+POST {{baseUrl}}/api/v1/users/{{userId}}/cleanup
+Accept: application/json
+
+### 3. 查询清理进度，重复执行直到 COMPLETED 或 FAILED
+# @name getUserCleanupProgress
+# 成功返回 HTTP 200、code=200；phase=FAILED 也通过 result 表达，不是 HTTP 错误。
+# NETWORKS 阶段的 currentResourceId 是 regionId，SHARES 阶段是 shareId。
+# remainingNetworks、remainingShares、remainingProjects 表示 Actor 中当前保留的资源数量。
+# COMPLETED 时 remainingNetworks=0、remainingShares=0，currentResourceId 和 failureMessage 为 null。
+# 当前保留 Project，因此 COMPLETED 时 remainingProjects 可以大于 0。
+# FAILED 时查看 currentResourceId 和 failureMessage；已删除资源不会恢复，剩余资源等待手动重试。
+GET {{baseUrl}}/api/v1/users/{{userId}}/cleanup
+Accept: application/json
+
+### 4. 重复提交，验证幂等受理
+# @name repeatUserCleanup
+# 前提：清理正在进行，或已 COMPLETED 且没有新建网络和 Share。
+# 返回 HTTP 202、code=200；清理中返回当前阶段，完成后返回 COMPLETED。
+# 重复请求不会同时启动另一轮清理；仍需通过上方 GET 观察最终结果。
+POST {{baseUrl}}/api/v1/users/{{userId}}/cleanup
+Accept: application/json
+
+### 5. 清理失败后手动重试
+# @name retryUserCleanup
+# 前提：GET 返回 phase=FAILED，且已处理 failureMessage 对应的问题，例如资源仍被占用。
+# 再次 POST 返回 HTTP 202、code=200、phase=NETWORKS，继续清理剩余资源。
+# 已确认删除的资源不重复处理；FAILED 不会自动重试。
+POST {{baseUrl}}/api/v1/users/{{userId}}/cleanup
+Accept: application/json
+
+### 6. 创建尚未完成时拒绝清理
+# @name rejectCleanupWhileCreating
+# 将 creatingUserId 改为仍有 CREATING Project、Share 或网络的用户 ID，再单独执行本请求。
+# 预期 HTTP 200、业务 code=409；沿用全局业务错误包装，不是 HTTP 409。
+# 拒绝时不记录新的清理意图，也不启动删除。
+# 若资源已变为 READY/FAILED，该请求会按正常清理受理，应在资源仍为 CREATING 时执行此场景。
+POST {{baseUrl}}/api/v1/users/{{creatingUserId}}/cleanup
+Accept: application/json

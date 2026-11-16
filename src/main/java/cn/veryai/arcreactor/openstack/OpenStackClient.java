@@ -970,13 +970,16 @@ public class OpenStackClient {
       }
     }
     Port routerPort = state.osRouterPortId() != null
-        ? cleanupLookup(() -> client.networking().port().get(state.osRouterPortId()))
-        : router == null || subnet == null ? null
-        : uniqueResource(client.networking().port().list(
-            PortListOptions.create().tenantId(projectId).deviceId(router.getId())).stream()
+        ? cleanupLookup(() -> client.networking().port().get(state.osRouterPortId())) : null;
+    if (routerPort == null && router != null && subnet != null) {
+      routerPort = uniqueResource(client.networking().port().list(
+            PortListOptions.create().tenantId(projectId).deviceId(router.getId())
+                .networkId(subnet.getNetworkId())).stream()
             .filter(port -> projectId.equals(port.getTenantId()) && router.getId().equals(port.getDeviceId())
+                && subnet.getNetworkId().equals(port.getNetworkId())
                 && port.getFixedIps() != null && port.getFixedIps().stream()
                 .anyMatch(ip -> subnet.getId().equals(ip.getSubnetId()))).toList(), "user router interface");
+    }
     if (routerPort != null) {
       requireProjectOwnership(projectId, routerPort.getTenantId(), "user router interface");
       networkResourceId(routerPort.getId());
@@ -1004,8 +1007,12 @@ public class OpenStackClient {
           PortListOptions.create().tenantId(projectId).networkId(resources.network().getId()))) {
         if (!resources.network().getId().equals(port.getNetworkId())) continue;
         requireProjectOwnership(projectId, port.getTenantId(), "user network port");
-        if (!Objects.equals(routerPortId, port.getId()) && !"network:dhcp".equals(port.getDeviceOwner())) {
-          throw new OpenStackOperationException("User network still contains other ports", null);
+        // Neutron cleans up DHCP and OVN metadata ports when deleting the subnet/network.
+        if (!Objects.equals(routerPortId, port.getId())
+            && !"network:dhcp".equals(port.getDeviceOwner())
+            && !"network:distributed".equals(port.getDeviceOwner())) {
+          throw new OpenStackOperationException("User network still contains other ports: osPortId="
+              + port.getId() + ", deviceOwner=" + port.getDeviceOwner(), null);
         }
       }
     }
@@ -1879,8 +1886,9 @@ public class OpenStackClient {
     return instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT) + "-fip";
   }
 
-  /** Discover by operation marker as IDs may have been lost with a create response. */
-  public CompletionStage<Void> deleteInstanceNetwork(ServerTarget target, String operationId) {
+  /** Use recorded port IDs and discover by marker when a create response was lost. */
+  public CompletionStage<Void> deleteInstanceNetwork(ServerTarget target, String operationId, PreparedNetwork prepared) {
+    Objects.requireNonNull(prepared, "prepared");
     return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
       // Release owned addresses before deleting ports, including addresses whose create response was lost.
@@ -1897,20 +1905,46 @@ public class OpenStackClient {
         }
         requireDeleteResponse(client.networking().trunk().delete(trunk.getId()));
       }
-      for (InstanceNetworkStep step : List.of(InstanceNetworkStep.SUB_PORT, InstanceNetworkStep.PARENT_PORT)) {
+      List<InstanceNetworkStep> portSteps = List.of(InstanceNetworkStep.SUB_PORT, InstanceNetworkStep.PARENT_PORT);
+      for (InstanceNetworkStep step : portSteps) {
         String marker = instanceNetworkMarker(operationId, step);
-        for (Port port : client.networking().port().list(
-            Map.of("project_id", List.of(target.osProjectId()), "name", List.of(marker)))) {
-          if (marker.equals(port.getName()) && target.osProjectId().equals(port.getTenantId())) {
-            requireDeleteResponse(client.networking().port().delete(port.getId()));
-          }
+        String osPortId = step == InstanceNetworkStep.SUB_PORT ? prepared.osSubPortId() : prepared.osParentPortId();
+        for (Port port : findInstancePortsForDeletion(client, target.osProjectId(), marker, osPortId)) {
+          requireDeleteResponse(client.networking().port().delete(port.getId()));
         }
+      }
+      // All instance ports must be deleted before removing any of their QoS policies.
+      for (InstanceNetworkStep step : portSteps) {
+        String marker = instanceNetworkMarker(operationId, step);
         // Also finds orphan policies when creation stopped before the port response was received.
         for (NeutronNetQosPolicy policy : findPortQosPolicies(client, target.osProjectId(), marker)) {
           requireDeleteResponse(client.networking().netQosPolicy().delete(policy.getId()));
         }
       }
     }, NETWORK_EXECUTOR);
+  }
+
+  private List<Port> findInstancePortsForDeletion(OSClient.OSClientV3 client, String osProjectId,
+      String marker, String osPortId) {
+    Map<String, Port> ports = new LinkedHashMap<>();
+    if (osPortId != null) {
+      Port port = cleanupLookup(() -> client.networking().port().get(osPortId));
+      if (port != null) {
+        requireProjectOwnership(osProjectId, port.getTenantId(), "instance port");
+        if (!osPortId.equals(port.getId()) || !marker.equals(port.getName())) {
+          throw new OpenStackOperationException("Recorded instance port does not match its operation marker", null);
+        }
+        ports.put(port.getId(), port);
+      }
+    }
+    for (Port port : client.networking().port().list(
+        Map.of("project_id", List.of(osProjectId), "name", List.of(marker)))) {
+      if (marker.equals(port.getName()) && osProjectId.equals(port.getTenantId())) {
+        requireServerText(port.getId(), "osPortId");
+        ports.put(port.getId(), port);
+      }
+    }
+    return List.copyOf(ports.values());
   }
 
   private static String instanceNetworkMarker(String operationId, InstanceNetworkStep step) {
@@ -2041,12 +2075,12 @@ public class OpenStackClient {
   }
 
   public NetFloatingIP createPortForwardingFloatingIP(
-      String region, String osProjectId, String osExtNetId) {
+      String region, String osProjectId, String osExtNetId, String desc) {
     OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
     return client
         .networking()
         .floatingip()
-        .create(Builders.netFloatingIP().floatingNetworkId(osExtNetId).build());
+        .create(Builders.netFloatingIP().description(desc).floatingNetworkId(osExtNetId).build());
   }
 
   public NetFloatingIP createFloatingIP(

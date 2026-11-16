@@ -1,0 +1,44 @@
+POST http://localhost:8080/api/v1/data-sync/hypervisors
+Content-Type: application/json
+
+{
+  "regionId": "Test-SH-01"
+}
+
+<> 2026-11-16T131320.200.json
+<> 2026-11-16T131011.500.json
+<> 2026-11-03T145110.200.json
+
+###
+PUT http://localhost:8080/api/v1/hypervisor-hosts/37a385cc-926d-4e4d-9d7a-5dd7f447a007/maintenance-plan
+Content-Type: application/json
+
+{
+  "expectedMaintenanceTime": "2026-11-25 18:30:00"
+}
+
+<> 2026-11-03T145222.200.json
+
+###
+PUT http://localhost:8080/api/v1/hypervisor-hosts/37a385cc-926d-4e4d-9d7a-5dd7f447a007
+Content-Type: application/json
+
+{
+  "name": "GPU计算节点01",
+  "description": "更新接口测试：配置4张NVIDIA T4",
+  "hypervisorType": "demo-hv-t4",
+  "cpuType": "demo-cpu-64c",
+  "ramType": "demo-ram-ddr4-64g",
+  "diskType": "demo-disk-nvme",
+  "gpuType": "demo-gpu-t4",
+  "gpus": 4
+}
+
+<> 2026-11-16T131349.200.json
+<> 2026-11-03T145328.200.json
+<> 2026-11-03T145254.200.json
+<> 2026-11-03T145150.200.json
+
+###
+PUT http://localhost:8080/api/v1/hypervisor-hosts/37a385cc-926d-4e4d-9d7a-5dd7f447a007/enable
+Content-Type: application/x-www-form-urlencoded

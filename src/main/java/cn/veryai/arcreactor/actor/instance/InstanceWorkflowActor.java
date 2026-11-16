@@ -10,6 +10,7 @@ import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.instance.command.CheckDeletion;
 import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
 import cn.veryai.arcreactor.actor.instance.command.CheckProvisioning;
+import cn.veryai.arcreactor.actor.instance.command.CheckSshConnectivity;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmRejected;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmUnknown;
@@ -38,6 +39,7 @@ import cn.veryai.arcreactor.actor.instance.command.RetryRecovery;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingFailed;
 import cn.veryai.arcreactor.actor.instance.command.SchedulingSucceeded;
 import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.SshConnectivityChecked;
 import cn.veryai.arcreactor.actor.instance.command.SubPortPreparationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.TrunkPreparationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
@@ -69,6 +71,7 @@ import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
+import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
 import cn.veryai.arcreactor.actor.instance.event.SubPortPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
@@ -85,6 +88,7 @@ import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
+import cn.veryai.arcreactor.util.SSHValidator;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -120,6 +124,7 @@ public final class InstanceWorkflowActor
       EntityTypeKey.create(WorkflowCommand.class, ENTITY_TYPE);
 
   private static final String POLL_TIMER = "nova-status-poll";
+  private static final String SSH_POLL_TIMER = "ssh-connectivity-poll";
   private static final String CONFIRM_TIMER = "reservation-confirm";
   private static final String RESERVATION_TIMER = "resource-reservation";
   private static final String DELETION_TIMER = "instance-deletion";
@@ -139,6 +144,7 @@ public final class InstanceWorkflowActor
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceRecovery recovery;
+  private final InstanceSshChecker sshChecker = new InstanceSshChecker(new SSHValidator());
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private String dependencyRequestToken;
   private String resourceReservationRequestToken;
@@ -149,6 +155,7 @@ public final class InstanceWorkflowActor
   private String securityGroupRequestToken;
   private String novaCreationRequestToken;
   private String novaStatusRequestToken;
+  private String sshCheckRequestToken;
   private String novaDeletionRequestToken;
   private String novaDeletionStatusRequestToken;
   private String forwardingDeletionRequestToken;
@@ -213,7 +220,7 @@ public final class InstanceWorkflowActor
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
     this.recovery = new InstanceRecovery(placement, openStackClient, floatingIpForwardings,
-        dependencyPreparer, clock);
+        dependencyPreparer, sshChecker, clock);
   }
 
   @Override
@@ -238,6 +245,8 @@ public final class InstanceWorkflowActor
         .onCommand(CheckProvisioning.class, this::onCheckProvisioning)
         .onCommand(NovaCreationCompleted.class, this::onNovaCreationCompleted)
         .onCommand(NovaStatusChecked.class, this::onNovaStatusChecked)
+        .onCommand(CheckSshConnectivity.class, this::onCheckSshConnectivity)
+        .onCommand(SshConnectivityChecked.class, this::onSshConnectivityChecked)
         .onCommand(CheckForwardingStatus.class, this::onCheckForwardingStatus)
         .onCommand(ForwardingStatusCompleted.class, this::onForwardingStatusCompleted)
         .onCommand(SchedulingSucceeded.class, this::onSchedulingSucceeded)
@@ -288,6 +297,10 @@ public final class InstanceWorkflowActor
                   ? InstanceReply.accepted(true)
                   : InstanceReply.rejected(
                       "instance already belongs to another request or specification"));
+      return Effect().none();
+    }
+    if (command.spec().forwarding() == null || !command.spec().forwarding().internalPorts().contains(22)) {
+      command.replyTo().tell(InstanceReply.rejected("SSH connectivity checking requires forwarding internal port 22"));
       return Effect().none();
     }
     Instant now = clock.instant();
@@ -719,7 +732,7 @@ public final class InstanceWorkflowActor
     events.add(new NovaServerCreated(instanceId, state.novaOperationId(), server.osServerId(), server.status(), now));
     if (server.status() == OpenStackClient.NovaServer.Status.ACTIVE) {
       events.add(new NovaReachedActive(instanceId, server.osServerId(), now));
-      return Effect().persist(events).thenRun(this::startConfirm);
+      return Effect().persist(events).thenRun(this::requestSshCheck);
     }
     if (server.status() == OpenStackClient.NovaServer.Status.ERROR) {
       events.add(new InstanceProvisioningFailed(instanceId, "NOVA_ERROR", server.fault(), now));
@@ -765,7 +778,7 @@ public final class InstanceWorkflowActor
     }
     if (server.status() == OpenStackClient.NovaServer.Status.ACTIVE) {
       events.add(new NovaReachedActive(instanceId, server.osServerId(), now));
-      return Effect().persist(events).thenRun(this::startConfirm);
+      return Effect().persist(events).thenRun(this::requestSshCheck);
     }
     if (server.status() == OpenStackClient.NovaServer.Status.ERROR) {
       events.add(new InstanceProvisioningFailed(instanceId, "NOVA_ERROR", server.fault(), now));
@@ -776,6 +789,47 @@ public final class InstanceWorkflowActor
       return Effect().none();
     }
     return Effect().persist(events).thenRun(this::scheduleProvisioningPoll);
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckSshConnectivity(
+      InstanceWorkflowState state, CheckSshConnectivity command) {
+    if (state.phase() == InstancePhase.CHECKING_SSH && state.pollingGeneration() == command.generation()) {
+      requestSshCheck(state);
+    }
+    return Effect().none();
+  }
+
+  private void requestSshCheck(InstanceWorkflowState state) {
+    if (state.phase() != InstancePhase.CHECKING_SSH || sshCheckRequestToken != null) return;
+    String token = UUID.randomUUID().toString();
+    sshCheckRequestToken = token;
+    CompletionStage<Boolean> request;
+    try {
+      request = sshChecker.check(state);
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (connected, error) -> new SshConnectivityChecked(
+        state.pollingGeneration(), token, Boolean.TRUE.equals(connected),
+        error == null ? null : rootCause(error).toString()));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSshConnectivityChecked(
+      InstanceWorkflowState state, SshConnectivityChecked command) {
+    if (state.phase() != InstancePhase.CHECKING_SSH || state.pollingGeneration() != command.generation()
+        || sshCheckRequestToken == null || !sshCheckRequestToken.equals(command.requestToken())) return Effect().none();
+    sshCheckRequestToken = null;
+    if (command.failure() != null) return failCreation("SSH_CHECK_FAILED", command.failure());
+    if (!command.connected()) {
+      timers.startSingleTimer(SSH_POLL_TIMER, new CheckSshConnectivity(state.pollingGeneration()),
+          settings.pollInitialDelay());
+      return Effect().none();
+    }
+    return Effect().persist(new SshConnectivityVerified(instanceId, clock.instant()))
+        .thenRun(next -> {
+          timers.cancel(SSH_POLL_TIMER);
+          startConfirm(next);
+        });
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onConfirmSucceeded(
@@ -818,8 +872,8 @@ public final class InstanceWorkflowActor
       command.replyTo().tell(InstanceReply.accepted(true));
       return Effect().none();
     }
-    if (state.phase() != InstancePhase.FAILED) {
-      command.replyTo().tell(InstanceReply.rejected("Only failed instances can be deleted by this operation"));
+    if (state.phase() != InstancePhase.FAILED && state.phase() != InstancePhase.ACTIVE) {
+      command.replyTo().tell(InstanceReply.rejected("Only ACTIVE or FAILED instances can start deletion"));
       return Effect().none();
     }
     return Effect().persist(new InstanceDeletionStarted(instanceId, clock.instant()))
@@ -987,6 +1041,7 @@ public final class InstanceWorkflowActor
     novaCreationRequestToken = null;
     novaStatusRequestToken = null;
     forwardingRequestToken = null;
+    sshCheckRequestToken = null;
     metrics.workflowFailed();
   }
 
@@ -1187,7 +1242,8 @@ public final class InstanceWorkflowActor
     CompletionStage<Void> request;
     try {
       request = state.networkPreparation() == null ? CompletableFuture.completedFuture(null)
-          : openStackClient.deleteInstanceNetwork(target(state), networkOperationId(state));
+          : openStackClient.deleteInstanceNetwork(target(state), networkOperationId(state),
+              state.networkPreparation().resources());
     } catch (RuntimeException error) {
       request = CompletableFuture.failedFuture(error);
     }
@@ -1298,7 +1354,8 @@ public final class InstanceWorkflowActor
         .onEvent(
             NovaServerCreated.class,
             (state, event) -> state.serverObserved(event.osServerId(), event.status()))
-        .onEvent(NovaReachedActive.class, (state, event) -> state.confirming())
+        .onEvent(NovaReachedActive.class, (state, event) -> state.checkingSsh())
+        .onEvent(SshConnectivityVerified.class, (state, event) -> state.confirming())
         .onEvent(ReservationConfirmedForInstance.class, (state, event) -> state.touch())
         .onEvent(
             InstanceDeletionStarted.class,
@@ -1343,6 +1400,7 @@ public final class InstanceWorkflowActor
     novaCreationRequestToken = null;
     novaStatusRequestToken = null;
     forwardingRequestToken = null;
+    sshCheckRequestToken = null;
     novaDeletionRequestToken = null;
     novaDeletionStatusRequestToken = null;
     forwardingDeletionRequestToken = null;
@@ -1360,7 +1418,7 @@ public final class InstanceWorkflowActor
     recoveringPhase = state.phase().isDeleting() ? state.phase() : switch (state.phase()) {
       case SCHEDULING, RESERVING_RESOURCES, PREPARING_DEPENDENCIES, PREPARING_SECURITY_GROUP,
           PREPARING_PARENT_PORT, PREPARING_SUB_PORT, PREPARING_TRUNK,
-          PREPARING_FORWARDING, PROVISIONING, CONFIRMING -> state.phase();
+          PREPARING_FORWARDING, PROVISIONING, CHECKING_SSH, CONFIRMING -> state.phase();
       default -> null;
     };
     if (recoveringPhase == null) return;
@@ -1450,6 +1508,7 @@ public final class InstanceWorkflowActor
       case PREPARING_TRUNK -> requestTrunk(state);
       case PREPARING_FORWARDING -> startForwardingPreparation(state);
       case PROVISIONING -> requestNovaCreation(state);
+      case CHECKING_SSH -> requestSshCheck(state);
       case CONFIRMING -> startConfirm(state);
       default -> throw new IllegalStateException("Cannot continue creation after recovery: " + state.phase());
     }

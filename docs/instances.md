@@ -106,7 +106,7 @@ Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStas
 禁用时提交新 claim 立即返回 `REJECTED`；相同 claim 的重复提交返回已有状态，查询和清理已有 claim 正常进行。
 从未启用的 Actor 没有 claim，查询或协调返回 `NOT_FOUND`，删除按无资源处理并立即完成。
 调用方必须先等待启用成功再创建转发；普通调用不查询 OpenStack 身份，也不隐式发送启用命令。
-内部端口默认是 SSH `22` 和 JupyterLab `8888`；配置必须是非空、无重复的 `1–65535` 端口列表。
+内部端口默认是 SSH `22` 和 JupyterLab `8888`；配置必须是包含 `22`、无重复的 `1–65535` 端口列表。
 每个实例先创建一个专属安全组，按上述内部端口配置添加 IPv4 入站 TCP/UDP 规则，来源为 `0.0.0.0/0`。
 父端口和子端口创建时开启 port security，并只绑定该专属安全组；出站沿用 Neutron 新建安全组的默认规则。
 安全组由实例工作流管理，FloatingIpActor 只负责公网端口分配和 TCP/UDP 转发。
@@ -326,7 +326,7 @@ InstanceActor 包含以下主要阶段：
 ```text
 SCHEDULING → RESERVING_RESOURCES → PREPARING_DEPENDENCIES → PREPARING_SECURITY_GROUP
   → PREPARING_PARENT_PORT → PREPARING_SUB_PORT → PREPARING_TRUNK
-  → PREPARING_FORWARDING → PROVISIONING → CONFIRMING → ACTIVE
+  → PREPARING_FORWARDING → PROVISIONING → CHECKING_SSH → CONFIRMING → ACTIVE
 任一创建阶段失败 → FAILED
 FAILED → 人工发送 DeleteInstance → DELETING_NOVA → DELETING_FORWARDINGS
   → DELETING_NETWORK → DELETING_SECURITY_GROUP → CANCELLING_RESERVATION
@@ -339,7 +339,7 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
 每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。
-未配置端口转发时，Trunk 就绪后直接进入 `PROVISIONING`；两条路径都使用第一步已选定的宿主机。
+新建实例必须配置内部端口 `22` 的转发，缺少时拒绝创建；各阶段使用第一步已选定的宿主机。
 转发阶段不设置整体等待超时，保留轮询以等待异步创建完成。
 重启后沿用已持久化的候选、内部端口和已完成映射，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
@@ -496,6 +496,20 @@ Nova 的创建、等待和结果查询统一为 `PROVISIONING`，纯查询轮询
 正常状态查询缺少已保存的实例 ID 时，转入 `InstanceRecovery.recoverProvisioning()` 独立恢复，
 按已知实例 ID 或操作标识找回实例；恢复期间只查询，不重新提交 Nova 创建。
 
+Nova 返回 `ACTIVE` 后，持久化 `NovaReachedActive` 并进入 `CHECKING_SSH`。
+`InstanceSshChecker` 从已持久化的 `preparedForwardings` 中选择 `internalPort=22` 的 TCP 转发，
+使用对应的 `floatingIp:externalPort` 和创建规格中的 SSH 用户名调用 `SSHValidator`，
+不连接浮动 IP 的固定 `22` 端口，也不使用子端口独立分配的浮动 IP。
+探测在虚拟线程中执行，连接和读取超时各设为 5 秒，不阻塞 Actor。
+SSH 握手后的认证拒绝也视为连通，不使用实例密码登录；这一步不验证账号凭据或 cloud-init 是否全部完成。
+连接暂时不通时保持 `CHECKING_SSH`，按 `cloud.instance.poll.initial-delay` 定时重试，
+没有整个阶段的超时限制；此时仍属于创建中，沿用现有规则拒绝删除。
+缺少或存在多个内部 `22` 转发、缺少公网地址或 TCP 规则 ID 时，记录 `SSH_CHECK_FAILED`，
+保留资源等待人工删除。检查成功后持久化独立的 `SshConnectivityVerified`，
+进入 `CONFIRMING`，资源预留确认成功后才进入 `ACTIVE`；投影同步这些阶段。
+重启处于 `CHECKING_SSH` 时由独立的 `InstanceRecovery.recoverSshConnectivity()` 继续探测，
+沿用已保存的转发目标，失败时定时重试，成功后记录同一验证事件，不重建 Nova 或转发规则。
+
 实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。
 Actor 恢复时仍处于网络创建阶段，则按操作标识查询当前阶段资源，复用前序阶段已持久化的数据；
 当前阶段缺失的资源由独立恢复方法创建或补齐，确认就绪后再进入下一阶段，不重新执行已完成阶段。
@@ -526,8 +540,8 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 已提交到其他 Actor 或 OpenStack 的请求可能继续完成，实例失败不会取消用户级项目、Share 或网络准备。
 不再提供创建失败后自动清理的配置开关，也不会因为修改配置或重启应用而启动清理。
 
-排查完成后，人工调用 `DELETE /api/v1/instances/{instanceId}`，服务层发送 `DeleteInstance`。
-该入口只允许对 `FAILED` 实例开始删除；创建中或 `ACTIVE` 的实例会拒绝，业务错误码为 `11721`。
+运行中的实例或创建失败的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
+该入口允许对 `ACTIVE`、`FAILED` 实例开始删除；创建中的实例会拒绝，业务错误码为 `11721`。
 `InstanceDeletionStarted` 持久化后进入 `DELETING_NOVA` 并返回 HTTP `202`，所有删除阶段及 `DELETED` 下的重复删除请求均幂等受理。
 删除按以下六个阶段执行，当前阶段完成后先持久化明确的完成事件，再执行下一阶段：
 
@@ -557,7 +571,11 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 查询仍在删除中的 claim 不重复发送删除命令，查到需要删除或重试的 claim 时只对这些记录再次提交。
 查询异常或未确认的结果保持当前阶段，不能作为删除成功处理。
 
-`DELETING_NETWORK` 按操作标识删除子端口浮动 IP，再删除 Trunk、端口和 QoS；响应丢失或已解除关联的实例浮动 IP 也能找到并释放。
+`DELETING_NETWORK` 按操作标识删除子端口浮动 IP，再删除 Trunk；先完成全部子端口、父端口的删除，
+再统一删除对应的 QoS，任一端口删除失败都不会进入 QoS 删除。响应丢失或已解除关联的实例浮动 IP 也能找到并释放。
+端口删除同时使用已持久化的父子端口 ID 和按项目、操作标记查询的结果，按 ID 去重后删除；
+已记录端口查询返回 404 时视为不存在，其他查询错误或项目、标记不匹配时停止当前阶段。
+正常删除和重启恢复都携带已持久化的端口 ID，列表查询为空不会跳过仍能按 ID 查到的端口。
 网络清理完成后持久化 `InstanceNetworkDeleted`，再在 `DELETING_SECURITY_GROUP` 按项目和操作标识清理专属安全组及规则，
 包括创建成功但响应未持久化的安全组。
 
@@ -649,13 +667,17 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 实际每条映射还包含 `claimId`、`osFloatingIpId`、`osTcpForwardingId` 和 `osUdpForwardingId`。
 SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 username>@203.0.113.10`。
 JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
-创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动，`ACTIVE` 也不代表
-cloud-init 和实例内服务已完成启动，连接应在对应服务就绪后进行。
+创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动。
+`ACTIVE` 表示 SSH 转发已通过连通性检查且资源预留已确认，仍不代表 cloud-init 全部完成或 JupyterLab 已就绪。
 
 ## 用户资源清理
 
-清理针对一个 UserActor 管理的全部用户网络、`SYSTEM` / `USER` Share 和用户项目，按网络、Share、项目的顺序执行。
+清理按网络、Share、项目阶段推进，当前删除 UserActor 管理的全部用户网络和 `SYSTEM` / `USER` Share，暂时保留用户项目。
 它不删除实例或平台预置的 LOCAL 网络，也不代替实例及其附着资源的删除流程。
+
+`UserActor.CLEANUP_PROJECT_DELETION_ENABLED` 暂设为 `false`：正常清理和重启恢复均跳过项目删除，
+保留项目的 Actor 状态和投影记录，清理完成后可以继续复用项目。`COMPLETED` 时 `remainingProjects`
+仍返回保留的项目数量。以后将该常量改为 `true`，再次调用清理 API 即可执行保留的项目删除逻辑。
 
 | 接口 | 请求 | 成功响应 |
 | --- | --- | --- |
@@ -678,8 +700,12 @@ FAILED ──外部 POST 重试──→ 继续清理剩余资源
 受理时持久化 `UserCleanupStarted`。每个资源确认在 OpenStack 中不存在后，分别持久化
 `UserNetworkDeleted(regionId)`、`UserShareDeleted(shareId)` 或 `UserProjectDeleted(clusterId)`，
 从 Actor 状态移除对应资源，再继续下一个。网络阶段全部完成后记录 `UserNetworksCleaned`，
-Share 阶段全部完成后记录 `UserSharesCleaned`，项目全部完成后记录 `UserCleanupCompleted`。
+Share 阶段全部完成后记录 `UserSharesCleaned`，项目阶段完成后记录 `UserCleanupCompleted`。
+项目删除暂时关闭时，项目阶段直接完成，不记录 `UserProjectDeleted`。
 网络清理包含该用户网络对应的路由和接口；Share 清理逐个处理系统 Share 和所有用户 Share。
+网络清理允许 `network:dhcp` 和 `network:distributed` 系统端口存在，由 Neutron 随子网和网络删除清理。
+路由接口仍须匹配该项目、路由、网络和子网，解绑后再删除路由；记录的接口 ID 已不存在时，
+按这些关联重新查找并校验接口。其他端口仍阻止清理，失败信息包含端口 ID 和 `device_owner`。
 
 清理过程中重复 POST 返回当前进度，不同时启动另一轮。调用失败记录 `UserCleanupFailed`，
 保留失败资源和剩余资源；已确认删除的资源不恢复，也不执行自动补偿。
@@ -765,13 +791,16 @@ QoS 资源记录对应 `os_parent_qos_policy_id`、`os_parent_qos_ingress_rule_i
 名称、描述、外部网络和地址等字段仍由登记流程维护。
 
 `FloatingIpEnabled`、`FloatingIpDisabled`、`ForwardingPortAllocated` 和 `ForwardingDeleted`
-携带事件生效后的完整端口位图 `usedPortMask`，投影直接使用该总位图更新 `floating_ip.port_mask`。
+携带事件生效后的完整端口位图 `usedPortMask`，投影将该总位图编码为标准 Base64 字符串，
+写入 `floating_ip.port_mask` 的非空 `TEXT` 字段。空位图保存为空字符串 `''`，登记流程使用相同编码。
 `FloatingIpEnabled` 只包含 `identity` 和合并后的完整 `usedPortMask`，恢复和投影使用事件中的合并结果；
 状态中不再保存占用来源或单独的导入位图。
 分配公网端口时置位，TCP/UDP 清理完成、Actor 释放端口后清位；失败或清理未完成时继续保留占用。
 claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新版本而不释放任何端口。
 禁用后的启用请求将查询到的占用并入总位图，同步前由人工确认无在途请求；启用和禁用均不释放任何端口。
-位图第 0 位对应公网端口 10000，使用 `BitSet.toByteArray()` 编码。
+位图第 0 位对应公网端口 10000。Actor 内部仍使用 `BitSet`，事件中的 `usedPortMask` 仍为
+`BitSet.toByteArray()` 生成的 `byte[]`；Base64 转换只用于读模型存储，读取字符串后可先 Base64 解码，
+再通过 `BitSet.valueOf()` 恢复位图。
 分配和释放事件同时携带当时的 `enabled`，与位图共用版本保护；禁用期间的清理不会重新启用浮动 IP。
 
 同一投影同时将端口转发生命周期写入 `port_forwarding`，主键为

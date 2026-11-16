@@ -196,6 +196,13 @@ public record InstanceWorkflowState(
                 pollingGeneration + 1, failureCode, failureMessage);
     }
 
+    public InstanceWorkflowState checkingSsh() {
+        return copy(requestId, InstancePhase.CHECKING_SSH, spec, hypervisorId, reservationId,
+                novaOperationId, osNovaServerId, OpenStackClient.NovaServer.Status.ACTIVE,
+                provisioningStartedAt, pollingGeneration + 1,
+                failureCode, failureMessage);
+    }
+
     public InstanceWorkflowState confirming() {
         return copy(requestId, InstancePhase.CONFIRMING, spec, hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, OpenStackClient.NovaServer.Status.ACTIVE,

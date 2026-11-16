@@ -189,6 +189,9 @@ public class InstanceService {
         try {
             cloudInitRenderer.validateConfiguration();
             forwarding = new ForwardingRequirement(osFloatingIpIds, creationProperties.getForwardingPorts());
+            if (!forwarding.internalPorts().contains(22)) {
+                throw new IllegalArgumentException("forwarding-ports must include 22 for SSH connectivity checking");
+            }
             share = new ShareSpec(region.getId(), creationProperties.getShareSize(),
                     Share.Protocol.CEPHFS, creationProperties.getShareType());
             network = new NetworkRequirement(creationProperties.getSegmentationId(),
