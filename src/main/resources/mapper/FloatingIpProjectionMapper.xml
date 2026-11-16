@@ -29,7 +29,7 @@
          Assign the version last so every guard observes the previous version. -->
     <insert id="upsertForwardingCreated">
         INSERT INTO port_forwarding (
-          region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id,
+          region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id, kind,
           floating_ip, os_internal_port_id, fixed_ip, internal_port, external_port,
           os_tcp_forwarding_id, os_udp_forwarding_id, phase, failure_message,
           resource_version, created_at, updated_at, deleted_at)
@@ -40,6 +40,7 @@
           #{event.spec.instanceId,jdbcType=VARCHAR},
           #{event.spec.userId,jdbcType=VARCHAR},
           #{event.spec.osProjectId,jdbcType=VARCHAR},
+          #{event.spec.kind,jdbcType=VARCHAR},
           #{event.identity.floatingIp,jdbcType=VARCHAR},
           #{event.spec.osInternalPortId,jdbcType=VARCHAR},
           #{event.spec.fixedIp,jdbcType=VARCHAR},
@@ -50,6 +51,7 @@
           instance_id = IF(resource_version &lt; VALUES(resource_version), VALUES(instance_id), instance_id),
           user_id = IF(resource_version &lt; VALUES(resource_version), VALUES(user_id), user_id),
           os_project_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_project_id), os_project_id),
+          kind = IF(resource_version &lt; VALUES(resource_version), VALUES(kind), kind),
           floating_ip = IF(resource_version &lt; VALUES(resource_version), VALUES(floating_ip), floating_ip),
           os_internal_port_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_internal_port_id), os_internal_port_id),
           fixed_ip = IF(resource_version &lt; VALUES(resource_version), VALUES(fixed_ip), fixed_ip),

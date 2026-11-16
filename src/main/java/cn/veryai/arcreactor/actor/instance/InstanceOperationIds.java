@@ -3,7 +3,7 @@ package cn.veryai.arcreactor.actor.instance;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 
 /** Stable resource identities shared by creation, recovery and explicit deletion. */
-final class InstanceOperationIds {
+public final class InstanceOperationIds {
   private InstanceOperationIds() {}
 
   static String reservationId(InstanceWorkflowState state) {
@@ -20,7 +20,7 @@ final class InstanceOperationIds {
     return "network:" + state.instanceId() + ":" + state.requestId();
   }
 
-  static String forwardingClaimId(InstanceWorkflowState state) {
+  public static String forwardingClaimId(InstanceWorkflowState state) {
     return forwardingClaimId(state, state.currentForwardingPort());
   }
 

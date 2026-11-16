@@ -4,6 +4,7 @@ import static cn.veryai.arcreactor.actor.instance.InstanceOperationIds.*;
 
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
+import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
 import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
@@ -11,6 +12,7 @@ import cn.veryai.arcreactor.actor.instance.event.*;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
+import cn.veryai.arcreactor.actor.instance.model.UserForwarding;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
@@ -294,7 +296,7 @@ public final class InstanceRecovery {
 
   private CompletionStage<Outcome> recoverForwardingDeletion(InstanceWorkflowState state) {
     List<CompletableFuture<Boolean>> requests = new ArrayList<>();
-    for (PreparedForwarding forwarding : state.preparedForwardings()) {
+    for (PreparedForwarding forwarding : state.forwardingsForDeletion()) {
       requests.add(checkForwardingDeletionStatus(state, forwarding).thenCompose(reply -> {
         if (reply == null) return CompletableFuture.completedFuture(false);
         return switch (reply.status()) {
@@ -308,7 +310,17 @@ public final class InstanceRecovery {
     }
     return CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new))
         .thenApply(ignored -> requests.stream().allMatch(CompletableFuture::join)
-            ? continueDeletion(new InstanceForwardingsDeleted(state.instanceId(), clock.instant())) : retry());
+            ? recoveredForwardingsDeleted(state) : retry());
+  }
+
+  private Outcome recoveredForwardingsDeleted(InstanceWorkflowState state) {
+    List<InstanceWorkflowEvent> events = new ArrayList<>();
+    state.management().userForwardings().values().stream()
+        .filter(item -> item.phase() != UserForwarding.Phase.DELETED)
+        .sorted(java.util.Comparator.comparing(UserForwarding::forwardingId))
+        .forEach(item -> events.add(new UserForwardingDeleted(state.instanceId(), item.transition(UserForwarding.Phase.DELETED, null))));
+    events.add(new InstanceForwardingsDeleted(state.instanceId(), clock.instant()));
+    return new Outcome(events, Action.CONTINUE_DELETION);
   }
 
   private CompletionStage<ForwardingReply> checkForwardingDeletionStatus(
@@ -439,7 +451,7 @@ public final class InstanceRecovery {
   private static ForwardingSpec forwardingSpec(InstanceWorkflowState state) {
     PreparedNetwork network = state.networkPreparation().resources();
     return new ForwardingSpec(state.instanceId(), state.userId(), state.spec().region(),
-        state.osProjectId(), network.osParentPortId(), network.parentFixedIp(), state.currentForwardingPort());
+        state.osProjectId(), network.osParentPortId(), network.parentFixedIp(), state.currentForwardingPort(), ForwardingKind.SYSTEM);
   }
 
   private static Throwable rootCause(Throwable error) {

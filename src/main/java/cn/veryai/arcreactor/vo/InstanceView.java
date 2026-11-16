@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.vo;
 
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
+import cn.veryai.arcreactor.actor.instance.model.InstanceManagementState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import java.io.Serializable;
@@ -25,7 +26,8 @@ public record InstanceView(
         List<PreparedForwarding> forwardings,
         PreparedNetwork network,
         String osSecurityGroupId,
-        String osProjectId) implements Serializable {
+        String osProjectId,
+        InstanceManagementState management) implements Serializable {
 
     public static InstanceView from(InstanceWorkflowState state) {
         return new InstanceView(state.instanceId(), state.requestId(), state.phase().name(), state.hypervisorId(),
@@ -35,8 +37,8 @@ public record InstanceView(
                 state.userId(),
                 state.shareId(),
                 state.preparedShare() == null ? null : state.preparedShare().osShareId(),
-                state.preparedForwardings(),
+                state.visibleForwardings(),
                 state.networkPreparation() == null ? null : state.networkPreparation().resources(),
-                state.osSecurityGroupId(), state.osProjectId());
+                state.osSecurityGroupId(), state.osProjectId(), state.management());
     }
 }

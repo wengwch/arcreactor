@@ -45,7 +45,7 @@ public record ForwardingOutcome(String specFingerprint, Phase phase,
   private static String fingerprint(ForwardingSpec spec) {
     StringBuilder value = new StringBuilder();
     for (String field : List.of(spec.instanceId(), spec.userId(), spec.regionId(), spec.osProjectId(),
-        spec.osInternalPortId(), spec.fixedIp(), Integer.toString(spec.internalPort()))) {
+        spec.osInternalPortId(), spec.fixedIp(), Integer.toString(spec.internalPort()), spec.kind().name())) {
       value.append(field.length()).append(':').append(field);
     }
     try {

@@ -16,6 +16,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
+import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.*;
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityTypeKey;
@@ -166,36 +167,38 @@ public final class FloatingIpActor
   }
 
   private Effect<FloatingIpEvent, FloatingIpState> onDelete(FloatingIpState state, DeletePortForwarding command) {
+    String claimId = command.claimId();
+    ActorRef<ForwardingReply> replyTo = command.replyTo();
     if (state.identity() == null) {
-      command.replyTo().tell(new ForwardingReply(ForwardingReply.Status.DELETED, null, null));
+      replyTo.tell(new ForwardingReply(ForwardingReply.Status.DELETED, null, null));
       return Effect().none();
     }
-    ForwardingClaim claim = state.claims().get(command.claimId());
+    ForwardingClaim claim = state.claims().get(claimId);
     if (claim == null) {
-      ForwardingOutcome outcome = state.outcomes().get(command.claimId());
+      ForwardingOutcome outcome = state.outcomes().get(claimId);
       if (outcome != null && outcome.phase() == Phase.DELETED) {
-        command.replyTo().tell(ForwardingReply.from(outcome));
+        replyTo.tell(ForwardingReply.from(outcome));
         return Effect().none();
       }
-      return Effect().persist(deletedEvent(state, command.claimId()))
-          .thenRun(next -> command.replyTo().tell(reply(next, command.claimId())));
+      return Effect().persist(deletedEvent(state, claimId))
+          .thenRun(next -> replyTo.tell(reply(next, claimId)));
     }
     if (claim.phase() == Phase.CREATING) {
-      command.replyTo().tell(new ForwardingReply(ForwardingReply.Status.REJECTED, claim,
+      replyTo.tell(new ForwardingReply(ForwardingReply.Status.REJECTED, claim,
           "Forwarding is still being created; retry deletion after creation completes"));
       return Effect().none();
     }
     if (claim.phase() == Phase.DELETED || operationTokens.containsKey(claim.claimId())) {
-      command.replyTo().tell(ForwardingReply.from(claim));
+      replyTo.tell(ForwardingReply.from(claim));
       return Effect().none();
     }
     if (!claim.ownsPort()) {
       return Effect().persist(deletedEvent(state, claim.claimId()))
-          .thenRun(next -> command.replyTo().tell(reply(next, claim.claimId())));
+          .thenRun(next -> replyTo.tell(reply(next, claim.claimId())));
     }
     return Effect().persist(new ForwardingDeletionStarted(state.identity(), claim.claimId()))
         .thenRun(next -> {
-          command.replyTo().tell(reply(next, claim.claimId()));
+          replyTo.tell(reply(next, claim.claimId()));
           executeDeletion(next.identity(), next.claims().get(claim.claimId()));
         });
   }

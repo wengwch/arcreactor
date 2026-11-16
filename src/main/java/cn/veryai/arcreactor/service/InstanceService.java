@@ -3,8 +3,11 @@ package cn.veryai.arcreactor.service;
 import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
+import cn.veryai.arcreactor.actor.instance.command.CreateUserForwarding;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstance;
+import cn.veryai.arcreactor.actor.instance.command.DeleteUserForwarding;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
+import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
 import cn.veryai.arcreactor.actor.instance.model.ForwardingRequirement;
@@ -13,6 +16,7 @@ import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.ShareRequirement;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
+import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.model.ShareSpec;
 import cn.veryai.arcreactor.config.InstanceCreationProperties;
@@ -31,7 +35,10 @@ import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
 import cn.veryai.arcreactor.vo.InstanceView;
+import cn.veryai.arcreactor.vo.InstanceMutationResult;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
+import cn.veryai.arcreactor.web.params.CreateUserForwardingParam;
+import cn.veryai.arcreactor.web.params.UpdateInstanceQosParam;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
@@ -45,7 +52,9 @@ import java.util.concurrent.TimeoutException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.javadsl.AskPattern;
+import org.apache.pekko.japi.function.Function;
 import org.openstack4j.model.manila.Share;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -126,6 +135,47 @@ public class InstanceService {
                         throw new BaseException(ErrorCode.INSTANCE_DELETE_REJECTED);
                     }
                     return null;
+                }));
+    }
+
+    public CompletionStage<InstanceMutationResult> createForwarding(String instanceId, CreateUserForwardingParam param) {
+        return submitMutation(instanceId, replyTo -> new CreateUserForwarding(param.getInternalPort(), replyTo));
+    }
+
+    public CompletionStage<InstanceMutationResult> deleteForwarding(String instanceId, String forwardingId) {
+        return submitMutation(instanceId, replyTo -> new DeleteUserForwarding(forwardingId, replyTo));
+    }
+
+    public CompletionStage<InstanceMutationResult> updateQos(String instanceId, UpdateInstanceQosParam param) {
+        return submitMutation(instanceId, replyTo -> new UpdateInstanceQos(
+                param.getParentPort() == null ? null : param.getParentPort().toLimit(),
+                param.getSubPort() == null ? null : param.getSubPort().toLimit(), replyTo));
+    }
+
+    private CompletionStage<InstanceMutationResult> submitMutation(String instanceId,
+            Function<ActorRef<InstanceMutationReply>, WorkflowCommand> command) {
+        return get(instanceId).thenCompose(ignored -> AskPattern.<WorkflowCommand, InstanceMutationReply>ask(
+                pekkoRuntime.instanceActor(instanceId), command,
+                pekkoRuntime.getInstanceAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
+                .handle((reply, error) -> {
+                    if (error != null) {
+                        Throwable cause = error;
+                        while ((cause instanceof CompletionException || cause instanceof ExecutionException)
+                                && cause.getCause() != null) {
+                            cause = cause.getCause();
+                        }
+                        throw new BaseException(cause instanceof TimeoutException
+                                ? ErrorCode.INSTANCE_MUTATION_TIMEOUT : ErrorCode.INSTANCE_MUTATION_UNCONFIRMED, cause);
+                    }
+                    if (reply == null) throw new BaseException(ErrorCode.INSTANCE_MUTATION_UNCONFIRMED);
+                    if (!reply.accepted()) {
+                        log.warn("Instance mutation rejected: instanceId={}, detail={}", instanceId, reply.detail());
+                        throw new BaseException(ErrorCode.INSTANCE_MUTATION_REJECTED);
+                    }
+                    if (StringUtils.isBlank(reply.operationId())) {
+                        throw new BaseException(ErrorCode.INSTANCE_MUTATION_UNCONFIRMED);
+                    }
+                    return new InstanceMutationResult(reply.operationId());
                 }));
     }
 

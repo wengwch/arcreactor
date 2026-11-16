@@ -56,7 +56,7 @@ public final class FloatingIpForwardings {
         replyTo -> new GetPortForwarding(claimId, replyTo), askTimeout, system.scheduler());
   }
 
-  /** CREATING claims reject deletion; retry after creation completes and until the reply is DELETED. */
+  /** Deletes by claim ID. CREATING mappings reject deletion; poll until the reply is DELETED. */
   public CompletionStage<ForwardingReply> delete(String region, String osFloatingIpId, String claimId) {
     return AskPattern.<FloatingIpCommand, ForwardingReply>ask(entity(region, osFloatingIpId),
         replyTo -> new DeletePortForwarding(claimId, replyTo), askTimeout, system.scheduler());

@@ -23,6 +23,7 @@
 @hypervisorType = demo-hv-t4
 @instanceName = test-instance-003
 @instanceId = fa346042-5c3d-4b35-929c-40ab1a735d09
+@forwardingId = replace-with-user-forwarding-id
 
 ### 1. 查询区域内的规格，从 result 中选择 enabled=true 的记录
 # 记录 id 和 hypervisorType，分别填写 flavorId 和 hypervisorType。
@@ -80,3 +81,46 @@ Accept: application/json
 # 未完成的删除会继续检查和重试，用户级项目、Share 和网络保持不变。
 DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}
 Accept: application/json
+
+### 7. 为 ACTIVE 实例创建用户端口转发
+# 返回 HTTP 202，result.operationId 为本次用户转发标识；通过 GET 实例查询进度和公网映射。
+# internalPort 为实例内部服务端口；公网端口由浮动 IP Actor 分配，同时创建 TCP/UDP 转发和对应安全组放行。
+# 创建实例时生成的 22/8888 等映射属于 SYSTEM，此接口创建 USER 类型。
+# 类型、浮动 IP 和公网端口不由请求指定；已有系统/用户转发占用的内部端口不能重复创建。
+POST {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings
+Content-Type: application/json
+Accept: application/json
+
+{
+  "internalPort": 8080
+}
+
+### 8. 删除用户端口转发
+# 将上方创建结果或实例状态中的用户转发标识填写到 forwardingId。
+# 仅允许 USER 转发；SYSTEM 转发不支持单独删除，删除整个实例时统一清理。
+# 返回 HTTP 202 表示已受理；通过 GET 实例确认删除完成后，才会释放公网端口并完成安全组规则清理。
+DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings/{{forwardingId}}
+Accept: application/json
+
+### 9. 修改 ACTIVE 实例父子端口的 QoS 速率
+# 返回 HTTP 202 和 result.operationId，通过 GET 实例观察 QoS 操作状态和实际资源。
+# maxKbps 单位为 kbit/s，maxBurstKbits 单位为 kbit；同一端口的 ingress/egress 使用相同限制。
+# parentPort/subPort 至少指定一个，省略或 null 的端口保持不变；两个值均为 0 表示不限速。
+# 资源变更尚未完成时应先查询结果；拒绝返回业务 code=11722，受理结果不确定为 11723/11724。
+PUT {{baseUrl}}/api/v1/instances/{{instanceId}}/qos
+Content-Type: application/json
+Accept: application/json
+
+{
+  "parentPort": {"maxKbps": 102400, "maxBurstKbits": 10240},
+  "subPort": {"maxKbps": 51200, "maxBurstKbits": 5120}
+}
+
+### 10. 取消父端口限速，保留子端口当前限制
+PUT {{baseUrl}}/api/v1/instances/{{instanceId}}/qos
+Content-Type: application/json
+Accept: application/json
+
+{
+  "parentPort": {"maxKbps": 0, "maxBurstKbits": 0}
+}

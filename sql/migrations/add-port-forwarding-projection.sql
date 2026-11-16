@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS port_forwarding (
   instance_id VARCHAR(255),
   user_id VARCHAR(255),
   os_project_id VARCHAR(255),
+  kind VARCHAR(16),
   floating_ip VARCHAR(45) NOT NULL,
   internal_port_id VARCHAR(255),
   fixed_ip VARCHAR(45),

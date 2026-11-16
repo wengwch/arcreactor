@@ -110,11 +110,14 @@ Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStas
 每个实例先创建一个专属安全组，按上述内部端口配置添加 IPv4 入站 TCP/UDP 规则，来源为 `0.0.0.0/0`。
 父端口和子端口创建时开启 port security，并只绑定该专属安全组；出站沿用 Neutron 新建安全组的默认规则。
 安全组由实例工作流管理，FloatingIpActor 只负责公网端口分配和 TCP/UDP 转发。
+端口转发通过 `ForwardingKind` 区分 `SYSTEM` 和 `USER`：实例创建时配置的全部转发均为 `SYSTEM`，
+包括默认的 `22`、`8888`；实例创建完成后通过管理 API 新增的转发为 `USER`。
+系统转发不支持单独删除，只能随整个实例删除；用户转发可以单独创建和删除。
 
 实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先创建
 QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
 创建和恢复查询结果通过 `PreparedNetwork.parentQos`、`subQos` 保存各端口的 `osPolicyId`、
-`osIngressRuleId`、`osEgressRuleId`，随端口就绪事件持久化，并写入 `instance_view`。
+`osIngressRuleId`、`osEgressRuleId` 和当前 `bandwidthLimit`，随端口就绪事件持久化，并写入 `instance_view`。
 不限速时仍保存 policy ID，两个 rule ID 为 NULL；后续子端口和 Trunk 阶段保留前序 QoS 记录。
 创建 Command 的 `spec.network.parentPortBandwidthLimit` 和 `spec.network.subPortBandwidthLimit`
 分别携带父、子端口限速，随实例创建事件持久化；恢复时沿用提交时的值。
@@ -132,7 +135,8 @@ NetworkRequirement network = new NetworkRequirement(segmentationId, userNetworkS
 单位和方向遵循 [OpenStack 带宽限速规则 API](https://docs.openstack.org/api-ref/network/v2/index.html#create-bandwidth-limit-rule)。
 两个值均不得为负；`maxKbps = 0` 表示不创建限速规则，此时 `maxBurstKbits` 也必须为 0。
 YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，排查空 policy 时先检查是否被配置为 `0 / 0`。
-调整配置仅影响之后提交的实例；已有工作流会继续使用创建事件中持久化的限速值，重启不会为旧 policy 自动补规则。
+调整默认配置仅影响之后提交的实例；创建中的工作流继续使用创建事件中持久化的限速值。
+运行中实例的限速通过下文 QoS 管理 API 修改，修改意图和结果独立持久化，重启不从当前默认配置取值。
 已存在的规则会校验方向、带宽和突发值，避免重复创建或复用不匹配的限速配置。
 工作流按操作标记查找资源；人工触发实例删除后，先删除端口，再清理对应 QoS，包括未绑定端口的残留 policy。
 
@@ -388,16 +392,20 @@ Actor 不再逐协议保存创建阶段，也不记录查询尝试次数。
 
 删除使用 `ForwardingDeletionStarted`、`ForwardingDeleted` 和 `ForwardingDeletionFailed`
 分别记录开始、完成和失败。
-外部 `DeletePortForwarding` 命令负责发起删除和失败后的重试，已开始但因重启中断的删除由独立恢复逻辑继续。
+FIP Actor 统一使用 `DeletePortForwarding` 按 `claimId` 删除，不区分转发类型或调用场景。
+系统转发禁止单独删除的限制由 `InstanceWorkflowActor.onDeleteUserForwarding` 校验；
+实例整体清理使用同一删除命令清理两种类型。已开始但因重启中断的删除由独立恢复逻辑继续。
 删除通过独立的命令和事件执行。`CREATING` 状态拒绝删除并返回 `REJECTED`，
 不写事件、不记录删除意图，也不改变创建状态；调用方需在创建进入 `READY` 或 `FAILED` 后重新发送删除命令。
 因此不再保存删除意图字段；重启后仍按 `CREATING` 恢复创建。
-实例删除和删除恢复均遍历已持久化的 `preparedForwardings`，直接使用每条记录的 `osFloatingIpId` 和 `claimId` 调用 `delete` 和 `get`。
+实例删除和删除恢复通过 `forwardingsForDeletion()` 汇总系统与用户转发，
+使用每条记录的 `osFloatingIpId` 和 `claimId` 调用 `delete` 和 `get`。
 删除直接返回 `DELETED` 可确认完成；返回 `IN_PROGRESS` 后通过 `get` 继续查询，
 查询仍为 `IN_PROGRESS` 只等待，`READY`、`FAILED`、`DELETE_FAILED`、`NOT_FOUND` 时重新提交删除并确认结果。
 列表为空时直接完成该步骤；全部记录确认 `DELETED` 才持久化 `InstanceForwardingsDeleted` 并进入 `DELETING_NETWORK`。
-`preparedForwardings` 只保存已确认 `READY` 的映射；创建失败或就绪结果尚未持久化的 claim
-仍需外部单独发送 `DeletePortForwarding`，实例删除不自动收集这些 claim。
+系统转发包含 `preparedForwardings` 中已确认的映射，以及创建阶段当前已开始但未确认就绪的 claim；
+用户转发包含 `management.userForwardings` 中所有尚未标记 `DELETED` 的记录。
+因此用户创建失败或未保存远端资源 ID 时，仍能按已持久化的转发标识清理可能存在的 claim。
 外部对尚未创建的 claim 发送单个删除命令时，FloatingIpActor 同样记录 `ForwardingDeleted`，
 在 `outcomes` 中保存已删除标记，阻止保留期内的迟到创建，不调用 OpenStack，也不改变端口位图。
 FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级取消记录。
@@ -415,7 +423,8 @@ FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级�
 删除完成后进入 `DELETED`；创建失败时保留 `FAILED`、失败原因和已占用端口，等待外部决定是否删除。
 
 `claims` 仅保留仍需处理的完整记录。端口耗尽等未分配资源的失败，以及确认删除完成的 claim，
-立即移入精简的 `outcomes`，只保存请求参数指纹、`FAILED`／`DELETED`、失败原因和完成时间。
+立即移入精简的 `outcomes`，保存请求参数指纹、`FAILED`／`DELETED`、失败原因和完成时间。
+参数指纹包含所属实例和 `kind`，用于校验重复创建请求，不额外保存删除权限字段。
 仍占用端口或处于创建、就绪、删除中的 claim 不会被清理，`DELETE_FAILED` 保留完整记录等待重试。
 保留期内查询和相同参数的重复创建仍返回原终态，但终态回复的 `claim` 为 `null`；
 相同 claim ID 携带不同参数会被拒绝。尚未创建就收到删除命令的 claim 也保存在 `outcomes` 中，阻止迟到创建。
@@ -430,7 +439,7 @@ Actor 恢复后立即检查一次，之后定期将过期记录 ID 持久化为 
 创建失败统一返回 `FAILED`，删除失败返回 `DELETE_FAILED`；超时或响应丢失等结果仍保留已占用端口，等待外部核对或清理。
 不提供显式恢复命令；重启恢复继续 `CREATING`、`DELETING`，已失败的操作不会重新执行。
 失败资源由外部删除命令清理；删除失败后通过再次发送删除命令重试。
-失败且仍持有端口时，实例工作流进入 `FAILED`，不切换浮动 IP，也不自动发送删除命令。
+实例创建阶段的系统转发失败且仍持有端口时，实例工作流进入 `FAILED`，不切换浮动 IP，也不自动发送删除命令。
 人工发送 `DeleteInstance` 后，实例删除流程才向 FloatingIpActor 发送外部删除命令。
 只有没有占用端口的失败才允许继续尝试其他候选。
 
@@ -542,6 +551,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 
 运行中的实例或创建失败的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
 该入口允许对 `ACTIVE`、`FAILED` 实例开始删除；创建中的实例会拒绝，业务错误码为 `11721`。
+用户转发创建、删除或 QoS 修改尚在进行时也拒绝实例删除，避免管理请求与资源清理同时执行。
 `InstanceDeletionStarted` 持久化后进入 `DELETING_NOVA` 并返回 HTTP `202`，所有删除阶段及 `DELETED` 下的重复删除请求均幂等受理。
 删除按以下六个阶段执行，当前阶段完成后先持久化明确的完成事件，再执行下一阶段：
 
@@ -565,7 +575,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
 服务器仍存在或查询失败时保持当前阶段；确认不存在（404）后记录 `NovaServerDeleted`，才开始删除端口转发。
 
-`DELETING_FORWARDINGS` 只处理 `preparedForwardings` 中的记录，提交和查询分别执行。
+`DELETING_FORWARDINGS` 处理 `forwardingsForDeletion()` 汇总的全部系统及用户转发，提交和查询分别执行。
 删除返回 `DELETED` 可直接确认，`IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态；
 全部记录确认 `DELETED` 后才推进到网络清理。
 查询仍在删除中的 claim 不重复发送删除命令，查到需要删除或重试的 claim 时只对这些记录再次提交。
@@ -657,8 +667,8 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
       }
     },
     "forwardings": [
-      {"internalPort": 22, "floatingIp": "203.0.113.10", "externalPort": 10000},
-      {"internalPort": 8888, "floatingIp": "203.0.113.10", "externalPort": 10001}
+      {"internalPort": 22, "floatingIp": "203.0.113.10", "externalPort": 10000, "kind": "SYSTEM"},
+      {"internalPort": 8888, "floatingIp": "203.0.113.10", "externalPort": 10001, "kind": "SYSTEM"}
     ]
   }
 }
@@ -669,6 +679,55 @@ SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 usern
 JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
 创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动。
 `ACTIVE` 表示 SSH 转发已通过连通性检查且资源预留已确认，仍不代表 cloud-init 全部完成或 JupyterLab 已就绪。
+
+## 实例端口转发与 QoS 管理
+
+实例处于 `ACTIVE` 且没有进行中的管理操作时，才接受新的用户转发创建、删除和 QoS 修改。
+管理操作拥有独立状态，不改变实例的 `ACTIVE` 生命周期阶段；转发或 QoS 操作之间串行执行。
+接口持久化操作意图后返回 HTTP `202`，响应为 `{"code":200,"result":{"operationId":"..."}}`，
+不等待 OpenStack 完成。业务拒绝使用 `11722`，受理等待超时和结果未确认分别为 `11723`、`11724`；
+结果不确定时先查询实例状态，再决定是否重试。接口示例见 `http/instances.http`。
+
+| 接口 | 请求内容 | `operationId` |
+| --- | --- | --- |
+| `POST /api/v1/instances/{instanceId}/forwardings` | `{"internalPort":8080}`，端口范围 `1–65535` | 新建用户转发的 `forwardingId` |
+| `DELETE /api/v1/instances/{instanceId}/forwardings/{forwardingId}` | 无请求体，仅允许 `USER` | 被删除用户转发的 `forwardingId` |
+| `PUT /api/v1/instances/{instanceId}/qos` | 可选的 `parentPort`、`subPort`，至少指定一个 | 本次 QoS 操作的独立 ID |
+
+用户转发复用该实例系统 SSH 映射的浮动 IP，由 FloatingIpActor 在位图空闲范围内按随机起点分配公网端口，
+同时建立 TCP、UDP 映射；请求不接收类型、浮动 IP 或公网端口。内部端口已被系统转发或尚未删除的
+用户转发占用时拒绝创建。创建前幂等补齐实例专属安全组中该内部端口的 TCP/UDP IPv4 入站规则。
+通过 `GET /api/v1/instances/{instanceId}` 查询 `management.userForwardings[forwardingId]`，
+可见 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED` 及资源和失败信息。
+顶层 `forwardings` 汇总系统转发和已取得资源且未标记删除完成的用户转发，每项带有 `kind`；
+用户转发是否正在删除或删除失败，以 `management` 中的状态为准。
+
+用户转发删除先等待 FIP claim 返回 `DELETED`，再删除实例安全组中该端口的专属规则，
+两步完成后记录 `UserForwardingDeleted`。重复删除同一 `DELETING` 或 `DELETED` 记录幂等返回。
+创建失败、删除失败均保留实例 `ACTIVE` 和操作记录，不自动补偿；失败的用户转发可通过删除接口清理，
+`DELETE_FAILED` 可再次调用删除接口重试。删除整个实例仍统一清理全部 `SYSTEM`、`USER` 转发和专属安全组。
+
+QoS 修改示例：
+
+```json
+{
+  "parentPort": {"maxKbps": 102400, "maxBurstKbits": 10240},
+  "subPort": {"maxKbps": 51200, "maxBurstKbits": 5120}
+}
+```
+
+省略或传 `null` 的端口保持不变；每个指定端口的两个字段均必填且不得为负。
+`maxKbps` 单位为 kbit/s，`maxBurstKbits` 单位为 kbit，同一端口的 ingress 和 egress 使用相同参数。
+`0 / 0` 表示删除该端口的限速规则、保留专属 QoS policy；重新设置正速率时补齐所需规则。
+操作只修改已有实例端口绑定的专属 policy，不重建端口或替换 policy。
+通过实例查询的 `management.qosUpdate` 查看 `UPDATING`、`READY`、`FAILED`、请求参数和失败信息；
+成功后 `network.parentQos`、`network.subQos` 更新实际规则 ID 及 `bandwidthLimit`。
+失败不回滚已经修改的远端规则，实例仍为 `ACTIVE`；需使用与失败操作相同的参数重试，完成后才能提交其他限速值。
+
+管理意图分别使用 `UserForwardingCreationRequested`、`UserForwardingDeletionRequested`、
+`InstanceQosUpdateRequested` 持久化，成功和失败使用各自明确的结果事件。
+重启后独立恢复已持久化的创建、删除和 QoS 修改意图：用户转发先查询原 claim 再补充未完成步骤，
+QoS 按保存的目标参数检查并修复部分修改，不重新分配操作标识；已经失败的管理操作等待外部处理。
 
 ## 用户资源清理
 
@@ -805,7 +864,7 @@ claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新
 
 同一投影同时将端口转发生命周期写入 `port_forwarding`，主键为
 `(region_id, os_floating_ip_id, claim_id)`，同一 claim 在不同候选浮动 IP 上的尝试分别保存。
-记录包含用户、实例、项目、目标 Neutron 端口、固定 IP、内部/公网端口、浮动 IP 地址、
+记录包含用户、实例、项目、`kind`（`SYSTEM`／`USER`）、目标 Neutron 端口、固定 IP、内部/公网端口、浮动 IP 地址、
 TCP/UDP 规则 ID、阶段、失败原因、版本和创建/更新/删除时间。
 
 | 事件 | 端口转发记录 |
@@ -819,7 +878,7 @@ TCP/UDP 规则 ID、阶段、失败原因、版本和创建/更新/删除时间�
 | `ForwardingDeleted` | 阶段为 `DELETED`，记录删除时间 |
 
 删除后保留已知的映射参数和规则 ID，供查询历史；这些字段不表示仍然占用端口，端口分配以 Actor 位图为准。
-删除尚未创建的 claim 也写入 `DELETED` 记录，请求规格字段为空。
+删除尚未创建的 claim 也写入 `DELETED` 记录，请求规格字段及 `kind` 为空。
 Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim ID 在保留期后重新创建时，较新的创建事件重置该记录。
 实例关联的端口转发统一从 `port_forwarding` 按 `instance_id` 查询。
 
@@ -839,6 +898,7 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 补充版本列，缺少启用字段时执行 `sql/migrations/add-floating-ip-enabled.sql`。
 增列脚本中已有记录默认未启用，不回填历史启用状态。当前状态与事件结构直接用于开发阶段，不提供历史事件兼容转换。
 端口转发表随 `sql/read-model.sql` 初始化，也可单独执行 `sql/migrations/add-port-forwarding-projection.sql`。
+已有端口转发表可执行 `sql/migrations/add-port-forwarding-kind.sql` 增加类型字段；脚本不回填未知的历史类型。
 已有 `floating-ip` 投影进度时，新增表不会自动补齐之前消费的事件；重建该读模型需要从创建事件开始重放。
 
 ## 实例读模型
@@ -857,6 +917,13 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 `ParentPortPrepared`、`SubPortPrepared`、`TrunkPrepared` 依次补齐父端口、子端口和 Trunk，
 各阶段的开始事件更新对应阶段；`ForwardingPrepared` 在实例投影中只更新 `PREPARING_FORWARDING` 阶段。
 该事件和实例 Actor 中的已确认映射继续保留，用于创建进度、重启恢复和删除流程。
+用户转发事件按 `forwardingId` 更新 `instance_view.user_forwardings` JSON，保存实例管理操作的完整进度；
+FIP 事件继续独立投影底层 `port_forwarding` 生命周期。
+QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新实际规则 ID 和
+`parent_max_kbps`、`parent_max_burst_kbits`、`sub_max_kbps`、`sub_max_burst_kbits`。
+父子端口创建完成时也写入对应限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
+新库使用 `sql/read-model.sql`，已有 `instance_view` 可执行
+`sql/migrations/add-instance-network-management.sql` 增加两列 JSON 和四列限速值，不转换旧事件或快照。
 `InstanceDeletionStarted` 将实例投影置为 `DELETING_NOVA`；各资源清理完成事件分别推进到上表中的下一删除阶段。
 `NovaDeletionAccepted` 保存服务器 ID 并保持 `DELETING_NOVA`，只有 `InstanceDeleted` 才将投影置为 `DELETED`。
 删除阶段切换保留已有资源 ID 和原创建失败信息，便于查询进度及排查。

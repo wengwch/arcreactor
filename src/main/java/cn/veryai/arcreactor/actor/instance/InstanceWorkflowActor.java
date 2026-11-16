@@ -2,6 +2,25 @@ package cn.veryai.arcreactor.actor.instance;
 
 import static cn.veryai.arcreactor.actor.instance.InstanceOperationIds.*;
 
+import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
+import cn.veryai.arcreactor.actor.instance.command.CreateUserForwarding;
+import cn.veryai.arcreactor.actor.instance.command.DeleteUserForwarding;
+import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
+import cn.veryai.arcreactor.actor.instance.command.CheckUserForwarding;
+import cn.veryai.arcreactor.actor.instance.command.UserForwardingOperationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.QosUpdateCompleted;
+import cn.veryai.arcreactor.actor.instance.model.UserForwarding;
+import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
+import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingCreationRequested;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingCreated;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingCreationFailed;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingDeletionRequested;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingDeleted;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingDeletionFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
@@ -144,6 +163,9 @@ public final class InstanceWorkflowActor
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceRecovery recovery;
+  private final InstanceManagementOperations managementOperations;
+  private final Map<String, String> userForwardingRequests = new java.util.HashMap<>();
+  private String qosUpdateRequestToken;
   private final InstanceSshChecker sshChecker = new InstanceSshChecker(new SSHValidator());
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private String dependencyRequestToken;
@@ -219,6 +241,7 @@ public final class InstanceWorkflowActor
     this.dependencyPreparer = Objects.requireNonNull(dependencyPreparer);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
+    this.managementOperations = new InstanceManagementOperations(openStackClient, floatingIpForwardings);
     this.recovery = new InstanceRecovery(placement, openStackClient, floatingIpForwardings,
         dependencyPreparer, sshChecker, clock);
   }
@@ -235,6 +258,12 @@ public final class InstanceWorkflowActor
         .forAnyState()
         .onCommand(CreateInstance.class, this::onCreate)
         .onCommand(DeleteInstance.class, this::onDelete)
+        .onCommand(CreateUserForwarding.class, this::onCreateUserForwarding)
+        .onCommand(DeleteUserForwarding.class, this::onDeleteUserForwarding)
+        .onCommand(UpdateInstanceQos.class, this::onUpdateInstanceQos)
+        .onCommand(CheckUserForwarding.class, this::onCheckUserForwarding)
+        .onCommand(UserForwardingOperationCompleted.class, this::onUserForwardingOperationCompleted)
+        .onCommand(QosUpdateCompleted.class, this::onQosUpdateCompleted)
         .onCommand(DependenciesReady.class, this::onDependenciesReady)
         .onCommand(DependenciesFailed.class, this::onDependenciesFailed)
         .onCommand(GetInstanceState.class, this::onGetState)
@@ -274,7 +303,9 @@ public final class InstanceWorkflowActor
       if (recoveringPhase != null
           && !(command instanceof RetryRecovery || command instanceof RecoveryStepCompleted
               || command instanceof GetInstanceState
-              || command instanceof CreateInstance || command instanceof DeleteInstance)) {
+              || command instanceof CreateInstance || command instanceof DeleteInstance
+              || command instanceof CreateUserForwarding || command instanceof DeleteUserForwarding
+              || command instanceof UpdateInstanceQos)) {
         return Effect().none();
       }
       return handler.apply(state, command);
@@ -314,6 +345,238 @@ public final class InstanceWorkflowActor
               command.replyTo().tell(InstanceReply.accepted(false));
               startScheduling(next);
             });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCreateUserForwarding(
+      InstanceWorkflowState state, CreateUserForwarding command) {
+    if (state.phase() != InstancePhase.ACTIVE || state.management().busy()) {
+      command.replyTo().tell(InstanceMutationReply.rejected("Instance must be ACTIVE with no pending management operation"));
+      return Effect().none();
+    }
+    if (state.preparedForwardings().stream().anyMatch(item -> item.internalPort() == command.internalPort())
+        || state.management().userForwardings().values().stream().anyMatch(item ->
+            item.internalPort() == command.internalPort() && item.phase() != UserForwarding.Phase.DELETED)) {
+      command.replyTo().tell(InstanceMutationReply.rejected("The internal port already has a system or user forwarding"));
+      return Effect().none();
+    }
+    PreparedForwarding systemSsh = state.preparedForwardings().stream()
+        .filter(item -> item.kind() == ForwardingKind.SYSTEM && item.internalPort() == 22).findFirst().orElse(null);
+    if (systemSsh == null) {
+      command.replyTo().tell(InstanceMutationReply.rejected("No system SSH floating IP is available"));
+      return Effect().none();
+    }
+    String forwardingId = UUID.randomUUID().toString();
+    UserForwarding forwarding = new UserForwarding(forwardingId, systemSsh.osFloatingIpId(), command.internalPort(),
+        UserForwarding.Phase.CREATING, null, null, 1);
+    return Effect().persist(new UserForwardingCreationRequested(instanceId, forwarding))
+        .thenRun(next -> {
+          command.replyTo().tell(InstanceMutationReply.accepted(forwardingId));
+          submitUserForwardingCreation(next, forwarding);
+        });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeleteUserForwarding(
+      InstanceWorkflowState state, DeleteUserForwarding command) {
+    if (state.phase() != InstancePhase.ACTIVE) {
+      command.replyTo().tell(InstanceMutationReply.rejected("Only ACTIVE instances allow user forwarding management"));
+      return Effect().none();
+    }
+    if (state.preparedForwardings().stream().anyMatch(item ->
+        item.kind() == ForwardingKind.SYSTEM && item.claimId().equals(command.forwardingId()))) {
+      command.replyTo().tell(InstanceMutationReply.rejected("System forwardings cannot be deleted individually"));
+      return Effect().none();
+    }
+    UserForwarding forwarding = state.management().userForwardings().get(command.forwardingId());
+    if (forwarding == null) {
+      command.replyTo().tell(InstanceMutationReply.rejected("User forwarding was not found"));
+      return Effect().none();
+    }
+    if (forwarding.phase() == UserForwarding.Phase.DELETED || forwarding.phase() == UserForwarding.Phase.DELETING) {
+      command.replyTo().tell(InstanceMutationReply.accepted(forwarding.forwardingId()));
+      return Effect().none();
+    }
+    if (state.management().busy()) {
+      command.replyTo().tell(InstanceMutationReply.rejected("Wait for the pending forwarding or QoS operation"));
+      return Effect().none();
+    }
+    UserForwarding deleting = forwarding.transition(UserForwarding.Phase.DELETING, null);
+    return Effect().persist(new UserForwardingDeletionRequested(instanceId, deleting))
+        .thenRun(next -> {
+          command.replyTo().tell(InstanceMutationReply.accepted(deleting.forwardingId()));
+          submitUserForwardingDeletion(next, deleting);
+        });
+  }
+
+  private void submitUserForwardingCreation(InstanceWorkflowState state, UserForwarding forwarding) {
+    pipeUserForwarding(forwarding, () -> managementOperations.createForwarding(state, forwarding));
+  }
+
+  private void submitUserForwardingDeletion(InstanceWorkflowState state, UserForwarding forwarding) {
+    pipeUserForwarding(forwarding, () -> managementOperations.deleteForwarding(state, forwarding));
+  }
+
+  private void pipeUserForwarding(UserForwarding forwarding,
+      java.util.function.Supplier<CompletionStage<ForwardingReply>> operation) {
+    if (userForwardingRequests.containsKey(forwarding.forwardingId())) return;
+    String token = UUID.randomUUID().toString();
+    userForwardingRequests.put(forwarding.forwardingId(), token);
+    CompletionStage<ForwardingReply> request;
+    try { request = operation.get(); }
+    catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(request, (reply, error) -> {
+      Throwable cause = error == null ? null : rootCause(error);
+      return new UserForwardingOperationCompleted(forwarding.forwardingId(), forwarding.generation(),
+          forwarding.phase(), token, reply, definitiveManagementFailure(cause), cause == null ? null : cause.toString());
+    });
+  }
+
+  private static boolean definitiveManagementFailure(Throwable error) {
+    if (error instanceof OpenStackOperationException || error instanceof IllegalArgumentException
+        || error instanceof IllegalStateException) return true;
+    return error instanceof org.openstack4j.api.exceptions.ResponseException response
+        && response.getStatus() >= 400 && response.getStatus() < 500
+        && response.getStatus() != 408 && response.getStatus() != 429;
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckUserForwarding(
+      InstanceWorkflowState state, CheckUserForwarding command) {
+    UserForwarding forwarding = state.management().userForwardings().get(command.forwardingId());
+    if (state.phase() != InstancePhase.ACTIVE || forwarding == null || !forwarding.inProgress()
+        || forwarding.generation() != command.generation()) return Effect().none();
+    pipeUserForwarding(forwarding, () -> forwarding.phase() == UserForwarding.Phase.CREATING
+        ? managementOperations.checkForwardingCreation(state, forwarding)
+        : managementOperations.checkForwardingDeletion(state, forwarding));
+    return Effect().none();
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUserForwardingOperationCompleted(
+      InstanceWorkflowState state, UserForwardingOperationCompleted command) {
+    UserForwarding forwarding = state.management().userForwardings().get(command.forwardingId());
+    if (state.phase() != InstancePhase.ACTIVE || forwarding == null || !forwarding.inProgress()
+        || forwarding.generation() != command.generation() || forwarding.phase() != command.phase()
+        || !Objects.equals(userForwardingRequests.get(command.forwardingId()), command.requestToken())) return Effect().none();
+    userForwardingRequests.remove(command.forwardingId());
+    if (command.failure() != null || command.reply() == null) {
+      if (command.rejected()) return failUserForwarding(forwarding, command.failure());
+      scheduleUserForwardingCheck(forwarding);
+      return Effect().none();
+    }
+    ForwardingReply reply = command.reply();
+    if (forwarding.phase() == UserForwarding.Phase.CREATING) {
+      switch (reply.status()) {
+        case READY -> {
+          ForwardingClaim claim = reply.claim();
+          if (claim == null || claim.phase() != ForwardingClaim.Phase.READY
+              || !forwarding.forwardingId().equals(claim.claimId())
+              || !forwarding.osFloatingIpId().equals(claim.osFloatingIpId())
+              || !InstanceManagementOperations.spec(state, forwarding).equals(claim.spec())
+              || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 1
+              || claim.resources().externalPort() > 65535 || !hasText(claim.resources().osTcpForwardingId())
+              || !hasText(claim.resources().osUdpForwardingId())) {
+            return failUserForwarding(forwarding, "Incomplete or mismatched user forwarding result");
+          }
+          return Effect().persist(new UserForwardingCreated(instanceId, forwarding.ready(PreparedForwarding.from(claim))));
+        }
+        case NOT_FOUND -> submitUserForwardingCreation(state, forwarding);
+        case IN_PROGRESS -> scheduleUserForwardingCheck(forwarding);
+        case FAILED, DELETE_FAILED, DELETED, REJECTED -> {
+          return failUserForwarding(forwarding, reply.detail() == null ? reply.status().name() : reply.detail());
+        }
+      }
+    } else {
+      switch (reply.status()) {
+        case DELETED -> {
+          return Effect().persist(new UserForwardingDeleted(instanceId, forwarding.transition(UserForwarding.Phase.DELETED, null)));
+        }
+        case READY, FAILED, NOT_FOUND -> submitUserForwardingDeletion(state, forwarding);
+        case IN_PROGRESS -> scheduleUserForwardingCheck(forwarding);
+        case DELETE_FAILED, REJECTED -> {
+          return failUserForwarding(forwarding, reply.detail() == null ? reply.status().name() : reply.detail());
+        }
+      }
+    }
+    return Effect().none();
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failUserForwarding(UserForwarding forwarding, String detail) {
+    if (forwarding.phase() == UserForwarding.Phase.CREATING) {
+      return Effect().persist(new UserForwardingCreationFailed(instanceId, forwarding.transition(UserForwarding.Phase.FAILED, detail)));
+    }
+    return Effect().persist(new UserForwardingDeletionFailed(instanceId, forwarding.transition(UserForwarding.Phase.DELETE_FAILED, detail)));
+  }
+
+  private void scheduleUserForwardingCheck(UserForwarding forwarding) {
+    timers.startSingleTimer("user-forwarding:" + forwarding.forwardingId(),
+        new CheckUserForwarding(forwarding.forwardingId(), forwarding.generation()), settings.pollInitialDelay());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUpdateInstanceQos(
+      InstanceWorkflowState state, UpdateInstanceQos command) {
+    if (state.phase() != InstancePhase.ACTIVE || state.management().busy()) {
+      command.replyTo().tell(InstanceMutationReply.rejected("Instance must be ACTIVE with no pending management operation"));
+      return Effect().none();
+    }
+    InstanceQosUpdate previous = state.management().qosUpdate();
+    if (previous != null && previous.phase() == InstanceQosUpdate.Phase.FAILED
+        && (!Objects.equals(previous.parentPort(), command.parentPort())
+            || !Objects.equals(previous.subPort(), command.subPort()))) {
+      command.replyTo().tell(InstanceMutationReply.rejected("Retry the failed QoS update with the same limits before changing them"));
+      return Effect().none();
+    }
+    InstanceQosUpdate update = new InstanceQosUpdate(UUID.randomUUID().toString(), InstanceQosUpdate.Phase.UPDATING,
+        command.parentPort(), command.subPort(), null);
+    return Effect().persist(new InstanceQosUpdateRequested(instanceId, update)).thenRun(next -> {
+      command.replyTo().tell(InstanceMutationReply.accepted(update.operationId()));
+      requestQosUpdate(next);
+    });
+  }
+
+  private void requestQosUpdate(InstanceWorkflowState state) {
+    InstanceQosUpdate update = state.management().qosUpdate();
+    pipeQosUpdate(update, () -> openStackClient.updateInstanceQos(target(state), networkOperationId(state),
+        state.networkPreparation().resources(), update.parentPort(), update.subPort()));
+  }
+
+  private void pipeQosUpdate(InstanceQosUpdate update,
+      java.util.function.Supplier<CompletionStage<PreparedNetwork>> operation) {
+    if (qosUpdateRequestToken != null) return;
+    String token = UUID.randomUUID().toString();
+    qosUpdateRequestToken = token;
+    CompletionStage<PreparedNetwork> request;
+    try { request = operation.get(); }
+    catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(request, (resources, error) -> new QosUpdateCompleted(update.operationId(), token,
+        resources, error == null ? null : rootCause(error).toString()));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onQosUpdateCompleted(
+      InstanceWorkflowState state, QosUpdateCompleted command) {
+    InstanceQosUpdate update = state.management().qosUpdate();
+    if (state.phase() != InstancePhase.ACTIVE || update == null || update.phase() != InstanceQosUpdate.Phase.UPDATING
+        || !update.operationId().equals(command.operationId()) || qosUpdateRequestToken == null
+        || !qosUpdateRequestToken.equals(command.requestToken())) return Effect().none();
+    qosUpdateRequestToken = null;
+    if (command.failure() != null || command.resources() == null) {
+      return Effect().persist(new InstanceQosUpdateFailed(instanceId,
+          update.failed(command.failure() == null ? "QoS update returned no resources" : command.failure())));
+    }
+    return Effect().persist(new InstanceQosUpdated(instanceId, update.completed(), command.resources()));
+  }
+
+  private void recoverManagement(InstanceWorkflowState state) {
+    for (UserForwarding forwarding : state.management().userForwardings().values()) {
+      if (forwarding.phase() == UserForwarding.Phase.CREATING) {
+        pipeUserForwarding(forwarding, () -> managementOperations.recoverForwardingCreation(state, forwarding));
+      } else if (forwarding.phase() == UserForwarding.Phase.DELETING) {
+        pipeUserForwarding(forwarding, () -> managementOperations.recoverForwardingDeletion(state, forwarding));
+      }
+    }
+    InstanceQosUpdate update = state.management().qosUpdate();
+    if (update != null && update.phase() == InstanceQosUpdate.Phase.UPDATING) {
+      // Reapply only the saved intent; the client reads actual rules before repairing a partial update.
+      pipeQosUpdate(update, () -> openStackClient.updateInstanceQos(target(state), networkOperationId(state),
+          state.networkPreparation().resources(), update.parentPort(), update.subPort()));
+    }
   }
 
   private void requestDependencies(InstanceWorkflowState state) {
@@ -592,7 +855,7 @@ public final class InstanceWorkflowActor
   private ForwardingSpec forwardingSpec(InstanceWorkflowState state) {
     PreparedNetwork network = state.networkPreparation().resources();
     return new ForwardingSpec(instanceId, state.userId(), state.spec().region(),
-        state.osProjectId(), network.osParentPortId(), network.parentFixedIp(), state.currentForwardingPort());
+        state.osProjectId(), network.osParentPortId(), network.parentFixedIp(), state.currentForwardingPort(), ForwardingKind.SYSTEM);
   }
   private static String forwardingFloatingIpId(InstanceWorkflowState state) {
     return state.spec().forwarding().osFloatingIpIds().get(state.forwardingCandidateIndex());
@@ -876,6 +1139,10 @@ public final class InstanceWorkflowActor
       command.replyTo().tell(InstanceReply.rejected("Only ACTIVE or FAILED instances can start deletion"));
       return Effect().none();
     }
+    if (state.management().busy()) {
+      command.replyTo().tell(InstanceReply.rejected("Wait for instance forwarding or QoS operations before deletion"));
+      return Effect().none();
+    }
     return Effect().persist(new InstanceDeletionStarted(instanceId, clock.instant()))
         .thenRun(next -> {
           command.replyTo().tell(InstanceReply.accepted(false));
@@ -915,7 +1182,7 @@ public final class InstanceWorkflowActor
     forwardingDeletionRequestToken = null;
     if (command.failure() != null) return retryDeletionStage(state, command.failure());
     if (command.deleted()) {
-      return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
+      return Effect().persist(forwardingsDeletedEvents(state))
           .thenRun(this::startDeletionStage);
     }
     // A delete reply may only acknowledge acceptance; the next request queries the persisted claim state.
@@ -944,7 +1211,7 @@ public final class InstanceWorkflowActor
       }
     }
     if (deleted) {
-      return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
+      return Effect().persist(forwardingsDeletedEvents(state))
           .thenRun(this::startDeletionStage);
     }
     if (retry) requestForwardingsDeletion(state);
@@ -1192,6 +1459,16 @@ public final class InstanceWorkflowActor
         state.pollingGeneration(), token, osServerId, error == null ? null : rootCause(error).toString()));
   }
 
+  private List<InstanceWorkflowEvent> forwardingsDeletedEvents(InstanceWorkflowState state) {
+    List<InstanceWorkflowEvent> events = new ArrayList<>();
+    state.management().userForwardings().values().stream()
+        .filter(item -> item.phase() != UserForwarding.Phase.DELETED)
+        .sorted(java.util.Comparator.comparing(UserForwarding::forwardingId))
+        .forEach(item -> events.add(new UserForwardingDeleted(instanceId, item.transition(UserForwarding.Phase.DELETED, null))));
+    events.add(new InstanceForwardingsDeleted(instanceId, clock.instant()));
+    return events;
+  }
+
   private void requestForwardingsDeletion(InstanceWorkflowState state) {
     if (state.phase() != InstancePhase.DELETING_FORWARDINGS || deletionInFlight()) return;
     String token = UUID.randomUUID().toString();
@@ -1199,7 +1476,7 @@ public final class InstanceWorkflowActor
     CompletionStage<Boolean> request;
     try {
       List<CompletableFuture<ForwardingReply>> deletions = new ArrayList<>();
-      for (PreparedForwarding forwarding : state.preparedForwardings()) {
+      for (PreparedForwarding forwarding : state.forwardingsForDeletion()) {
         deletions.add(floatingIpForwardings.delete(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId())
             .toCompletableFuture());
       }
@@ -1220,7 +1497,7 @@ public final class InstanceWorkflowActor
     CompletionStage<List<ForwardingsDeletionChecked.Result>> request;
     try {
       List<CompletableFuture<ForwardingsDeletionChecked.Result>> queries = new ArrayList<>();
-      for (PreparedForwarding forwarding : state.preparedForwardings()) {
+      for (PreparedForwarding forwarding : state.forwardingsForDeletion()) {
         queries.add(floatingIpForwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId())
             .handle((reply, error) -> new ForwardingsDeletionChecked.Result(forwarding, reply,
                 error == null ? null : rootCause(error).toString())).toCompletableFuture());
@@ -1326,6 +1603,15 @@ public final class InstanceWorkflowActor
         .onEvent(
             InstanceCreationRequested.class,
             (state, event) -> state.created(event.requestId(), event.spec()))
+        .onEvent(UserForwardingCreationRequested.class, (state, event) -> state.userForwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingCreated.class, (state, event) -> state.userForwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingCreationFailed.class, (state, event) -> state.userForwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingDeletionRequested.class, (state, event) -> state.userForwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingDeleted.class, (state, event) -> state.userForwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingDeletionFailed.class, (state, event) -> state.userForwardingChanged(event.forwarding()))
+        .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.qosUpdateChanged(event.update()))
+        .onEvent(InstanceQosUpdated.class, (state, event) -> state.qosUpdated(event.update(), event.resources()))
+        .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.qosUpdateChanged(event.update()))
         .onEvent(DependencyPreparationStarted.class, (state, event) -> state.preparingDependencies())
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(SecurityGroupPreparationStarted.class, (state, event) -> state.preparingSecurityGroup())
@@ -1391,6 +1677,8 @@ public final class InstanceWorkflowActor
 
   private void recoverState(InstanceWorkflowState state) {
     timers.cancelAll();
+    userForwardingRequests.clear();
+    qosUpdateRequestToken = null;
     dependencyRequestToken = null;
     resourceReservationRequestToken = null;
     securityGroupRequestToken = null;
@@ -1421,7 +1709,10 @@ public final class InstanceWorkflowActor
           PREPARING_FORWARDING, PROVISIONING, CHECKING_SSH, CONFIRMING -> state.phase();
       default -> null;
     };
-    if (recoveringPhase == null) return;
+    if (recoveringPhase == null) {
+      if (state.phase() == InstancePhase.ACTIVE) recoverManagement(state);
+      return;
+    }
     if (recoveringPhase == InstancePhase.CONFIRMING || recoveringPhase.isDeleting()) {
       scheduleRecovery(state, 1);
     } else {

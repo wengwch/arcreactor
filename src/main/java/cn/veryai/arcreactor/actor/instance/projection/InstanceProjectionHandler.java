@@ -14,6 +14,9 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingsDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceNetworkDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceReservationCancelled;
 import cn.veryai.arcreactor.actor.instance.event.InstanceSecurityGroupDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
@@ -33,7 +36,9 @@ import cn.veryai.arcreactor.actor.instance.event.SubPortPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.TrunkPrepared;
+import cn.veryai.arcreactor.actor.instance.event.UserForwardingEvent;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
+import cn.veryai.arcreactor.util.JsonUtil;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
@@ -78,6 +83,15 @@ public final class InstanceProjectionHandler
         } else if (event instanceof ForwardingPreparationStarted
                 || event instanceof ForwardingCandidateSelected || event instanceof ForwardingPrepared) {
             mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
+        } else if (event instanceof UserForwardingEvent changed) {
+            mapper.updateUserForwarding(instanceId, "$." + JsonUtil.toJson(changed.forwarding().forwardingId()),
+                    JsonUtil.toJson(changed.forwarding()), version, timestamp);
+        } else if (event instanceof InstanceQosUpdateRequested requested) {
+            mapper.updateQosState(instanceId, JsonUtil.toJson(requested.update()), version, timestamp);
+        } else if (event instanceof InstanceQosUpdateFailed failed) {
+            mapper.updateQosState(instanceId, JsonUtil.toJson(failed.update()), version, timestamp);
+        } else if (event instanceof InstanceQosUpdated updated) {
+            mapper.updateQos(instanceId, updated.resources(), JsonUtil.toJson(updated.update()), version, timestamp);
         } else if (event instanceof HypervisorReservationStarted started) {
             mapper.updateHypervisor(instanceId, "RESERVING_RESOURCES", started.hypervisorId(),
                     started.reservationId(), version, timestamp);

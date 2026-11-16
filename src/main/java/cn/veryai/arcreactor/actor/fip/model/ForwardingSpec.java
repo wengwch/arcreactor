@@ -2,11 +2,13 @@ package cn.veryai.arcreactor.actor.fip.model;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Objects;
 
 /** The internal service endpoint; the destination actor identifies the floating IP. */
 public record ForwardingSpec(String instanceId, String userId, String regionId, String osProjectId,
-    String osInternalPortId, String fixedIp, int internalPort) implements Serializable {
+    String osInternalPortId, String fixedIp, int internalPort, ForwardingKind kind) implements Serializable {
   public ForwardingSpec {
+    Objects.requireNonNull(kind, "kind");
     for (String value : List.of(instanceId, userId, regionId, osProjectId, osInternalPortId, fixedIp)) {
       if (value.isBlank()) throw new IllegalArgumentException("forwarding identifiers must not be blank");
     }

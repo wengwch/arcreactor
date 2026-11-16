@@ -53,6 +53,26 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateUserForwarding(
+            @Param("instanceId") String instanceId,
+            @Param("forwardingPath") String forwardingPath,
+            @Param("forwardingJson") String forwardingJson,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateQosState(
+            @Param("instanceId") String instanceId,
+            @Param("qosUpdateJson") String qosUpdateJson,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateQos(
+            @Param("instanceId") String instanceId,
+            @Param("network") PreparedNetwork network,
+            @Param("qosUpdateJson") String qosUpdateJson,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updateNovaOperation(
             @Param("instanceId") String instanceId,
             @Param("phase") String phase,

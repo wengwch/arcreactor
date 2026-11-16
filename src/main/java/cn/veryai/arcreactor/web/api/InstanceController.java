@@ -3,7 +3,10 @@ package cn.veryai.arcreactor.web.api;
 import cn.veryai.arcreactor.service.InstanceService;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
 import cn.veryai.arcreactor.vo.InstanceView;
+import cn.veryai.arcreactor.vo.InstanceMutationResult;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
+import cn.veryai.arcreactor.web.params.CreateUserForwardingParam;
+import cn.veryai.arcreactor.web.params.UpdateInstanceQosParam;
 import jakarta.validation.Valid;
 import java.util.concurrent.CompletionStage;
 import lombok.RequiredArgsConstructor;
@@ -12,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -38,5 +42,26 @@ public class InstanceController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public CompletionStage<Void> deleteInstance(@PathVariable("instanceId") String instanceId) {
         return instanceService.delete(instanceId);
+    }
+
+    @PostMapping("/{instanceId}/forwardings")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public CompletionStage<InstanceMutationResult> createForwarding(@PathVariable("instanceId") String instanceId,
+            @Valid @RequestBody CreateUserForwardingParam param) {
+        return instanceService.createForwarding(instanceId, param);
+    }
+
+    @DeleteMapping("/{instanceId}/forwardings/{forwardingId}")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public CompletionStage<InstanceMutationResult> deleteForwarding(@PathVariable("instanceId") String instanceId,
+            @PathVariable("forwardingId") String forwardingId) {
+        return instanceService.deleteForwarding(instanceId, forwardingId);
+    }
+
+    @PutMapping("/{instanceId}/qos")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public CompletionStage<InstanceMutationResult> updateQos(@PathVariable("instanceId") String instanceId,
+            @Valid @RequestBody UpdateInstanceQosParam param) {
+        return instanceService.updateQos(instanceId, param);
     }
 }

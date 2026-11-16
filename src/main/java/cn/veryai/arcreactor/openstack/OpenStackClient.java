@@ -619,6 +619,71 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
+  /** Adds only the requested service port to the instance's already-owned security group. */
+  public CompletionStage<Void> ensureInstanceForwardingAccess(ServerTarget target, String instanceId,
+      String osSecurityGroupId, int internalPort) {
+    validateForwardingAccessArguments(instanceId, osSecurityGroupId, internalPort);
+    return CompletableFuture.runAsync(() -> {
+      OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
+      SecurityGroup group = requireInstanceSecurityGroup(client, target.osProjectId(), instanceId, osSecurityGroupId);
+      for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
+        ensureInstanceSecurityRule(client, target.osProjectId(), group.getId(), internalPort, protocol,
+            instanceSecurityGroupMarker(instanceId));
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  /** Removes only exact rules created for this service port; unrelated or broader rules are retained. */
+  public CompletionStage<Void> deleteInstanceForwardingAccess(ServerTarget target, String instanceId,
+      String osSecurityGroupId, int internalPort) {
+    validateForwardingAccessArguments(instanceId, osSecurityGroupId, internalPort);
+    return CompletableFuture.runAsync(() -> {
+      OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
+      SecurityGroup group = cleanupLookup(() -> client.networking().securitygroup().get(osSecurityGroupId));
+      if (group == null) return;
+      verifyInstanceSecurityGroup(group, target.osProjectId(), instanceId, osSecurityGroupId);
+      String marker = instanceSecurityGroupMarker(instanceId);
+      for (SecurityGroupRule rule : client.networking().securityrule().list(
+          Map.of("project_id", target.osProjectId(), "security_group_id", osSecurityGroupId))) {
+        if (!target.osProjectId().equals(rule.getTenantId())) continue;
+        for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
+          String ruleMarker = marker + ":" + protocol.name().toLowerCase(Locale.ROOT) + ":" + internalPort;
+          if (ruleMarker.equals(rule.getDescription())
+              && allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol)
+              && Objects.equals(rule.getPortRangeMin(), internalPort)
+              && Objects.equals(rule.getPortRangeMax(), internalPort)) {
+            requireServerText(rule.getId(), "osSecurityGroupRuleId");
+            deleteCleanupResource(() -> client.networking().securityrule().delete(rule.getId()),
+                "instance forwarding security group rule");
+          }
+        }
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  private static void validateForwardingAccessArguments(String instanceId, String osSecurityGroupId, int internalPort) {
+    requireServerText(instanceId, "instanceId");
+    requireServerText(osSecurityGroupId, "osSecurityGroupId");
+    if (internalPort < 1 || internalPort > 65535) throw new IllegalArgumentException("Invalid forwarding internal port");
+  }
+
+  private SecurityGroup requireInstanceSecurityGroup(OSClient.OSClientV3 client, String osProjectId,
+      String instanceId, String osSecurityGroupId) {
+    SecurityGroup group = client.networking().securitygroup().get(osSecurityGroupId);
+    verifyInstanceSecurityGroup(group, osProjectId, instanceId, osSecurityGroupId);
+    return group;
+  }
+
+  private static void verifyInstanceSecurityGroup(SecurityGroup group, String osProjectId,
+      String instanceId, String osSecurityGroupId) {
+    String marker = instanceSecurityGroupMarker(instanceId);
+    if (group == null || !osSecurityGroupId.equals(group.getId())
+        || !osProjectId.equals(group.getTenantId()) || !marker.equals(group.getName())
+        || !marker.equals(group.getDescription())) {
+      throw new OpenStackOperationException("Missing or mismatched instance security group", null);
+    }
+  }
+
   private void createInstanceSecurityRule(OSClient.OSClientV3 client, String osSecurityGroupId, int internalPort,
       NetProtocol protocol, String groupMarker) {
     SecurityGroupRule created = client.networking().securityrule().create(Builders.securityGroupRule()
@@ -636,13 +701,15 @@ public class OpenStackClient {
     var service = client.networking().securityrule();
     Map<String, String> filters = Map.of("project_id", osProjectId, "security_group_id", osSecurityGroupId);
     if (service.list(filters).stream()
-        .anyMatch(rule -> allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol))) return;
+        .anyMatch(rule -> osProjectId.equals(rule.getTenantId())
+            && allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol))) return;
     try {
       createInstanceSecurityRule(client, osSecurityGroupId, internalPort, protocol, groupMarker);
     } catch (ResponseException error) {
       // An earlier request may have completed while recovery was querying the group's rules.
       if (error.getStatus() != 409 || service.list(filters).stream()
-          .noneMatch(rule -> allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol))) throw error;
+          .noneMatch(rule -> osProjectId.equals(rule.getTenantId())
+              && allowsInstancePort(rule, osSecurityGroupId, internalPort, protocol))) throw error;
     }
   }
 
@@ -1213,7 +1280,7 @@ public class OpenStackClient {
   /** Creates each rule once and records its ID directly from the create response. */
   private PreparedPortQos createPortBandwidthRules(OSClient.OSClientV3 client, String osPolicyId,
       PortBandwidthLimit bandwidthLimit) {
-    if (!bandwidthLimit.limited()) return new PreparedPortQos(osPolicyId, null, null);
+    if (!bandwidthLimit.limited()) return new PreparedPortQos(osPolicyId, null, null, bandwidthLimit);
     var service = client.networking().netQosPolicyBandwidthLimitRule();
     Map<NetQosPolicyBandwidthLimitRule.Direction, String> osRuleIds =
         new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
@@ -1231,7 +1298,7 @@ public class OpenStackClient {
       osRuleIds.put(direction, rule.getId());
     }
     return new PreparedPortQos(osPolicyId, osRuleIds.get(NetQosPolicyBandwidthLimitRule.Direction.ingress),
-        osRuleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress));
+        osRuleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress), bandwidthLimit);
   }
 
   /** Queries the port's existing QoS resources without creating or repairing them. */
@@ -1254,7 +1321,7 @@ public class OpenStackClient {
     Map<NetQosPolicyBandwidthLimitRule.Direction, String> ruleIds =
         portBandwidthRuleIds(rules, bandwidthLimit, false);
     return new PreparedPortQos(osPolicyId, ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.ingress),
-        ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress));
+        ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress), bandwidthLimit);
   }
 
   private Map<NetQosPolicyBandwidthLimitRule.Direction, String> portBandwidthRuleIds(
@@ -1362,6 +1429,106 @@ public class OpenStackClient {
 
   private static String portQosMarker(String portName) {
     return portName + "-qos";
+  }
+
+  /** Applies the persisted bandwidth intent without replacing either port's dedicated QoS policy. */
+  public CompletionStage<PreparedNetwork> updateInstanceQos(ServerTarget target, String operationId,
+      PreparedNetwork prepared, PortBandwidthLimit parentLimit, PortBandwidthLimit subLimit) {
+    requireServerText(operationId, "operationId");
+    Objects.requireNonNull(prepared, "prepared");
+    if (parentLimit == null && subLimit == null) {
+      throw new IllegalArgumentException("At least one instance port bandwidth limit is required");
+    }
+    return CompletableFuture.supplyAsync(() -> {
+      OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
+      // Validate every requested resource before mutating either policy.
+      String parentPolicyId = parentLimit == null ? null : requireInstancePortQos(client, target.osProjectId(),
+          instanceNetworkMarker(operationId, InstanceNetworkStep.PARENT_PORT), prepared.osParentPortId(), prepared.parentQos());
+      String subPolicyId = subLimit == null ? null : requireInstancePortQos(client, target.osProjectId(),
+          instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT), prepared.osSubPortId(), prepared.subQos());
+      PreparedPortQos parentQos = parentLimit == null ? prepared.parentQos()
+          : updatePortBandwidthRules(client, parentPolicyId, parentLimit);
+      PreparedPortQos subQos = subLimit == null ? prepared.subQos()
+          : updatePortBandwidthRules(client, subPolicyId, subLimit);
+      return new PreparedNetwork(prepared.osParentPortId(), prepared.parentMacAddress(), prepared.parentFixedIp(),
+          prepared.osSubPortId(), prepared.subFixedIp(), prepared.osSubFloatingIpId(), prepared.subFloatingIpAddress(),
+          prepared.osTrunkId(), parentQos, subQos);
+    }, NETWORK_EXECUTOR);
+  }
+
+  private String requireInstancePortQos(OSClient.OSClientV3 client, String osProjectId, String portName,
+      String osPortId, PreparedPortQos prepared) {
+    requireServerText(osPortId, "osPortId");
+    if (prepared == null) throw new OpenStackOperationException("Instance has no recorded port QoS policy", null);
+    requireServerText(prepared.osPolicyId(), "osPolicyId");
+    Port port = client.networking().port().get(osPortId);
+    if (port == null || !osPortId.equals(port.getId()) || !osProjectId.equals(port.getTenantId())
+        || !portName.equals(port.getName()) || !prepared.osPolicyId().equals(port.getQosPolicyId())) {
+      throw new OpenStackOperationException("Instance port does not match its recorded identity or QoS policy", null);
+    }
+    NeutronNetQosPolicy policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().get(prepared.osPolicyId());
+    if (!isPortQosPolicy(policy, osProjectId, portName) || !prepared.osPolicyId().equals(policy.getId())
+        || !portQosMarker(portName).equals(policy.getName()) || policy.isShared() || policy.isDefault()) {
+      throw new OpenStackOperationException("Instance QoS policy is not the recorded dedicated policy", null);
+    }
+    return policy.getId();
+  }
+
+  private PreparedPortQos updatePortBandwidthRules(OSClient.OSClientV3 client, String osPolicyId,
+      PortBandwidthLimit bandwidthLimit) {
+    var service = client.networking().netQosPolicyBandwidthLimitRule();
+    Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> existing =
+        portBandwidthRulesByDirection(service.list(osPolicyId));
+    for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
+      NetQosPolicyBandwidthLimitRule rule = existing.get(direction);
+      if (!bandwidthLimit.limited()) {
+        if (rule != null) {
+          String osRuleId = rule.getId();
+          deleteCleanupResource(() -> service.delete(osPolicyId, osRuleId), "instance bandwidth limit rule");
+        }
+        continue;
+      }
+      if (rule == null) {
+        try {
+          rule = service.create(osPolicyId, NeutronNetQosPolicyBandwidthLimitRule.builder()
+              .direction(direction).maxKbps(bandwidthLimit.maxKbps())
+              .maxBurstKbps(bandwidthLimit.maxBurstKbits()).build());
+        } catch (ResponseException error) {
+          // The previous attempt may have created the rule before its response was lost.
+          if (error.getStatus() != 409) throw error;
+          rule = portBandwidthRulesByDirection(service.list(osPolicyId)).get(direction);
+          if (rule == null) throw error;
+        }
+      }
+      if (rule == null || rule.getId() == null || rule.getId().isBlank()
+          || Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress) != direction) {
+        throw new OpenStackOperationException("Missing or mismatched instance bandwidth limit rule", null);
+      }
+      if (!Objects.equals(rule.getMaxKbps(), bandwidthLimit.maxKbps())
+          || Objects.requireNonNullElse(rule.getMaxBurstKbps(), 0) != bandwidthLimit.maxBurstKbits()) {
+        NetQosPolicyBandwidthLimitRule update = NeutronNetQosPolicyBandwidthLimitRule.builder()
+            .maxKbps(bandwidthLimit.maxKbps()).maxBurstKbps(bandwidthLimit.maxBurstKbits()).build();
+        update.setId(rule.getId());
+        NetQosPolicyBandwidthLimitRule updated = service.update(osPolicyId, update);
+        if (updated == null) throw new OpenStackOperationException("Neutron returned no updated bandwidth limit rule", null);
+      }
+    }
+    // Re-query both directions: success must reflect the requested rate and the current rule IDs.
+    return verifyPortBandwidthRules(client, osPolicyId, bandwidthLimit);
+  }
+
+  private Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> portBandwidthRulesByDirection(
+      List<? extends NetQosPolicyBandwidthLimitRule> rules) {
+    Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> result =
+        new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
+    for (NetQosPolicyBandwidthLimitRule rule : rules) {
+      requireServerText(rule.getId(), "osBandwidthLimitRuleId");
+      var direction = Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress);
+      if (result.putIfAbsent(direction, rule) != null) {
+        throw new OpenStackOperationException("Duplicate instance bandwidth limit direction", null);
+      }
+    }
+    return result;
   }
 
   private enum InstanceNetworkStep { PARENT_PORT, SUB_PORT, TRUNK }
