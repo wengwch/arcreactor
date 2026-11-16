@@ -7,7 +7,10 @@ public record UserProjectState(String clusterId, String name, String osProjectId
   public enum Phase { CREATING, READY, FAILED }
 
   public static UserProjectState requested(String clusterId, String name) {
-    return new UserProjectState(clusterId, name, null, Phase.CREATING, 0, null);
+    return requested(clusterId, name, 0);
+  }
+  public static UserProjectState requested(String clusterId, String name, long generation) {
+    return new UserProjectState(clusterId, name, null, Phase.CREATING, generation, null);
   }
   public boolean terminal() { return phase == Phase.READY || phase == Phase.FAILED; }
   public UserProjectState retry() {

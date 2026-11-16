@@ -9,8 +9,12 @@ public record UserNetworkState(String clusterId, NetworkSpec spec, String osProj
   public enum Phase { CREATING, READY, FAILED }
 
   public static UserNetworkState requested(String clusterId, NetworkSpec spec, String osProjectId) {
+    return requested(clusterId, spec, osProjectId, 0);
+  }
+
+  public static UserNetworkState requested(String clusterId, NetworkSpec spec, String osProjectId, long generation) {
     return new UserNetworkState(clusterId, spec, osProjectId, null, null, null, null, null,
-        Phase.CREATING, 0, null);
+        Phase.CREATING, generation, null);
   }
 
   public String regionId() { return spec.regionId(); }

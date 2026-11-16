@@ -14,6 +14,9 @@ import cn.veryai.arcreactor.actor.user.event.ShareAccessCreated;
 import cn.veryai.arcreactor.actor.user.event.ShareBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ShareCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
+import cn.veryai.arcreactor.actor.user.event.UserNetworkDeleted;
+import cn.veryai.arcreactor.actor.user.event.UserProjectDeleted;
+import cn.veryai.arcreactor.actor.user.event.UserShareDeleted;
 import cn.veryai.arcreactor.actor.user.model.ShareKind;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.model.UserProjectState;
@@ -83,6 +86,13 @@ public final class UserProjectionHandler
       upsertNetwork(mapper, userId,
           UserNetworkState.requested(failed.clusterId(), failed.spec(), failed.osProjectId()).failed(failed.failure()),
           version, timestamp);
+    } else if (event instanceof UserNetworkDeleted deleted) {
+      mapper.deleteRouter(userId, deleted.regionId(), version);
+      mapper.deleteNetwork(userId, deleted.regionId(), version);
+    } else if (event instanceof UserShareDeleted deleted) {
+      mapper.deleteShare(userId, deleted.shareId(), version);
+    } else if (event instanceof UserProjectDeleted deleted) {
+      mapper.deleteProject(userId, deleted.clusterId(), version);
     }
   }
 

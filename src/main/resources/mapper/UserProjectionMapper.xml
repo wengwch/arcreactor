@@ -197,4 +197,32 @@
           resource_version = GREATEST(resource_version, VALUES(resource_version))
     </insert>
 
+    <delete id="deleteRouter">
+        DELETE FROM user_region_router
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND region_id = #{regionId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </delete>
+
+    <delete id="deleteNetwork">
+        DELETE FROM user_region_network
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND region_id = #{regionId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </delete>
+
+    <delete id="deleteShare">
+        DELETE FROM user_region_share
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND share_id = #{shareId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </delete>
+
+    <delete id="deleteProject">
+        DELETE FROM user_cluster_project
+        WHERE user_id = #{userId,jdbcType=VARCHAR}
+          AND cluster_id = #{clusterId,jdbcType=VARCHAR}
+          AND resource_version &lt; #{version,jdbcType=BIGINT}
+    </delete>
+
 </mapper>

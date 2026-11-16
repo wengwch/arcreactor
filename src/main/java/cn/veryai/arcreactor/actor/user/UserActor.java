@@ -8,6 +8,8 @@ import cn.veryai.arcreactor.actor.user.command.GetProject;
 import cn.veryai.arcreactor.actor.user.command.CreateNetwork;
 import cn.veryai.arcreactor.actor.user.command.GetNetwork;
 import cn.veryai.arcreactor.actor.user.command.UserCommand;
+import cn.veryai.arcreactor.actor.user.command.CleanUserResources;
+import cn.veryai.arcreactor.actor.user.command.GetUserCleanup;
 import cn.veryai.arcreactor.actor.user.event.ShareCreationRequested;
 import cn.veryai.arcreactor.actor.user.event.ShareCreated;
 import cn.veryai.arcreactor.actor.user.event.ShareExportBecameReady;
@@ -15,6 +17,14 @@ import cn.veryai.arcreactor.actor.user.event.ShareAccessCreated;
 import cn.veryai.arcreactor.actor.user.event.ShareBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ShareCreationFailed;
 import cn.veryai.arcreactor.actor.user.event.UserEvent;
+import cn.veryai.arcreactor.actor.user.event.UserCleanupStarted;
+import cn.veryai.arcreactor.actor.user.event.UserCleanupCompleted;
+import cn.veryai.arcreactor.actor.user.event.UserCleanupFailed;
+import cn.veryai.arcreactor.actor.user.event.UserNetworkDeleted;
+import cn.veryai.arcreactor.actor.user.event.UserNetworksCleaned;
+import cn.veryai.arcreactor.actor.user.event.UserShareDeleted;
+import cn.veryai.arcreactor.actor.user.event.UserSharesCleaned;
+import cn.veryai.arcreactor.actor.user.event.UserProjectDeleted;
 import cn.veryai.arcreactor.actor.user.event.ProjectCreationRequested;
 import cn.veryai.arcreactor.actor.user.event.ProjectBecameReady;
 import cn.veryai.arcreactor.actor.user.event.ProjectCreationFailed;
@@ -28,14 +38,17 @@ import cn.veryai.arcreactor.actor.user.model.UserShareNaming;
 import cn.veryai.arcreactor.actor.user.model.UserShareState;
 import cn.veryai.arcreactor.actor.user.model.UserShareState.Phase;
 import cn.veryai.arcreactor.actor.user.model.UserState;
+import cn.veryai.arcreactor.actor.user.model.UserCleanupState;
 import cn.veryai.arcreactor.actor.user.model.UserProjectState;
 import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
+import cn.veryai.arcreactor.actor.user.reply.UserCleanupReply;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -74,6 +87,9 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   private final TimerScheduler<UserCommand> timers;
   private final OpenStackClient client;
   private final UserShareSettings settings;
+  // Recovery starts with empty maps; repeated create commands share the current invocation.
+  private final Map<String, Long> projectCreationsInFlight = new HashMap<>();
+  private final Map<String, Long> networkCreationsInFlight = new HashMap<>();
 
   public record ShareCreateCompleted(String shareId, long generation, String osShareId)
       implements UserCommand {}
@@ -101,6 +117,16 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
       implements UserCommand {}
   public record NetworkFailed(String regionId, long generation, String failure)
       implements UserCommand {}
+  public record CleanupDeletionSubmitted(long generation, UserCleanupState.Phase phase, String resourceId)
+      implements UserCommand {}
+  public record CheckCleanupDeletion(long generation, UserCleanupState.Phase phase, String resourceId)
+      implements UserCommand {}
+  public record CleanupDeletionChecked(long generation, UserCleanupState.Phase phase, String resourceId, boolean deleted)
+      implements UserCommand {}
+  public record CleanupStageCompleted(long generation, UserCleanupState.Phase phase) implements UserCommand {}
+  public record CleanupDeletionFailed(long generation, UserCleanupState.Phase phase, String resourceId, String failure)
+      implements UserCommand {}
+  private enum CleanupTimerKey { POLL }
 
   public static Behavior<UserCommand> create(String userId, OpenStackClient client,
       UserShareSettings settings) {
@@ -122,12 +148,19 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   @Override
   public UserState emptyState() {
-    return new UserState(Map.of(), Map.of(), Map.of());
+    return new UserState(Map.of(), Map.of(), Map.of(), null);
   }
 
   @Override
   public CommandHandler<UserCommand, UserEvent, UserState> commandHandler() {
     return newCommandHandlerBuilder().forAnyState()
+        .onCommand(CleanUserResources.class, this::onCleanUserResources)
+        .onCommand(GetUserCleanup.class, this::onGetUserCleanup)
+        .onCommand(CleanupDeletionSubmitted.class, this::onCleanupDeletionSubmitted)
+        .onCommand(CheckCleanupDeletion.class, this::onCheckCleanupDeletion)
+        .onCommand(CleanupDeletionChecked.class, this::onCleanupDeletionChecked)
+        .onCommand(CleanupStageCompleted.class, this::onCleanupStageCompleted)
+        .onCommand(CleanupDeletionFailed.class, this::onCleanupDeletionFailed)
         .onCommand(CreateShare.class, this::onCreateShare)
         .onCommand(GetShare.class, this::onGetShare)
         .onCommand(GetSystemShare.class, this::onGetSystemShare)
@@ -148,7 +181,192 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .build();
   }
 
+  private Effect<UserEvent, UserState> onCleanUserResources(UserState state, CleanUserResources command) {
+    if (state.hasUnfinishedResources() || !projectCreationsInFlight.isEmpty() || !networkCreationsInFlight.isEmpty()) {
+      command.replyTo().tell(cleanupReply(state, UserCleanupReply.Status.REJECTED,
+          "Project, share and network creation must finish before cleanup"));
+      return Effect().none();
+    }
+    if (state.cleanup() != null && (state.cleanup().active()
+        || state.cleanup().phase() == UserCleanupState.Phase.COMPLETED
+            && state.networks().isEmpty() && state.shares().isEmpty() && state.projects().isEmpty())) {
+      command.replyTo().tell(cleanupReply(state, UserCleanupReply.Status.ACCEPTED, null));
+      return Effect().none();
+    }
+    return Effect().persist(new UserCleanupStarted(state.nextCleanupGeneration())).thenRun(next -> {
+      timers.cancel(CleanupTimerKey.POLL);
+      command.replyTo().tell(cleanupReply(next, UserCleanupReply.Status.ACCEPTED, null));
+      continueCleanup(next);
+    });
+  }
+
+  private Effect<UserEvent, UserState> onGetUserCleanup(UserState state, GetUserCleanup command) {
+    command.replyTo().tell(cleanupReply(state, state.cleanup() == null
+        ? UserCleanupReply.Status.NOT_STARTED : UserCleanupReply.Status.ACCEPTED, null));
+    return Effect().none();
+  }
+
+  private UserCleanupReply cleanupReply(UserState state, UserCleanupReply.Status status, String detail) {
+    return new UserCleanupReply(status, userId, state.cleanup(), cleanupResourceId(state),
+        state.networks().size(), state.shares().size(), state.projects().size(), detail);
+  }
+
+  private static String cleanupResourceId(UserState state) {
+    if (state.cleanup() == null) return null;
+    return switch (state.cleanup().phase()) {
+      case NETWORKS -> state.networks().keySet().stream().sorted().findFirst().orElse(null);
+      case SHARES -> state.shares().keySet().stream().sorted().findFirst().orElse(null);
+      case PROJECTS -> state.projects().keySet().stream().sorted().findFirst().orElse(null);
+      case FAILED -> state.cleanup().resourceId();
+      case COMPLETED -> null;
+    };
+  }
+
+  private static boolean matchesCleanup(UserState state, long generation, UserCleanupState.Phase phase,
+      String resourceId) {
+    return state.cleanup() != null && state.cleanup().active()
+        && state.cleanup().generation() == generation && state.cleanup().phase() == phase
+        && Objects.equals(cleanupResourceId(state), resourceId);
+  }
+
+  private void continueCleanup(UserState state) {
+    UserCleanupState cleanup = state.cleanup();
+    if (cleanup == null || !cleanup.active()) return;
+    String resourceId = cleanupResourceId(state);
+    if (resourceId == null) {
+      context.getSelf().tell(new CleanupStageCompleted(cleanup.generation(), cleanup.phase()));
+      return;
+    }
+    CompletionStage<Void> operation;
+    try {
+      operation = switch (cleanup.phase()) {
+        case NETWORKS -> client.deleteUserNetwork(state.networks().get(resourceId));
+        case SHARES -> client.deleteUserShare(userId, state.shares().get(resourceId));
+        case PROJECTS -> client.deleteUserProject(userId, state.projects().get(resourceId));
+        default -> throw new IllegalStateException("Cleanup is not active");
+      };
+    } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(operation, (ignored, error) -> error == null
+        ? new CleanupDeletionSubmitted(cleanup.generation(), cleanup.phase(), resourceId)
+        : cleanupFailure(cleanup, resourceId, error));
+  }
+
+  private Effect<UserEvent, UserState> onCleanupDeletionSubmitted(UserState state, CleanupDeletionSubmitted command) {
+    if (!matchesCleanup(state, command.generation(), command.phase(), command.resourceId())) return Effect().none();
+    scheduleCleanupCheck(state.cleanup(), command.resourceId());
+    return Effect().none();
+  }
+
+  private Effect<UserEvent, UserState> onCheckCleanupDeletion(UserState state, CheckCleanupDeletion command) {
+    if (!matchesCleanup(state, command.generation(), command.phase(), command.resourceId())) return Effect().none();
+    UserCleanupState cleanup = state.cleanup();
+    CompletionStage<Boolean> operation;
+    try {
+      operation = switch (cleanup.phase()) {
+        case NETWORKS -> client.isUserNetworkDeleted(state.networks().get(command.resourceId()));
+        case SHARES -> client.isUserShareDeleted(userId, state.shares().get(command.resourceId()));
+        case PROJECTS -> client.isUserProjectDeleted(userId, state.projects().get(command.resourceId()));
+        default -> throw new IllegalStateException("Cleanup is not active");
+      };
+    } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(operation, (deleted, error) -> {
+      if (error != null) return cleanupFailure(cleanup, command.resourceId(), error);
+      if (deleted == null) return cleanupFailure(cleanup, command.resourceId(),
+          new IllegalStateException("Deletion query returned no result"));
+      return new CleanupDeletionChecked(cleanup.generation(), cleanup.phase(), command.resourceId(), deleted);
+    });
+    return Effect().none();
+  }
+
+  /** Recovery first checks remote state; it does not re-enter normal deletion submission. */
+  private void recoverCleanup(UserState state) {
+    UserCleanupState cleanup = state.cleanup();
+    String resourceId = cleanupResourceId(state);
+    if (resourceId == null) {
+      context.getSelf().tell(new CleanupStageCompleted(cleanup.generation(), cleanup.phase()));
+      return;
+    }
+    CompletionStage<Boolean> operation;
+    try {
+      operation = switch (cleanup.phase()) {
+        case NETWORKS -> {
+          UserNetworkState network = state.networks().get(resourceId);
+          yield client.isUserNetworkDeleted(network).thenCompose(deleted -> deleted
+              ? CompletableFuture.completedFuture(true)
+              : client.deleteUserNetwork(network).thenApply(ignored -> false));
+        }
+        case SHARES -> {
+          UserShareState share = state.shares().get(resourceId);
+          yield client.isUserShareDeleted(userId, share).thenCompose(deleted -> deleted
+              ? CompletableFuture.completedFuture(true)
+              : client.deleteUserShare(userId, share).thenApply(ignored -> false));
+        }
+        case PROJECTS -> {
+          UserProjectState project = state.projects().get(resourceId);
+          yield client.isUserProjectDeleted(userId, project).thenCompose(deleted -> deleted
+              ? CompletableFuture.completedFuture(true)
+              : client.deleteUserProject(userId, project).thenApply(ignored -> false));
+        }
+        default -> throw new IllegalStateException("Cleanup is not active");
+      };
+    } catch (RuntimeException error) { operation = CompletableFuture.failedFuture(error); }
+    context.pipeToSelf(operation, (deleted, error) -> error == null
+        ? new CleanupDeletionChecked(cleanup.generation(), cleanup.phase(), resourceId, Boolean.TRUE.equals(deleted))
+        : cleanupFailure(cleanup, resourceId, error));
+  }
+
+  private Effect<UserEvent, UserState> onCleanupDeletionChecked(UserState state, CleanupDeletionChecked command) {
+    if (!matchesCleanup(state, command.generation(), command.phase(), command.resourceId())) return Effect().none();
+    if (!command.deleted()) {
+      scheduleCleanupCheck(state.cleanup(), command.resourceId());
+      return Effect().none();
+    }
+    UserEvent event = switch (command.phase()) {
+      case NETWORKS -> new UserNetworkDeleted(command.resourceId());
+      case SHARES -> new UserShareDeleted(command.resourceId());
+      case PROJECTS -> new UserProjectDeleted(command.resourceId());
+      default -> throw new IllegalStateException("Cleanup is not active");
+    };
+    return Effect().persist(event).thenRun(this::continueCleanup);
+  }
+
+  private Effect<UserEvent, UserState> onCleanupStageCompleted(UserState state, CleanupStageCompleted command) {
+    if (!matchesCleanup(state, command.generation(), command.phase(), null)) return Effect().none();
+    UserEvent event = switch (command.phase()) {
+      case NETWORKS -> new UserNetworksCleaned();
+      case SHARES -> new UserSharesCleaned();
+      case PROJECTS -> new UserCleanupCompleted();
+      default -> throw new IllegalStateException("Cleanup is not active");
+    };
+    return Effect().persist(event).thenRun(this::continueCleanup);
+  }
+
+  private Effect<UserEvent, UserState> onCleanupDeletionFailed(UserState state, CleanupDeletionFailed command) {
+    if (!matchesCleanup(state, command.generation(), command.phase(), command.resourceId())) return Effect().none();
+    return Effect().persist(new UserCleanupFailed(command.resourceId(), command.failure()))
+        .thenRun(next -> timers.cancel(CleanupTimerKey.POLL));
+  }
+
+  private void scheduleCleanupCheck(UserCleanupState cleanup, String resourceId) {
+    timers.startSingleTimer(CleanupTimerKey.POLL,
+        new CheckCleanupDeletion(cleanup.generation(), cleanup.phase(), resourceId), settings.pollInterval());
+  }
+
+  private static CleanupDeletionFailed cleanupFailure(UserCleanupState cleanup, String resourceId, Throwable error) {
+    Throwable cause = rootCause(error);
+    ResponseException response = responseCause(cause);
+    String detail = cause instanceof OpenStackOperationException && cause.getCause() == null
+        ? cause.getMessage() : "Cleanup failed: " + cause.getClass().getSimpleName()
+            + (response == null ? "" : " (HTTP " + response.getStatus() + ")");
+    return new CleanupDeletionFailed(cleanup.generation(), cleanup.phase(), resourceId, detail);
+  }
+
   private Effect<UserEvent, UserState> onCreateNetwork(UserState state, CreateNetwork command) {
+    if (state.cleanupBlocksCreation()) {
+      command.replyTo().tell(new NetworkReply(NetworkReply.Status.REJECTED, userId, command.spec().regionId(), null,
+          "User cleanup must complete before creating resources"));
+      return Effect().none();
+    }
     UserNetworkState existing = state.networks().get(command.spec().regionId());
     if (existing != null) {
       if (!existing.clusterId().equals(command.clusterId()) || !existing.spec().equals(command.spec())) {
@@ -192,18 +410,23 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onNetworkReady(UserState state, NetworkReady command) {
+    networkCreationsInFlight.remove(command.regionId(), command.generation());
+    if (state.cleanupBlocksCreation()) return Effect().none();
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
     return Effect().persist(new NetworkBecameReady(network.clusterId(), network.spec(), network.osProjectId(), command.resources()));
   }
 
   private Effect<UserEvent, UserState> onNetworkFailed(UserState state, NetworkFailed command) {
+    networkCreationsInFlight.remove(command.regionId(), command.generation());
+    if (state.cleanupBlocksCreation()) return Effect().none();
     UserNetworkState network = state.networks().get(command.regionId());
     if (network == null || network.terminal() || network.generation() != command.generation()) return Effect().none();
     return Effect().persist(new NetworkCreationFailed(network.clusterId(), network.spec(), network.osProjectId(), command.failure()));
   }
 
   private void executeNetwork(UserNetworkState network) {
+    if (networkCreationsInFlight.putIfAbsent(network.regionId(), network.generation()) != null) return;
     CompletionStage<NetworkResources> operation;
     try {
       String name = network.spec().name();
@@ -225,6 +448,11 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onCreateProject(UserState state, CreateProject command) {
+    if (state.cleanupBlocksCreation()) {
+      command.replyTo().tell(new ProjectReply(ProjectReply.Status.REJECTED, userId, command.clusterId(), null,
+          "User cleanup must complete before creating resources"));
+      return Effect().none();
+    }
     UserProjectState existing = state.projects().get(command.clusterId());
     if (existing != null) {
       if (!existing.name().equals(command.name())) {
@@ -257,18 +485,23 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onProjectReady(UserState state, ProjectReady command) {
+    projectCreationsInFlight.remove(command.clusterId(), command.generation());
+    if (state.cleanupBlocksCreation()) return Effect().none();
     UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
     return Effect().persist(new ProjectBecameReady(command.clusterId(), project.name(), command.osProjectId()));
   }
 
   private Effect<UserEvent, UserState> onProjectFailed(UserState state, ProjectFailed command) {
+    projectCreationsInFlight.remove(command.clusterId(), command.generation());
+    if (state.cleanupBlocksCreation()) return Effect().none();
     UserProjectState project = state.projects().get(command.clusterId());
     if (project == null || project.terminal() || project.generation() != command.generation()) return Effect().none();
     return Effect().persist(new ProjectCreationFailed(command.clusterId(), project.name(), command.failure()));
   }
 
   private void executeProject(UserProjectState project) {
+    if (projectCreationsInFlight.putIfAbsent(project.clusterId(), project.generation()) != null) return;
     CompletionStage<String> operation;
     try {
       operation = client.createProjectWithAdminRole(
@@ -291,6 +524,11 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   }
 
   private Effect<UserEvent, UserState> onCreateShare(UserState state, CreateShare command) {
+    if (state.cleanupBlocksCreation()) {
+      command.replyTo().tell(new ShareReply(ShareReply.Status.REJECTED, null,
+          "User cleanup must complete before creating resources"));
+      return Effect().none();
+    }
     UserShareState existing = command.shareId() != null ? state.shares().get(command.shareId())
         : command.spec().kind() == ShareKind.SYSTEM
         ? state.systemShare(command.spec().regionId()) : state.userShare(command.spec().regionId());
@@ -338,14 +576,14 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private Effect<UserEvent, UserState> onShareCreated(UserState state, ShareCreateCompleted command) {
     UserShareState share = state.shares().get(command.shareId());
-    if (!matchesShare(share, command.generation()) || share.hasShare()) return Effect().none();
+    if (!matchesShare(state, share, command.generation()) || share.hasShare()) return Effect().none();
     return Effect().persist(new ShareCreated(share.shareId(), share.spec(), command.osShareId()))
         .thenRun(next -> advanceShare(next.shares().get(command.shareId())));
   }
 
   private Effect<UserEvent, UserState> onShareExportChecked(UserState state, ShareExportChecked command) {
     UserShareState share = state.shares().get(command.shareId());
-    if (!matchesShare(share, command.generation())
+    if (!matchesShare(state, share, command.generation())
         || !share.hasShare() || share.hasExportLocation()) return Effect().none();
     if (!hasText(command.osExportLocationId()) || !hasText(command.exportPath())) {
       scheduleSharePoll(share, command.attempt() + 1);
@@ -358,7 +596,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private Effect<UserEvent, UserState> onShareAccessCreated(UserState state, ShareAccessCreateCompleted command) {
     UserShareState share = state.shares().get(command.shareId());
-    if (!matchesShare(share, command.generation())
+    if (!matchesShare(state, share, command.generation())
         || !share.hasExportLocation() || share.hasAccessRule()) return Effect().none();
     return Effect().persist(new ShareAccessCreated(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), command.osGrantAccessId()))
@@ -367,7 +605,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private Effect<UserEvent, UserState> onShareAccessChecked(UserState state, ShareAccessChecked command) {
     UserShareState share = state.shares().get(command.shareId());
-    if (!matchesShare(share, command.generation()) || !share.hasAccessRule()) return Effect().none();
+    if (!matchesShare(state, share, command.generation()) || !share.hasAccessRule()) return Effect().none();
     if (!hasText(command.accessKey())) {
       scheduleSharePoll(share, command.attempt() + 1);
       return Effect().none();
@@ -379,7 +617,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private Effect<UserEvent, UserState> onShareFailed(UserState state, ShareFailed command) {
     UserShareState share = state.shares().get(command.shareId());
-    if (!matchesShare(share, command.generation())) return Effect().none();
+    if (!matchesShare(state, share, command.generation())) return Effect().none();
     return Effect().persist(new ShareCreationFailed(share.shareId(), share.spec(), share.osShareId(),
         share.osExportLocationId(), share.exportLocationPath(), share.osGrantAccessId(), command.failure()))
         .thenRun(next -> stopSharePolling(command.shareId()));
@@ -387,7 +625,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
 
   private Effect<UserEvent, UserState> onPollShare(UserState state, PollShare command) {
     UserShareState share = state.shares().get(command.shareId());
-    if (!matchesShare(share, command.generation()) || !shareNeedsPolling(share)) return Effect().none();
+    if (!matchesShare(state, share, command.generation()) || !shareNeedsPolling(share)) return Effect().none();
     if (command.attempt() > MAX_SHARE_POLL_ATTEMPTS) {
       String step = share.hasExportLocation() ? "access rule" : "export location";
       return onShareFailed(state, new ShareFailed(share.shareId(), share.generation(),
@@ -508,8 +746,8 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
     return new ShareFailed(share.shareId(), share.generation(), detail);
   }
 
-  private static boolean matchesShare(UserShareState share, long generation) {
-    return share != null && share.phase() == Phase.CREATING && share.generation() == generation;
+  private static boolean matchesShare(UserState state, UserShareState share, long generation) {
+    return !state.cleanupBlocksCreation() && share != null && share.phase() == Phase.CREATING && share.generation() == generation;
   }
 
   private static boolean shareNeedsPolling(UserShareState share) {
@@ -536,6 +774,19 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   @Override
   public EventHandler<UserState, UserEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
+        .onEvent(UserCleanupStarted.class, (state, event) ->
+            state.withCleanup(UserCleanupState.started(event.generation())))
+        .onEvent(UserNetworkDeleted.class, (state, event) -> state.withoutNetwork(event.regionId()))
+        .onEvent(UserNetworksCleaned.class, (state, event) ->
+            state.withCleanup(state.cleanup().advance(UserCleanupState.Phase.SHARES)))
+        .onEvent(UserShareDeleted.class, (state, event) -> state.withoutShare(event.shareId()))
+        .onEvent(UserSharesCleaned.class, (state, event) ->
+            state.withCleanup(state.cleanup().advance(UserCleanupState.Phase.PROJECTS)))
+        .onEvent(UserProjectDeleted.class, (state, event) -> state.withoutProject(event.clusterId()))
+        .onEvent(UserCleanupCompleted.class, (state, event) ->
+            state.withCleanup(state.cleanup().advance(UserCleanupState.Phase.COMPLETED)))
+        .onEvent(UserCleanupFailed.class, (state, event) ->
+            state.withCleanup(state.cleanup().failed(event.resourceId(), event.failure())))
         .onEvent(ShareCreationRequested.class, (state, event) -> {
           UserShareState existing = state.shares().get(event.shareId());
           return state.updated(existing == null
@@ -556,7 +807,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .onEvent(ProjectCreationRequested.class, (state, event) -> {
           UserProjectState existing = state.projects().get(event.clusterId());
           return state.updated(existing == null
-              ? UserProjectState.requested(event.clusterId(), event.name())
+              ? UserProjectState.requested(event.clusterId(), event.name(), state.creationGeneration())
               : existing.retry());
         })
         .onEvent(ProjectBecameReady.class, (state, event) ->
@@ -566,7 +817,7 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
         .onEvent(NetworkCreationRequested.class, (state, event) -> {
           UserNetworkState existing = state.networks().get(event.spec().regionId());
           return state.updated(existing == null
-              ? UserNetworkState.requested(event.clusterId(), event.spec(), event.osProjectId())
+              ? UserNetworkState.requested(event.clusterId(), event.spec(), event.osProjectId(), state.creationGeneration())
               : existing.retry());
         })
         .onEvent(NetworkBecameReady.class, (state, event) ->
@@ -579,6 +830,10 @@ public final class UserActor extends EventSourcedBehavior<UserCommand, UserEvent
   @Override
   public SignalHandler<UserState> signalHandler() {
     return newSignalHandlerBuilder().onSignal(RecoveryCompleted.class, (state, signal) -> {
+      if (state.cleanupBlocksCreation()) {
+        if (state.cleanup().active()) recoverCleanup(state);
+        return;
+      }
       state.shares().values().stream().filter(share -> share.phase() == Phase.CREATING)
           .forEach(share -> context.getSelf().tell(new CreateShare(
               share.shareId(), share.spec(), context.getSystem().ignoreRef())));

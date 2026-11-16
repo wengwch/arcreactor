@@ -652,6 +652,45 @@ JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab
 创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动，`ACTIVE` 也不代表
 cloud-init 和实例内服务已完成启动，连接应在对应服务就绪后进行。
 
+## 用户资源清理
+
+清理针对一个 UserActor 管理的全部用户网络、`SYSTEM` / `USER` Share 和用户项目，按网络、Share、项目的顺序执行。
+它不删除实例或平台预置的 LOCAL 网络，也不代替实例及其附着资源的删除流程。
+
+| 接口 | 请求 | 成功响应 |
+| --- | --- | --- |
+| `POST /api/v1/users/{userId}/cleanup` | 无请求体 | 清理意图持久化后返回 HTTP `202` 和当前清理状态 |
+| `GET /api/v1/users/{userId}/cleanup` | 无请求体 | HTTP `200`，查询 Actor 中已持久化的清理阶段、当前资源、剩余资源数量和失败信息 |
+
+成功响应的 `result` 包含 `userId`、`phase`、`currentResourceId`、`remainingNetworks`、
+`remainingShares`、`remainingProjects` 和 `failureMessage`。
+尚未发起清理时返回 `IDLE`。任一项目、Share 或网络仍处于 `CREATING` 时，POST 拒绝受理，
+不记录清理意图；资源均为 `READY` 或 `FAILED` 时才允许开始。清理进行中及清理 `FAILED` 时，
+`CreateProject`、`CreateShare`、`CreateNetwork` 均被拒绝，直到清理完成后才恢复创建。
+拒绝沿用全局业务错误包装，以 HTTP `200` 返回业务 `code = 409`。
+
+```text
+IDLE → NETWORKS → SHARES → PROJECTS → COMPLETED
+                 任一步失败 → FAILED
+FAILED ──外部 POST 重试──→ 继续清理剩余资源
+```
+
+受理时持久化 `UserCleanupStarted`。每个资源确认在 OpenStack 中不存在后，分别持久化
+`UserNetworkDeleted(regionId)`、`UserShareDeleted(shareId)` 或 `UserProjectDeleted(clusterId)`，
+从 Actor 状态移除对应资源，再继续下一个。网络阶段全部完成后记录 `UserNetworksCleaned`，
+Share 阶段全部完成后记录 `UserSharesCleaned`，项目全部完成后记录 `UserCleanupCompleted`。
+网络清理包含该用户网络对应的路由和接口；Share 清理逐个处理系统 Share 和所有用户 Share。
+
+清理过程中重复 POST 返回当前进度，不同时启动另一轮。调用失败记录 `UserCleanupFailed`，
+保留失败资源和剩余资源；已确认删除的资源不恢复，也不执行自动补偿。
+`FAILED` 不自动重试，外部再次 POST 才继续清理剩余资源。
+若远端资源仍被实例或其他资源占用，OpenStack 的 in-use 错误会使清理失败；解除占用后再重试。
+
+应用重启后按已持久化阶段进入独立恢复流程，先查询资源，再决定等待、继续删除或确认不存在，
+不重新执行已确认完成的阶段；`FAILED` 仍等待外部重试。
+清理不设置业务截止时间，HTTP 仅等待 Actor 受理，不等待整个清理完成。
+ask 和底层 HTTP 的通信超时不代表清理已撤销，调用方应通过 GET 确认当前进度。
+
 ## 用户资源读模型
 
 `UserProjection` 同时处理项目、Share 和网络事件。用户从事件持久化 ID `User|<userId>`
@@ -687,8 +726,21 @@ router 由用户网络流程创建，没有单独的路由事件。每个网络�
 router 表中的 `phase` 表示整个用户网络流程，不表示 Neutron 路由运行状态。
 网络表的网关和 DNS 来自请求规格；若网关由 Neutron 自动分配，投影中的 `gateway` 保持为空。
 
+清理确认事件物理删除相应的读模型记录：
+
+| 事件 | 删除范围 |
+| --- | --- |
+| `UserNetworkDeleted` | 按 `(user_id, region_id)` 删除 `user_region_router` 和 `user_region_network` |
+| `UserShareDeleted` | 按 `(user_id, share_id)` 删除 `user_region_share` |
+| `UserProjectDeleted` | 按 `(user_id, cluster_id)` 删除 `user_cluster_project` |
+
+每条 DELETE 均要求 `resource_version` 小于删除事件的日志序号，避免旧删除事件移除更新的记录。
+同一 User 的日志按序消费；网络、路由的删除与投影 offset 在同一 JDBC 事务提交，
+Share、项目同样沿用当前 exactly-once 投影事务。
+清理阶段保存在 Actor 中，API 直接查询 Actor；资源投影会在消费到删除事件后移除对应记录。
+
 项目和三个区域资源表均使用事件日志序号 `resource_version` 防止旧事件或重复事件覆盖最新状态。
-Project、网络和 Share 的各类事件都通过 upsert 写入完整资源状态；即使就绪或失败事件先于创建事件
+Project、网络和 Share 的创建、就绪、失败事件通过 upsert 写入资源状态；即使就绪或失败事件先于创建事件
 到达，也能插入完整记录，后到的创建事件不会清空资源 ID 或回退状态。
 `created_at` 取已投影事件的最早时间，`updated_at` 取最新版本事件时间；它们不是远端资源的
 创建和更新时间。`share_id` 是用户范围内的逻辑 Share ID，`os_share_id` 才是 Manila ID，

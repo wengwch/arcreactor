@@ -39,4 +39,24 @@ public interface UserProjectionMapper {
       @Param("network") UserNetworkState network,
       @Param("version") long version,
       @Param("updatedAt") Timestamp updatedAt);
+
+  int deleteRouter(
+      @Param("userId") String userId,
+      @Param("regionId") String regionId,
+      @Param("version") long version);
+
+  int deleteNetwork(
+      @Param("userId") String userId,
+      @Param("regionId") String regionId,
+      @Param("version") long version);
+
+  int deleteShare(
+      @Param("userId") String userId,
+      @Param("shareId") String shareId,
+      @Param("version") long version);
+
+  int deleteProject(
+      @Param("userId") String userId,
+      @Param("clusterId") String clusterId,
+      @Param("version") long version);
 }

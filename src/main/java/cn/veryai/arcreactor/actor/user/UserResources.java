@@ -2,9 +2,11 @@ package cn.veryai.arcreactor.actor.user;
 
 import cn.veryai.arcreactor.actor.user.command.CreateProject;
 import cn.veryai.arcreactor.actor.user.command.CreateShare;
+import cn.veryai.arcreactor.actor.user.command.CleanUserResources;
 import cn.veryai.arcreactor.actor.user.command.GetProject;
 import cn.veryai.arcreactor.actor.user.command.GetShare;
 import cn.veryai.arcreactor.actor.user.command.GetSystemShare;
+import cn.veryai.arcreactor.actor.user.command.GetUserCleanup;
 import cn.veryai.arcreactor.actor.user.command.CreateNetwork;
 import cn.veryai.arcreactor.actor.user.command.GetNetwork;
 import cn.veryai.arcreactor.actor.user.command.UserCommand;
@@ -14,6 +16,7 @@ import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
 import cn.veryai.arcreactor.actor.user.reply.ProjectReply;
 import cn.veryai.arcreactor.actor.user.reply.ShareReply;
 import cn.veryai.arcreactor.actor.user.reply.NetworkReply;
+import cn.veryai.arcreactor.actor.user.reply.UserCleanupReply;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import com.typesafe.config.Config;
 import java.time.Duration;
@@ -113,6 +116,23 @@ public final class UserResources {
     return AskPattern.<UserCommand, NetworkReply>ask(
         entityRef(userId),
         replyTo -> new GetNetwork(regionId, replyTo),
+        askTimeout,
+        system.scheduler());
+  }
+
+  /** Starts or resumes cleanup and returns after the request is accepted. */
+  public CompletionStage<UserCleanupReply> cleanup(String userId) {
+    return AskPattern.<UserCommand, UserCleanupReply>ask(
+        entityRef(userId),
+        CleanUserResources::new,
+        askTimeout,
+        system.scheduler());
+  }
+
+  public CompletionStage<UserCleanupReply> getCleanup(String userId) {
+    return AskPattern.<UserCommand, UserCleanupReply>ask(
+        entityRef(userId),
+        GetUserCleanup::new,
         askTimeout,
         system.scheduler());
   }

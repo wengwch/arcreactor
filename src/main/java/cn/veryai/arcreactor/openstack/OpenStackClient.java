@@ -10,6 +10,10 @@ import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedPortQos;
 import cn.veryai.arcreactor.actor.user.model.NetworkResources;
 import cn.veryai.arcreactor.actor.user.model.NetworkSpec;
+import cn.veryai.arcreactor.actor.user.model.UserNetworkState;
+import cn.veryai.arcreactor.actor.user.model.UserProjectState;
+import cn.veryai.arcreactor.actor.user.model.UserShareNaming;
+import cn.veryai.arcreactor.actor.user.model.UserShareState;
 import cn.veryai.arcreactor.entity.OpenstackClusterEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.entity.SysNetworkEntity;
@@ -63,6 +67,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.function.Supplier;
 
 @Slf4j
 @Service
@@ -260,6 +265,126 @@ public class OpenStackClient {
 
   private static String projectOperationMarker(String operationId) {
     return "veryai:" + operationId;
+  }
+
+  /** Deletes only the recorded user project, after checking for remaining regional resources. */
+  public CompletionStage<Void> deleteUserProject(String userId, UserProjectState state) {
+    return CompletableFuture.runAsync(() -> {
+      OpenstackClusterEntity cluster = cleanupCluster(state.clusterId());
+      OSClient.OSClientV3 client = getOsClusterAdminClient(cluster, cluster.getOsAdminDefaultProjectId());
+      Project project = findCleanupProject(client, cluster, userId, state);
+      if (project == null) return;
+      requireEmptyUserProject(cluster, project.getId());
+      deleteCleanupResource(() -> client.identity().projects().delete(project.getId()), "user project");
+      adminTokenCache.invalidate(new AdminClientKey(cluster.getId(), project.getId()));
+    }, PROJECT_EXECUTOR);
+  }
+
+  public CompletionStage<Boolean> isUserProjectDeleted(String userId, UserProjectState state) {
+    return CompletableFuture.supplyAsync(() -> {
+      OpenstackClusterEntity cluster = cleanupCluster(state.clusterId());
+      OSClient.OSClientV3 client = getOsClusterAdminClient(cluster, cluster.getOsAdminDefaultProjectId());
+      return findCleanupProject(client, cluster, userId, state) == null;
+    }, PROJECT_EXECUTOR);
+  }
+
+  private Project findCleanupProject(OSClient.OSClientV3 client, OpenstackClusterEntity cluster,
+      String userId, UserProjectState state) {
+    requireServerText(userId, "userId");
+    requireServerText(state.name(), "projectName");
+    requireServerText(cluster.getOsAdminDefaultDomainId(), "osDomainId");
+    var projects = client.identity().projects();
+    Project project = state.osProjectId() != null
+        ? cleanupLookup(() -> projects.get(state.osProjectId()))
+        : uniqueResource(projects.getByName(state.name()).stream()
+            .filter(item -> state.name().equals(item.getName())
+                && cluster.getOsAdminDefaultDomainId().equals(item.getDomainId())).toList(), "user project");
+    if (project == null) return null;
+    requireServerText(project.getId(), "osProjectId");
+    if (cluster.getOsAdminDefaultProjectId().equals(project.getId())
+        || !cluster.getOsAdminDefaultDomainId().equals(project.getDomainId())
+        || !state.name().equals(project.getName())
+        || !projectOperationMarker(userId).equals(project.getDescription())) {
+      throw new OpenStackOperationException("User project identity does not match its creation intent", null);
+    }
+    return project;
+  }
+
+  private void requireEmptyUserProject(OpenstackClusterEntity cluster, String osProjectId) {
+    List<RegionEntity> regions = regionRepo.findByClusterId(cluster.getId());
+    if (regions == null || regions.isEmpty()) {
+      throw new OpenStackOperationException("No configured regions are available to verify project cleanup", null);
+    }
+    for (RegionEntity region : regions) {
+      OSClient.OSClientV3 client = getOsClusterAdminClient(cluster, cluster.getOsAdminDefaultProjectId())
+          .useRegion(region.getId());
+      Map<String, String> filters = new HashMap<>(Map.of(
+          "all_tenants", "true", "project_id", osProjectId, "limit", "1000"));
+      Set<String> markers = new HashSet<>();
+      while (true) {
+        List<? extends Server> servers = client.compute().servers().list(filters);
+        if (servers == null) throw new IllegalStateException("Nova returned no server list");
+        if (servers.stream().anyMatch(server -> osProjectId.equals(server.getTenantId()))) {
+          throw new OpenStackOperationException("User project still contains instances", null);
+        }
+        if (servers.isEmpty()) break;
+        String marker = servers.getLast().getId();
+        if (marker == null || !markers.add(marker)) throw new IllegalStateException("Nova pagination did not advance");
+        filters.put("marker", marker);
+      }
+      Map<String, String> projectFilter = Map.of("project_id", osProjectId);
+      if (client.networking().network().list(projectFilter).stream().anyMatch(item -> osProjectId.equals(item.getTenantId()))
+          || client.networking().subnet().list(projectFilter).stream().anyMatch(item -> osProjectId.equals(item.getTenantId()))
+          || client.networking().router().list(projectFilter).stream().anyMatch(item -> osProjectId.equals(item.getTenantId()))
+          || client.networking().port().list(PortListOptions.create().tenantId(osProjectId)).stream()
+              .anyMatch(item -> osProjectId.equals(item.getTenantId()))
+          || client.networking().floatingip().list(projectFilter).stream()
+              .anyMatch(item -> osProjectId.equals(item.getTenantId()))) {
+        throw new OpenStackOperationException("User project still contains network resources", null);
+      }
+      if (client.perspective(Facing.INTERNAL).share().shares()
+          .listDetails(Map.of("project_id", osProjectId, "all_tenants", "true")).stream()
+          .anyMatch(item -> osProjectId.equals(item.getProjectId()))) {
+        throw new OpenStackOperationException("User project still contains shares", null);
+      }
+    }
+  }
+
+  private OpenstackClusterEntity cleanupCluster(String clusterId) {
+    OpenstackClusterEntity cluster = clusterRepo.findById(clusterId);
+    if (cluster == null) throw new OpenStackOperationException("Cleanup cluster is not configured", null);
+    requireServerText(cluster.getOsAdminDefaultProjectId(), "osAdminDefaultProjectId");
+    return cluster;
+  }
+
+  private OSClient.OSClientV3 userCleanupClient(String regionId, String expectedClusterId) {
+    RegionEntity region = regionRepo.findById(regionId);
+    if (region == null || (expectedClusterId != null && !expectedClusterId.equals(region.getClusterId()))) {
+      throw new OpenStackOperationException("Cleanup region does not match the recorded cluster", null);
+    }
+    OpenstackClusterEntity cluster = cleanupCluster(region.getClusterId());
+    // Cleanup remains possible after a user project disappears; every resource is checked explicitly.
+    return getOsClusterAdminClient(cluster, cluster.getOsAdminDefaultProjectId()).useRegion(regionId);
+  }
+
+  private static <T> T cleanupLookup(Supplier<T> lookup) {
+    try {
+      return lookup.get();
+    } catch (ResponseException error) {
+      if (error.getStatus() == 404) return null;
+      throw error;
+    }
+  }
+
+  private static void deleteCleanupResource(Supplier<ActionResponse> deletion, String resource) {
+    try {
+      ActionResponse response = deletion.get();
+      if (response == null || (!response.isSuccess() && response.getCode() != 404)) {
+        throw new OpenStackOperationException("Deletion was not confirmed for " + resource, null);
+      }
+    } catch (ResponseException error) {
+      if (error.getStatus() != 404) throw error;
+    }
   }
 
   public void updateProject(String region, String osProjectId, String name) {
@@ -766,6 +891,139 @@ public class OpenStackClient {
       throw new OpenStackOperationException("User router interface has mismatched ownership or network", null);
     }
     return port;
+  }
+
+  /** Removes only this workflow's router interface, router, subnet and private network. */
+  public CompletionStage<Void> deleteUserNetwork(UserNetworkState state) {
+    return CompletableFuture.runAsync(() -> {
+      OSClient.OSClientV3 client = userCleanupClient(state.regionId(), state.clusterId());
+      UserNetworkCleanup resources = findCleanupNetwork(client, state);
+      requireUnusedUserNetwork(client, state.osProjectId(), resources);
+      if (resources.routerPort() != null) {
+        RouterInterface detached = cleanupLookup(() -> client.networking().router().detachInterface(
+            resources.router().getId(), null, resources.routerPort().getId()));
+        if (detached == null && cleanupLookup(() -> client.networking().port().get(resources.routerPort().getId())) != null) {
+          throw new OpenStackOperationException("User router interface removal was not confirmed", null);
+        }
+      }
+      if (resources.router() != null) {
+        deleteCleanupResource(() -> client.networking().router().delete(resources.router().getId()), "user router");
+      }
+      if (resources.subnet() != null) {
+        deleteCleanupResource(() -> client.networking().subnet().delete(resources.subnet().getId()), "user subnet");
+      }
+      if (resources.network() != null) {
+        deleteCleanupResource(() -> client.networking().network().delete(resources.network().getId()), "user network");
+      }
+    }, NETWORK_EXECUTOR);
+  }
+
+  public CompletionStage<Boolean> isUserNetworkDeleted(UserNetworkState state) {
+    return CompletableFuture.supplyAsync(() -> {
+      UserNetworkCleanup resources = findCleanupNetwork(userCleanupClient(state.regionId(), state.clusterId()), state);
+      return resources.network() == null && resources.subnet() == null
+          && resources.router() == null && resources.routerPort() == null;
+    }, NETWORK_EXECUTOR);
+  }
+
+  private record UserNetworkCleanup(Network network, Subnet subnet, Router router, Port routerPort) {}
+
+  private UserNetworkCleanup findCleanupNetwork(OSClient.OSClientV3 client, UserNetworkState state) {
+    String projectId = state.osProjectId();
+    String name = state.spec().name();
+    requireServerText(projectId, "osProjectId");
+    Network network = state.osNetworkId() != null
+        ? cleanupLookup(() -> client.networking().network().get(state.osNetworkId()))
+        : uniqueResource(client.networking().network().list(Map.of("project_id", projectId, "name", name)).stream()
+            .filter(item -> projectId.equals(item.getTenantId()) && name.equals(item.getName())).toList(), "user network");
+    Subnet subnet = state.osSubnetId() != null
+        ? cleanupLookup(() -> client.networking().subnet().get(state.osSubnetId()))
+        : uniqueResource(client.networking().subnet().list(Map.of("project_id", projectId, "name", name + "-subnet")).stream()
+            .filter(item -> projectId.equals(item.getTenantId()) && (name + "-subnet").equals(item.getName())).toList(), "user subnet");
+    Router router = state.osRouterId() != null
+        ? cleanupLookup(() -> client.networking().router().get(state.osRouterId()))
+        : uniqueResource(client.networking().router().list(Map.of("project_id", projectId, "name", name + "-router")).stream()
+            .filter(item -> projectId.equals(item.getTenantId()) && (name + "-router").equals(item.getName())).toList(), "user router");
+    if (network != null) {
+      requireProjectOwnership(projectId, network.getTenantId(), "user network");
+      networkResourceId(network.getId());
+      if (!name.equals(network.getName()) || network.isShared() || network.isRouterExternal()
+          || network.getId().equals(state.osLocalNetworkId())
+          || sysNetworkRepo.findByRegionId(state.regionId()).stream()
+              .anyMatch(item -> network.getId().equals(item.getOsNetId()))) {
+        throw new OpenStackOperationException("User network identity or visibility does not match its creation intent", null);
+      }
+    }
+    if (subnet != null) {
+      requireProjectOwnership(projectId, subnet.getTenantId(), "user subnet");
+      networkResourceId(subnet.getId());
+      String networkId = network == null ? state.osNetworkId() : network.getId();
+      if (!(name + "-subnet").equals(subnet.getName()) || !Objects.equals(networkId, subnet.getNetworkId())) {
+        throw new OpenStackOperationException("User subnet does not belong to the recorded network", null);
+      }
+    }
+    if (router != null) {
+      requireProjectOwnership(projectId, router.getTenantId(), "user router");
+      networkResourceId(router.getId());
+      if (!(name + "-router").equals(router.getName())) {
+        throw new OpenStackOperationException("User router identity does not match its creation intent", null);
+      }
+    }
+    Port routerPort = state.osRouterPortId() != null
+        ? cleanupLookup(() -> client.networking().port().get(state.osRouterPortId()))
+        : router == null || subnet == null ? null
+        : uniqueResource(client.networking().port().list(
+            PortListOptions.create().tenantId(projectId).deviceId(router.getId())).stream()
+            .filter(port -> projectId.equals(port.getTenantId()) && router.getId().equals(port.getDeviceId())
+                && port.getFixedIps() != null && port.getFixedIps().stream()
+                .anyMatch(ip -> subnet.getId().equals(ip.getSubnetId()))).toList(), "user router interface");
+    if (routerPort != null) {
+      requireProjectOwnership(projectId, routerPort.getTenantId(), "user router interface");
+      networkResourceId(routerPort.getId());
+      if (router == null || subnet == null || network == null
+          || !router.getId().equals(routerPort.getDeviceId()) || !network.getId().equals(routerPort.getNetworkId())
+          || !Set.of("network:router_interface", "network:router_interface_distributed",
+              "network:ha_router_replicated_interface").contains(Objects.toString(routerPort.getDeviceOwner(), ""))
+          || routerPort.getFixedIps() == null || routerPort.getFixedIps().isEmpty()
+          || routerPort.getFixedIps().stream().anyMatch(ip -> !subnet.getId().equals(ip.getSubnetId()))) {
+        throw new OpenStackOperationException("User router interface does not match the recorded network", null);
+      }
+    }
+    return new UserNetworkCleanup(network, subnet, router, routerPort);
+  }
+
+  private void requireUnusedUserNetwork(OSClient.OSClientV3 client, String projectId, UserNetworkCleanup resources) {
+    String routerPortId = resources.routerPort() == null ? null : resources.routerPort().getId();
+    if (resources.network() != null) {
+      String subnetId = resources.subnet() == null ? null : resources.subnet().getId();
+      if (resources.network().getSubnets() != null && resources.network().getSubnets().stream()
+          .anyMatch(id -> !id.equals(subnetId))) {
+        throw new OpenStackOperationException("User network still contains other subnets", null);
+      }
+      for (Port port : client.networking().port().list(
+          PortListOptions.create().tenantId(projectId).networkId(resources.network().getId()))) {
+        if (!resources.network().getId().equals(port.getNetworkId())) continue;
+        requireProjectOwnership(projectId, port.getTenantId(), "user network port");
+        if (!Objects.equals(routerPortId, port.getId()) && !"network:dhcp".equals(port.getDeviceOwner())) {
+          throw new OpenStackOperationException("User network still contains other ports", null);
+        }
+      }
+    }
+    if (resources.router() != null) {
+      for (Port port : client.networking().port().list(
+          PortListOptions.create().tenantId(projectId).deviceId(resources.router().getId()))) {
+        if (!resources.router().getId().equals(port.getDeviceId())) continue;
+        requireProjectOwnership(projectId, port.getTenantId(), "user router port");
+        if (!Objects.equals(routerPortId, port.getId()) && !"network:router_gateway".equals(port.getDeviceOwner())) {
+          throw new OpenStackOperationException("User router still contains other interfaces", null);
+        }
+      }
+      if (client.networking().floatingip().list(
+          Map.of("project_id", projectId, "router_id", resources.router().getId())).stream()
+          .anyMatch(ip -> projectId.equals(ip.getTenantId()) && resources.router().getId().equals(ip.getRouterId()))) {
+        throw new OpenStackOperationException("User router still contains floating IP associations", null);
+      }
+    }
   }
 
   private static Set<String> userNetworkDns(String dns) {
@@ -2133,6 +2391,68 @@ public class OpenStackClient {
         throw new OpenStackOperationException("get share access failed", e);
       }
     }, SHARE_EXECUTOR);
+  }
+
+  /** Submits a normal Manila deletion; completion is observed separately. */
+  public CompletionStage<Void> deleteUserShare(String userId, UserShareState state) {
+    return CompletableFuture.runAsync(() -> {
+      SharesService shares = userCleanupClient(state.regionId(), null).perspective(Facing.INTERNAL).share().shares();
+      Share share = findCleanupShare(shares, userId, state);
+      if (share == null || share.getStatus() == Share.Status.DELETING) return;
+      deleteCleanupResource(() -> shares.delete(share.getId()), "user share");
+    }, SHARE_EXECUTOR);
+  }
+
+  public CompletionStage<Boolean> isUserShareDeleted(String userId, UserShareState state) {
+    return CompletableFuture.supplyAsync(() -> {
+      SharesService shares = userCleanupClient(state.regionId(), null).perspective(Facing.INTERNAL).share().shares();
+      Share share = findCleanupShare(shares, userId, state);
+      if (share != null && share.getStatus() == Share.Status.ERROR_DELETING) {
+        throw new OpenStackOperationException("Manila reported a share deletion failure", null);
+      }
+      return share == null;
+    }, SHARE_EXECUTOR);
+  }
+
+  private Share findCleanupShare(SharesService shares, String userId, UserShareState state) {
+    requireServerText(userId, "userId");
+    requireServerText(state.shareId(), "shareId");
+    String projectId = state.spec().osProjectId();
+    requireServerText(projectId, "osProjectId");
+    String description = UserShareNaming.description(userId, state.spec().kind(), state.shareId());
+    Share share = state.osShareId() != null
+        ? cleanupLookup(() -> shares.get(state.osShareId()))
+        : findCleanupShareByDescription(shares, projectId, description);
+    if (share != null) {
+      requireServerText(share.getId(), "osShareId");
+      requireProjectOwnership(projectId, share.getProjectId(), "user share");
+      // Creation may reuse a share by project and description even when its remote name differs.
+      if ((state.osShareId() != null && !state.osShareId().equals(share.getId()))
+          || !description.equals(share.getDescription())) {
+        throw new OpenStackOperationException("User share identity does not match its creation intent", null);
+      }
+    }
+    return share;
+  }
+
+  private Share findCleanupShareByDescription(SharesService shares, String projectId, String description) {
+    Map<String, String> filters = new HashMap<>(Map.of(
+        "project_id", projectId, "all_tenants", "true", "limit", "1000"));
+    Share found = null;
+    Set<String> markers = new HashSet<>();
+    while (true) {
+      List<? extends Share> page = shares.listDetails(filters);
+      if (page == null) throw new IllegalStateException("Manila returned no share list");
+      for (Share share : page) {
+        if (!projectId.equals(share.getProjectId()) || !description.equals(share.getDescription())) continue;
+        if (found != null) throw new OpenStackOperationException("Multiple matching user share resources", null);
+        found = share;
+      }
+      if (page.isEmpty()) return found;
+      String marker = page.getLast().getId();
+      if (marker == null || !markers.add(marker)) throw new IllegalStateException("Manila pagination did not advance");
+      filters.put("marker", marker);
+    }
   }
 
   private OSClient.OSClientV3 getOsShareClient(String region, String osProjectId) {
