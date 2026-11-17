@@ -16,7 +16,7 @@ import cn.veryai.arcreactor.actor.instance.model.UserForwarding;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
-import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
+
 import java.io.IOException;
 import java.io.Serializable;
 import java.time.Clock;
@@ -139,7 +139,7 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<Outcome> recoverSecurityGroup(InstanceWorkflowState state) {
-    List<Integer> ports = state.spec().forwarding() == null ? List.of() : state.spec().forwarding().internalPorts();
+    List<Integer> ports = state.spec().forwarding().internalPorts();
     return client.recoverInstanceSecurityGroup(target(state), state.instanceId(), ports).thenApply(groupId -> {
       if (!hasText(groupId)) return failed(state, "SECURITY_GROUP_PREPARATION_FAILED", "Missing instance security group ID");
       return proceed(new SecurityGroupPrepared(state.instanceId(), groupId),
@@ -174,8 +174,7 @@ public final class InstanceRecovery {
           if (resources == null) return failed(state, "NETWORK_RECOVERY_INCOMPLETE",
               "Trunk recovery returned no resource state");
           return proceed(new TrunkPrepared(state.instanceId(), resources),
-              state.spec().forwarding() == null ? novaStarted(state)
-                  : new ForwardingPreparationStarted(state.instanceId()));
+              new ForwardingPreparationStarted(state.instanceId()));
         });
   }
 

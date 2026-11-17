@@ -1,4 +1,4 @@
-package cn.veryai.arcreactor.service;
+package cn.veryai.arcreactor.actor.instance;
 
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;

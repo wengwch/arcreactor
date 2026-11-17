@@ -7,6 +7,7 @@ import cn.veryai.arcreactor.actor.fip.command.FloatingIpCommand;
 import cn.veryai.arcreactor.actor.fip.projection.FloatingIpProjection;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorActor;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
+import cn.veryai.arcreactor.actor.hypervisor.HypervisorSettings;
 import cn.veryai.arcreactor.actor.hypervisor.command.HypervisorCommand;
 import cn.veryai.arcreactor.actor.hypervisor.projection.HypervisorProjection;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
@@ -19,7 +20,7 @@ import cn.veryai.arcreactor.actor.user.UserShareSettings;
 import cn.veryai.arcreactor.actor.user.command.UserCommand;
 import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
-import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
+import cn.veryai.arcreactor.actor.instance.InstanceDependencyPreparer;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
@@ -64,6 +65,8 @@ public final class PekkoRuntime {
       InstanceDependencyPreparer dependencyPreparer,
       HypervisorPlacement hypervisorPlacement) {
     try {
+      HypervisorSettings hypervisorSettings = new HypervisorSettings(
+          config.getReservationOutcomeRetention(), config.getReservationOutcomeCleanupInterval());
       InstanceWorkflowSettings instanceSettings =
           new InstanceWorkflowSettings(
               Duration.ofMillis(config.getInstancePollInitialDelay().toMillis()),
@@ -74,7 +77,8 @@ public final class PekkoRuntime {
           config.getFloatingIpOutcomeRetention(), config.getFloatingIpOutcomeCleanupInterval());
       sharding.init(
           Entity.of(
-              HypervisorActor.TYPE_KEY, context -> HypervisorActor.create(context.getEntityId())));
+              HypervisorActor.TYPE_KEY,
+              context -> HypervisorActor.create(context.getEntityId(), hypervisorSettings)));
       sharding.init(
           Entity.of(
               UserActor.TYPE_KEY,
@@ -158,6 +162,14 @@ public final class PekkoRuntime {
 
     public int getSchedulerMaxClaimAttempts() {
       return source.getInt("cloud.scheduler.max-claim-attempts");
+    }
+
+    public Duration getReservationOutcomeRetention() {
+      return source.getDuration("cloud.reservation.outcome-retention");
+    }
+
+    public Duration getReservationOutcomeCleanupInterval() {
+      return source.getDuration("cloud.reservation.outcome-cleanup-interval");
     }
 
     public Duration getInstancePollInitialDelay() {

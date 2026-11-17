@@ -77,7 +77,7 @@ public record InstanceWorkflowState(
     /** Includes failed user creations whose FIP claim may already own resources. */
     public List<PreparedForwarding> forwardingsForDeletion() {
         List<PreparedForwarding> result = new ArrayList<>(preparedForwardings);
-        if (forwardingPreparationStarted && spec.forwarding() != null
+        if (forwardingPreparationStarted
                 && preparedForwardings.size() < spec.forwarding().internalPorts().size()) {
             result.add(new PreparedForwarding(
                     InstanceOperationIds.forwardingClaimId(this),

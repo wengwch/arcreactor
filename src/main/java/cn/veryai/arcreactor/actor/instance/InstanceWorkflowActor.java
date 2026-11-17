@@ -106,7 +106,6 @@ import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
-import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
 import cn.veryai.arcreactor.util.SSHValidator;
 import java.time.Clock;
 import java.time.Duration;
@@ -330,7 +329,11 @@ public final class InstanceWorkflowActor
                       "instance already belongs to another request or specification"));
       return Effect().none();
     }
-    if (command.spec().forwarding() == null || !command.spec().forwarding().internalPorts().contains(22)) {
+    if (command.spec().forwarding() == null) {
+      command.replyTo().tell(InstanceReply.rejected("Port forwarding requirements are required"));
+      return Effect().none();
+    }
+    if (!command.spec().forwarding().internalPorts().contains(22)) {
       command.replyTo().tell(InstanceReply.rejected("SSH connectivity checking requires forwarding internal port 22"));
       return Effect().none();
     }
@@ -635,7 +638,7 @@ public final class InstanceWorkflowActor
   private void startSecurityGroupPreparation(InstanceWorkflowState state) {
     String token = UUID.randomUUID().toString();
     securityGroupRequestToken = token;
-    List<Integer> ports = state.spec().forwarding() == null ? List.of() : state.spec().forwarding().internalPorts();
+    List<Integer> ports = state.spec().forwarding().internalPorts();
     CompletionStage<String> request;
     try {
       request = openStackClient.prepareInstanceSecurityGroup(target(state), instanceId,
@@ -663,17 +666,6 @@ public final class InstanceWorkflowActor
     return Effect().persist(List.of(new SecurityGroupPrepared(instanceId, command.osSecurityGroupId()),
             new ParentPortPreparationStarted(instanceId)))
         .thenRun(next -> requestParentPort(next));
-  }
-
-  private InstanceWorkflowEvent afterNetworkStage(InstanceWorkflowState state, Instant now) {
-    return state.spec().forwarding() == null
-        ? novaCreationStarted(state, now)
-        : new ForwardingPreparationStarted(instanceId);
-  }
-
-  private void startAfterNetwork(InstanceWorkflowState state) {
-    if (state.phase() == InstancePhase.PREPARING_FORWARDING) startForwardingPreparation(state);
-    else requestNovaCreation(state);
   }
 
   private NovaCreationStarted novaCreationStarted(InstanceWorkflowState state, Instant now) {
@@ -767,7 +759,7 @@ public final class InstanceWorkflowActor
           command.failure() == null ? "Missing instance trunk preparation result" : command.failure());
     }
     return Effect().persist(List.of(new TrunkPrepared(instanceId, command.resources()),
-        afterNetworkStage(state, clock.instant()))).thenRun(this::startAfterNetwork);
+        new ForwardingPreparationStarted(instanceId))).thenRun(this::startForwardingPreparation);
   }
 
   private void startForwardingPreparation(InstanceWorkflowState state) {

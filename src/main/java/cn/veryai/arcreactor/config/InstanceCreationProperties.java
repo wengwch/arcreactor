@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "instance.creation")
 public class InstanceCreationProperties {
-    private Duration dependencyPollInterval = Duration.ofSeconds(2);
+    private Duration dependencyPollInterval = Duration.ofSeconds(1);
     /** Each internal service receives its own external TCP/UDP port. */
     private List<Integer> forwardingPorts = List.of(22, 8888);
     private String shareType;

@@ -151,6 +151,8 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 `PekkoConfig` 在 Spring 单例构造完成后统一注册实体并启动投影，避免 Runtime 与调用服务形成循环依赖。
 `SchedulerService`、`UserResources` 和 `FloatingIpForwardings` 通过 Runtime 获取引用，再发送各自的业务命令。
 运行时配置的读取方法集中在 `PekkoRuntime.Config` 内部类中，通过 `PekkoRuntime.getConfig()` 访问。
+`HypervisorActor` 创建时传入 `HypervisorSettings`，预留结果保留时长和清理间隔由 Runtime
+读取 `cloud.reservation` 配置后组装，Actor 内部通过 settings 使用。
 宿主机、实例、用户资源和浮动 IP 的 Actor ask 共用 `cloud.ask-timeout`（默认 3 秒），通过 `PekkoRuntime.getConfig().getAskTimeout()` 获取。
 
 `InstanceService` 完成参数和本地资源校验后，构造包含原始 Share、网络规格的 `InstanceSpec`，
@@ -355,7 +357,8 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 候选列表 `floatingIpIds` 保存 `floating_ip.id`，实例创建、查询、删除和恢复均通过此内部 ID 定位 FIP Actor。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
 每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。
-新建实例必须配置内部端口 `22` 的转发，缺少时拒绝创建；各阶段使用第一步已选定的宿主机。
+创建受理前校验 `forwarding` 必须存在且包含内部端口 `22`，不满足时直接拒绝，不记录创建事件。
+正常创建和恢复在 Trunk 就绪后均进入 `PREPARING_FORWARDING`；各阶段使用第一步已选定的宿主机。
 转发阶段不设置整体等待超时，保留轮询以等待异步创建完成。
 重启后沿用已持久化的候选、内部端口和已完成映射，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。

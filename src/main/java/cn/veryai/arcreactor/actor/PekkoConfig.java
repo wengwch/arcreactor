@@ -6,7 +6,7 @@ import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerService;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
-import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
+import cn.veryai.arcreactor.actor.instance.InstanceDependencyPreparer;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.DispatcherSelector;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;

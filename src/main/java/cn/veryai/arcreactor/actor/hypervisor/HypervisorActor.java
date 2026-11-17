@@ -15,7 +15,6 @@ import org.apache.pekko.persistence.typed.RecoveryCompleted;
 import org.apache.pekko.persistence.typed.javadsl.*;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,32 +34,25 @@ public final class HypervisorActor
     private final ActorContext<HypervisorCommand> context;
     private final TimerScheduler<HypervisorCommand> timers;
     private final Clock clock;
-    private final Duration outcomeRetention;
-    private final Duration outcomeCleanupInterval;
+    private final HypervisorSettings settings;
 
-    public static Behavior<HypervisorCommand> create(String hypervisorId) {
-        return create(hypervisorId, Clock.systemUTC());
+    public static Behavior<HypervisorCommand> create(String hypervisorId, HypervisorSettings settings) {
+        return create(hypervisorId, settings, Clock.systemUTC());
     }
 
-    static Behavior<HypervisorCommand> create(String hypervisorId, Clock clock) {
+    static Behavior<HypervisorCommand> create(String hypervisorId, HypervisorSettings settings, Clock clock) {
         return Behaviors.setup(context -> Behaviors.withTimers(
-                timers -> new HypervisorActor(hypervisorId, context, timers, clock)));
+                timers -> new HypervisorActor(hypervisorId, context, timers, settings, clock)));
     }
 
     private HypervisorActor(String hypervisorId, ActorContext<HypervisorCommand> context,
-                            TimerScheduler<HypervisorCommand> timers, Clock clock) {
+                            TimerScheduler<HypervisorCommand> timers, HypervisorSettings settings, Clock clock) {
         super(PersistenceId.of(ENTITY_TYPE, hypervisorId));
         this.hypervisorId = Objects.requireNonNull(hypervisorId);
         this.context = context;
         this.timers = timers;
         this.clock = clock;
-        var config = context.getSystem().settings().config();
-        outcomeRetention = config.getDuration("cloud.reservation.outcome-retention");
-        outcomeCleanupInterval = config.getDuration("cloud.reservation.outcome-cleanup-interval");
-        if (outcomeRetention.isNegative() || outcomeRetention.isZero()
-                || outcomeCleanupInterval.isNegative() || outcomeCleanupInterval.isZero()) {
-            throw new IllegalArgumentException("reservation outcome retention and cleanup interval must be positive");
-        }
+        this.settings = Objects.requireNonNull(settings);
     }
 
     @Override
@@ -250,7 +242,7 @@ public final class HypervisorActor
     private Effect<HypervisorEvent, HypervisorState> onCleanReservationOutcomes(
             HypervisorState state, CleanReservationOutcomes command) {
         Instant now = clock.instant();
-        var expired = state.expiredReservationOutcomes(now.minus(outcomeRetention));
+        var expired = state.expiredReservationOutcomes(now.minus(settings.outcomeRetention()));
         boolean missingTimestamps = !state.reservationOutcomeTimes().keySet()
                 .containsAll(state.reservationOutcomes().keySet());
         if (expired.isEmpty() && !missingTimestamps) return Effect().none();
@@ -294,7 +286,7 @@ public final class HypervisorActor
                     hypervisorId, state.version(), state.reservations().size());
             context.getSelf().tell(new CleanReservationOutcomes());
             timers.startTimerWithFixedDelay("reservation-outcome-cleanup",
-                    new CleanReservationOutcomes(), outcomeCleanupInterval);
+                    new CleanReservationOutcomes(), settings.outcomeCleanupInterval());
         }).build();
     }
 
