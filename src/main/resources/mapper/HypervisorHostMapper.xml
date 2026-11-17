@@ -28,7 +28,6 @@
         <result column="expected_maintenance_time" property="expectedMaintenanceTime"/>
         <result column="enabled" property="enabled"/>
         <result column="region_id" property="regionId"/>
-        <result column="availability_zone" property="availabilityZone"/>
         <result column="reserved_vcpu" property="reservedVcpu"/>
         <result column="available_vcpu" property="availableVcpu"/>
         <result column="reserved_memory_gb" property="reservedMemoryGb"/>
@@ -44,7 +43,7 @@
     <sql id="hostColumns">id, name, description, hostname, ip, os_hypervisor_id, hypervisor_type, cpu_type, ram_type, disk_type, gpu_type, vcpus, ram, disk, gpus, used_vcpus, used_ram, used_disk, used_gpus, status, state, hypervisor_status, expected_maintenance_time, enabled, region_id</sql>
 
     <sql id="columns">
-        <include refid="hostColumns"/>, availability_zone,
+        <include refid="hostColumns"/>,
         running_vms,
         reserved_vcpu, available_vcpu, reserved_memory_gb, available_memory_gb,
         reserved_disk_gb, available_disk_gb, reserved_gpu, available_gpu, resource_version, updated_at
@@ -111,18 +110,15 @@
           AND h.available_memory_gb &gt;= #{memoryGb}
           AND h.available_disk_gb &gt;= #{diskGb}
           AND h.available_gpu &gt;= #{gpuCount}
-        <if test="availabilityZone != null and availabilityZone.trim() != ''">
-          AND h.availability_zone = #{availabilityZone}
-        </if>
         <if test="regionId != null and regionId.trim() != ''">
           AND h.region_id = #{regionId}
         </if>
         <if test="hypervisorType != null and hypervisorType.trim() != ''">
           AND h.hypervisor_type = #{hypervisorType}
         </if>
-        <!-- Match HostnameFilter's exact comparison before limiting the candidates. -->
+        <!-- Filter by hostname before limiting the candidates. -->
         <if test="hostname != null and hostname.trim() != ''">
-          AND CAST(h.hostname AS BINARY) = CAST(#{hostname} AS BINARY)
+          AND h.hostname = #{hostname}
         </if>
         <!-- Apply GPU packing before LIMIT so fuller eligible hosts are not excluded by ID order. -->
         ORDER BY

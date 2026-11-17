@@ -655,8 +655,11 @@ public class OpenStackClient {
               && Objects.equals(rule.getPortRangeMin(), internalPort)
               && Objects.equals(rule.getPortRangeMax(), internalPort)) {
             requireServerText(rule.getId(), "osSecurityGroupRuleId");
-            deleteCleanupResource(() -> client.networking().securityrule().delete(rule.getId()),
-                "instance forwarding security group rule");
+            try {
+              client.networking().securityrule().delete(rule.getId());
+            } catch (ResponseException error) {
+              if (error.getStatus() != 404) throw error;
+            }
           }
         }
       }

@@ -95,7 +95,7 @@ public final class InstanceRecovery {
     var spec = state.spec();
     var request = new HypervisorPlacement.ScheduleRequest(state.requestId(), reservationId(state),
         state.instanceId(), new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount()),
-        null, spec.region(), spec.hypervisorType(), spec.hostname());
+        spec.region(), spec.hypervisorType(), spec.hostname());
     return placement.schedule(request).thenApply(result -> {
       List<String> candidates = result.hypervisorIds();
       if (candidates.isEmpty()) {
@@ -110,7 +110,7 @@ public final class InstanceRecovery {
     var spec = state.spec();
     var request = new HypervisorPlacement.ScheduleRequest(state.requestId(), state.reservationId(),
         state.instanceId(), new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount()),
-        null, spec.region(), spec.hypervisorType(), spec.hostname());
+        spec.region(), spec.hypervisorType(), spec.hostname());
     // An uncertain reservation must stay on the persisted host until its result is known.
     return placement.reserve(state.hypervisorId(), request).thenApply(result -> {
       return switch (result.status()) {
@@ -180,24 +180,24 @@ public final class InstanceRecovery {
   }
 
   private CompletionStage<Outcome> recoverForwarding(InstanceWorkflowState state) {
-    String osFloatingIpId = state.spec().forwarding().osFloatingIpIds().get(state.forwardingCandidateIndex());
+    String floatingIpId = state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
     ForwardingSpec spec = forwardingSpec(state);
-    return forwardings.get(state.spec().region(), osFloatingIpId, forwardingClaimId(state))
+    return forwardings.get(floatingIpId, forwardingClaimId(state))
         .thenCompose(reply -> {
           if (reply != null && reply.status() == ForwardingReply.Status.NOT_FOUND) {
-            return forwardings.create(osFloatingIpId, forwardingClaimId(state), spec);
+            return forwardings.create(floatingIpId, forwardingClaimId(state), spec);
           }
           return CompletableFuture.completedFuture(reply);
         }).thenApply(reply -> {
           if (reply == null) return retry();
           return switch (reply.status()) {
-            case READY -> recoveredForwarding(state, osFloatingIpId, spec, reply.claim());
+            case READY -> recoveredForwarding(state, floatingIpId, spec, reply.claim());
             case FAILED, DELETE_FAILED, REJECTED, DELETED -> {
               if (reply.claim() != null && reply.claim().ownsPort()) {
                 yield failed(state, "FORWARDING_PREPARATION_FAILED", reply.detail());
               }
               int candidate = state.forwardingCandidateIndex() + 1;
-              yield candidate >= state.spec().forwarding().osFloatingIpIds().size()
+              yield candidate >= state.spec().forwarding().floatingIpIds().size()
                   ? failed(state, "FORWARDING_PREPARATION_FAILED", "All floating IP candidates failed for internal port "
                       + state.currentForwardingPort() + ": " + reply.detail())
                   : proceed(new ForwardingCandidateSelected(state.instanceId(), candidate));
@@ -207,11 +207,11 @@ public final class InstanceRecovery {
         });
   }
 
-  private Outcome recoveredForwarding(InstanceWorkflowState state, String osFloatingIpId,
+  private Outcome recoveredForwarding(InstanceWorkflowState state, String floatingIpId,
       ForwardingSpec spec, ForwardingClaim claim) {
     if (claim == null || claim.phase() != ForwardingClaim.Phase.READY
         || !forwardingClaimId(state).equals(claim.claimId()) || !spec.equals(claim.spec())
-        || !osFloatingIpId.equals(claim.osFloatingIpId())
+        || !floatingIpId.equals(claim.floatingIpId()) || !hasText(claim.osFloatingIpId())
         || !hasText(claim.resources().osTcpForwardingId()) || !hasText(claim.resources().osUdpForwardingId())
         || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 10000
         || claim.resources().externalPort() > 40000) {
@@ -297,13 +297,13 @@ public final class InstanceRecovery {
   private CompletionStage<Outcome> recoverForwardingDeletion(InstanceWorkflowState state) {
     List<CompletableFuture<Boolean>> requests = new ArrayList<>();
     for (PreparedForwarding forwarding : state.forwardingsForDeletion()) {
-      requests.add(checkForwardingDeletionStatus(state, forwarding).thenCompose(reply -> {
+      requests.add(checkForwardingDeletionStatus(forwarding).thenCompose(reply -> {
         if (reply == null) return CompletableFuture.completedFuture(false);
         return switch (reply.status()) {
           case DELETED -> CompletableFuture.completedFuture(true);
           case IN_PROGRESS, REJECTED -> CompletableFuture.completedFuture(false);
           case READY, FAILED, DELETE_FAILED, NOT_FOUND ->
-              submitForwardingDeletion(state, forwarding).thenApply(deleted ->
+              submitForwardingDeletion(forwarding).thenApply(deleted ->
                   deleted != null && deleted.status() == ForwardingReply.Status.DELETED);
         };
       }).toCompletableFuture());
@@ -323,14 +323,12 @@ public final class InstanceRecovery {
     return new Outcome(events, Action.CONTINUE_DELETION);
   }
 
-  private CompletionStage<ForwardingReply> checkForwardingDeletionStatus(
-      InstanceWorkflowState state, PreparedForwarding forwarding) {
-    return forwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId());
+  private CompletionStage<ForwardingReply> checkForwardingDeletionStatus(PreparedForwarding forwarding) {
+    return forwardings.get(forwarding.floatingIpId(), forwarding.claimId());
   }
 
-  private CompletionStage<ForwardingReply> submitForwardingDeletion(
-      InstanceWorkflowState state, PreparedForwarding forwarding) {
-    return forwardings.delete(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId());
+  private CompletionStage<ForwardingReply> submitForwardingDeletion(PreparedForwarding forwarding) {
+    return forwardings.delete(forwarding.floatingIpId(), forwarding.claimId());
   }
 
   private CompletionStage<Outcome> recoverNetworkDeletion(InstanceWorkflowState state) {

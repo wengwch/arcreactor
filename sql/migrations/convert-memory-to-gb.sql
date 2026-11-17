@@ -38,7 +38,7 @@ BEGIN
       (total_memory_gb - reserved_memory_gb - allocated_memory_gb) STORED
       AFTER allocated_memory_gb,
     ADD INDEX idx_hypervisor_candidate (
-      status, availability_zone, available_vcpu, available_memory_gb, available_gpu);
+      status, available_vcpu, available_memory_gb, available_gpu);
 
 END//
 DELIMITER ;

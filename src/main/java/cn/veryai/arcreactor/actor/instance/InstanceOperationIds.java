@@ -7,13 +7,13 @@ public final class InstanceOperationIds {
   private InstanceOperationIds() {}
 
   static String reservationId(InstanceWorkflowState state) {
-    return state.reservationId() == null
-        ? "res:" + state.instanceId() + ":" + state.requestId() : state.reservationId();
+    return state.reservationId() == null ? state.instanceId() : state.reservationId();
   }
 
   static String operationId(InstanceWorkflowState state) {
     return state.novaOperationId() == null
-        ? "nova-create:" + state.instanceId() + ":" + state.requestId() : state.novaOperationId();
+        ? "nova-create:" + state.instanceId() + ":" + state.requestId()
+        : state.novaOperationId();
   }
 
   static String networkOperationId(InstanceWorkflowState state) {

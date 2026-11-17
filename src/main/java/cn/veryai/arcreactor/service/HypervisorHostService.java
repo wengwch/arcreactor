@@ -70,7 +70,7 @@ public class HypervisorHostService {
           AskPattern.<HypervisorCommand, ActionReply>ask(
                   pekkoRuntime.hypervisorActor(id),
                   replyTo -> new DrainHypervisor(expectedMaintenanceTime, replyTo),
-                  pekkoRuntime.getAskTimeout(),
+                  pekkoRuntime.getConfig().getAskTimeout(),
                   system.scheduler())
               .toCompletableFuture()
               .get();
@@ -103,7 +103,7 @@ public class HypervisorHostService {
           AskPattern.<HypervisorCommand, ActionReply>ask(
                   pekkoRuntime.hypervisorActor(id),
                   EnterMaintenance::new,
-                  pekkoRuntime.getAskTimeout(),
+                  pekkoRuntime.getConfig().getAskTimeout(),
                   system.scheduler())
               .toCompletableFuture()
               .get();
@@ -143,7 +143,7 @@ public class HypervisorHostService {
     ResourceUsage baselineUsage;
     try {
       capacity = new ResourceCapacity(host.getVcpus(), host.getRam(), host.getDisk(),
-          host.getGpus(), host.getAvailabilityZone());
+          host.getGpus());
       baselineUsage = new ResourceUsage(host.getUsedVcpus(), host.getUsedRam(),
           host.getUsedDisk(), host.getUsedGpus());
     } catch (IllegalArgumentException exception) {
@@ -157,7 +157,7 @@ public class HypervisorHostService {
           AskPattern.<HypervisorCommand, ActionReply>ask(
                   hypervisorActor,
                   replyTo -> new UpdateCapacity(capacity, baselineUsage, replyTo),
-                  pekkoRuntime.getAskTimeout(),
+                  pekkoRuntime.getConfig().getAskTimeout(),
                   system.scheduler())
               .toCompletableFuture()
               .get();
@@ -170,7 +170,7 @@ public class HypervisorHostService {
           AskPattern.<HypervisorCommand, ActionReply>ask(
                   hypervisorActor,
                   EnableHypervisor::new,
-                  pekkoRuntime.getAskTimeout(),
+                  pekkoRuntime.getConfig().getAskTimeout(),
                   system.scheduler())
               .toCompletableFuture()
               .get();

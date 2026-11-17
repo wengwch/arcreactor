@@ -366,8 +366,8 @@ public final class InstanceWorkflowActor
       return Effect().none();
     }
     String forwardingId = UUID.randomUUID().toString();
-    UserForwarding forwarding = new UserForwarding(forwardingId, systemSsh.osFloatingIpId(), command.internalPort(),
-        UserForwarding.Phase.CREATING, null, null, 1);
+    UserForwarding forwarding = new UserForwarding(forwardingId, systemSsh.floatingIpId(),
+        systemSsh.osFloatingIpId(), command.internalPort(), UserForwarding.Phase.CREATING, null, null, 1);
     return Effect().persist(new UserForwardingCreationRequested(instanceId, forwarding))
         .thenRun(next -> {
           command.replyTo().tell(InstanceMutationReply.accepted(forwardingId));
@@ -444,7 +444,7 @@ public final class InstanceWorkflowActor
     if (state.phase() != InstancePhase.ACTIVE || forwarding == null || !forwarding.inProgress()
         || forwarding.generation() != command.generation()) return Effect().none();
     pipeUserForwarding(forwarding, () -> forwarding.phase() == UserForwarding.Phase.CREATING
-        ? managementOperations.checkForwardingCreation(state, forwarding)
+        ? managementOperations.checkForwardingCreation(forwarding)
         : managementOperations.checkForwardingDeletion(state, forwarding));
     return Effect().none();
   }
@@ -468,6 +468,7 @@ public final class InstanceWorkflowActor
           ForwardingClaim claim = reply.claim();
           if (claim == null || claim.phase() != ForwardingClaim.Phase.READY
               || !forwarding.forwardingId().equals(claim.claimId())
+              || !forwarding.floatingIpId().equals(claim.floatingIpId())
               || !forwarding.osFloatingIpId().equals(claim.osFloatingIpId())
               || !InstanceManagementOperations.spec(state, forwarding).equals(claim.spec())
               || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 1
@@ -794,7 +795,7 @@ public final class InstanceWorkflowActor
         ForwardingClaim claim = reply.claim();
         if (claim == null || claim.phase() != ForwardingClaim.Phase.READY
             || !forwardingClaimId(state).equals(claim.claimId()) || !forwardingSpec(state).equals(claim.spec())
-            || !forwardingFloatingIpId(state).equals(claim.osFloatingIpId())
+            || !forwardingFloatingIpId(state).equals(claim.floatingIpId()) || !hasText(claim.osFloatingIpId())
             || !hasText(claim.resources().osTcpForwardingId()) || !hasText(claim.resources().osUdpForwardingId())
             || !hasText(claim.resources().floatingIpAddress()) || claim.resources().externalPort() < 10000
             || claim.resources().externalPort() > 40000) {
@@ -820,7 +821,7 @@ public final class InstanceWorkflowActor
           yield failCreation("FORWARDING_PREPARATION_FAILED", reply.detail());
         }
         int nextCandidate = state.forwardingCandidateIndex() + 1;
-        if (nextCandidate >= state.spec().forwarding().osFloatingIpIds().size()) {
+        if (nextCandidate >= state.spec().forwarding().floatingIpIds().size()) {
           yield failCreation("FORWARDING_PREPARATION_FAILED",
               "All floating IP candidates failed for internal port " + state.currentForwardingPort() + ": " + reply.detail());
         }
@@ -846,7 +847,7 @@ public final class InstanceWorkflowActor
     CompletionStage<ForwardingReply> request;
     try {
       request = submission ? floatingIpForwardings.create(forwardingFloatingIpId(state), forwardingClaimId(state), forwardingSpec(state))
-          : floatingIpForwardings.get(state.spec().region(), forwardingFloatingIpId(state), forwardingClaimId(state));
+          : floatingIpForwardings.get(forwardingFloatingIpId(state), forwardingClaimId(state));
     } catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
     context.pipeToSelf(request, (reply, error) -> new ForwardingStatusCompleted(
         state.pollingGeneration(), token, attempt, submission, error == null ? reply : null));
@@ -858,7 +859,7 @@ public final class InstanceWorkflowActor
         state.osProjectId(), network.osParentPortId(), network.parentFixedIp(), state.currentForwardingPort(), ForwardingKind.SYSTEM);
   }
   private static String forwardingFloatingIpId(InstanceWorkflowState state) {
-    return state.spec().forwarding().osFloatingIpIds().get(state.forwardingCandidateIndex());
+    return state.spec().forwarding().floatingIpIds().get(state.forwardingCandidateIndex());
   }
   private static boolean matchesForwarding(InstanceWorkflowState state, long generation) {
     return state.phase() == InstancePhase.PREPARING_FORWARDING && state.pollingGeneration() == generation;
@@ -1331,7 +1332,7 @@ public final class InstanceWorkflowActor
     InstanceSpec spec = state.spec();
     return new HypervisorPlacement.ScheduleRequest(state.requestId(), reservationId(state), instanceId,
         new HypervisorPlacement.Resources(spec.vcpus(), spec.memoryGb(), spec.diskGb(), spec.gpuCount()),
-        null, spec.region(), spec.hypervisorType(), spec.hostname());
+        spec.region(), spec.hypervisorType(), spec.hostname());
   }
 
   private CompletionStage<OpenStackClient.NovaServer> submitNova(InstanceWorkflowState state) {
@@ -1477,7 +1478,7 @@ public final class InstanceWorkflowActor
     try {
       List<CompletableFuture<ForwardingReply>> deletions = new ArrayList<>();
       for (PreparedForwarding forwarding : state.forwardingsForDeletion()) {
-        deletions.add(floatingIpForwardings.delete(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId())
+        deletions.add(floatingIpForwardings.delete(forwarding.floatingIpId(), forwarding.claimId())
             .toCompletableFuture());
       }
       request = CompletableFuture.allOf(deletions.toArray(CompletableFuture[]::new))
@@ -1498,7 +1499,7 @@ public final class InstanceWorkflowActor
     try {
       List<CompletableFuture<ForwardingsDeletionChecked.Result>> queries = new ArrayList<>();
       for (PreparedForwarding forwarding : state.forwardingsForDeletion()) {
-        queries.add(floatingIpForwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.claimId())
+        queries.add(floatingIpForwardings.get(forwarding.floatingIpId(), forwarding.claimId())
             .handle((reply, error) -> new ForwardingsDeletionChecked.Result(forwarding, reply,
                 error == null ? null : rootCause(error).toString())).toCompletableFuture());
       }

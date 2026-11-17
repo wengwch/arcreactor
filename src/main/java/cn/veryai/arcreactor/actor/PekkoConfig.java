@@ -1,14 +1,16 @@
 package cn.veryai.arcreactor.actor;
 
-
+import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
-import cn.veryai.arcreactor.actor.hypervisor.internal.DefaultHypervisorPlacement;
-import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerFactory;
 import cn.veryai.arcreactor.actor.hypervisor.scheduler.SchedulerService;
+import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
+import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.repo.HypervisorHostRepo;
-import java.time.Duration;
+import cn.veryai.arcreactor.service.InstanceDependencyPreparer;
 import org.apache.pekko.actor.typed.ActorSystem;
+import org.apache.pekko.actor.typed.DispatcherSelector;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -20,15 +22,25 @@ class PekkoConfig {
   }
 
   @Bean
-  SchedulerService schedulerService(ActorSystem<Void> actorSystem, HypervisorHostRepo hostRepo) {
-    return SchedulerFactory.create(actorSystem, hostRepo);
+  HypervisorPlacement hypervisorPlacement(PekkoRuntime pekkoRuntime, HypervisorHostRepo hostRepo) {
+    var actorSystem = pekkoRuntime.getActorSystem();
+    var blockingExecutor = actorSystem.dispatchers().lookup(
+            DispatcherSelector.fromConfig("virtual-thread-dispatcher"));
+    return new SchedulerService(pekkoRuntime, hostRepo, blockingExecutor,
+            pekkoRuntime.getConfig().getSchedulerCandidateQueryLimit(),
+            pekkoRuntime.getConfig().getSchedulerMaxClaimAttempts());
   }
 
   @Bean
-  HypervisorPlacement hypervisorPlacement(ActorSystem<Void> actorSystem, SchedulerService schedulerService) {
-    Duration askTimeout = Duration.ofMillis(actorSystem.settings().config()
-            .getDuration("cloud.scheduler.ask-timeout").toMillis());
-    return new DefaultHypervisorPlacement(actorSystem, schedulerService, askTimeout);
+  SmartInitializingSingleton pekkoInitializer(
+      PekkoRuntime pekkoRuntime,
+      OpenStackClient openStackClient,
+      CloudInitRenderer cloudInitRenderer,
+      FloatingIpForwardings floatingIpForwardings,
+      InstanceDependencyPreparer dependencyPreparer,
+      HypervisorPlacement hypervisorPlacement) {
+    // Clients depend on the runtime, so register actors only after their beans have been constructed.
+    return () -> pekkoRuntime.initialize(openStackClient, cloudInitRenderer,
+        floatingIpForwardings, dependencyPreparer, hypervisorPlacement);
   }
-
 }

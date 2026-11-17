@@ -4,19 +4,22 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /** One service mapping; TCP and UDP are created and deleted as a single operation. */
-public record ForwardingClaim(String claimId, String osFloatingIpId, ForwardingSpec spec,
+public record ForwardingClaim(String claimId, String floatingIpId, String osFloatingIpId, ForwardingSpec spec,
     Phase phase, ForwardingResources resources,
     long generation, String failure) implements Serializable {
   public enum Phase { CREATING, READY, FAILED, DELETING, DELETE_FAILED, DELETED }
 
   public ForwardingClaim {
+    if (floatingIpId == null || floatingIpId.isBlank()) {
+      throw new IllegalArgumentException("floatingIpId is required");
+    }
     Objects.requireNonNull(spec, "spec");
     Objects.requireNonNull(phase, "phase");
     Objects.requireNonNull(resources, "resources");
   }
 
-  public static ForwardingClaim requested(String claimId, String osFloatingIpId, ForwardingSpec spec) {
-    return new ForwardingClaim(claimId, osFloatingIpId, spec, Phase.CREATING,
+  public static ForwardingClaim requested(String claimId, FloatingIpIdentity identity, ForwardingSpec spec) {
+    return new ForwardingClaim(claimId, identity.floatingIpId(), identity.osFloatingIpId(), spec, Phase.CREATING,
         ForwardingResources.empty(), 0, null);
   }
 
@@ -50,7 +53,7 @@ public record ForwardingClaim(String claimId, String osFloatingIpId, ForwardingS
 
   private ForwardingClaim copy(Phase nextPhase, ForwardingResources nextResources,
       long nextGeneration, String detail) {
-    return new ForwardingClaim(claimId, osFloatingIpId, spec, nextPhase, nextResources,
+    return new ForwardingClaim(claimId, floatingIpId, osFloatingIpId, spec, nextPhase, nextResources,
         nextGeneration, detail);
   }
 }

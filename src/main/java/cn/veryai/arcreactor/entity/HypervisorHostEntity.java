@@ -54,7 +54,6 @@ public class HypervisorHostEntity {
   private String regionId;
 
   /** 创建中的预留资源与可用资源；可用量 = 总容量 - 已占用 - 预留。 */
-  private String availabilityZone = "default";
   private int reservedVcpu;
   private int availableVcpu;
   private long reservedMemoryGb;

@@ -63,7 +63,7 @@ BEGIN
       ALTER TABLE hypervisor_resource DROP INDEX idx_hypervisor_candidate;
     END IF;
     ALTER TABLE hypervisor_resource ADD INDEX idx_hypervisor_candidate (
-      status, availability_zone, available_vcpu, available_memory_gb, available_disk_gb, available_gpu);
+      status, available_vcpu, available_memory_gb, available_disk_gb, available_gpu);
   END IF;
 END//
 DELIMITER ;

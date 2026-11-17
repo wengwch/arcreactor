@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.actor.instance.projection.mybatis;
 
+import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
@@ -13,27 +14,27 @@ public interface InstanceProjectionMapper {
             @Param("instanceId") String instanceId,
             @Param("requestId") String requestId,
             @Param("spec") InstanceSpec spec,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("version") long version,
             @Param("createdAt") Timestamp createdAt,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updatePhase(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updateDependencies(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("dependencies") PreparedDependencies dependencies,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updateHypervisor(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("hypervisorId") String hypervisorId,
             @Param("reservationId") String reservationId,
             @Param("version") long version,
@@ -41,14 +42,14 @@ public interface InstanceProjectionMapper {
 
     int updateSecurityGroup(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("osSecurityGroupId") String osSecurityGroupId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updateNetwork(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("network") PreparedNetwork network,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
@@ -75,14 +76,14 @@ public interface InstanceProjectionMapper {
 
     int updateNovaOperation(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("operationId") String operationId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updateNovaServer(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("osServerId") String osServerId,
             @Param("novaStatus") String novaStatus,
             @Param("version") long version,
@@ -90,13 +91,14 @@ public interface InstanceProjectionMapper {
 
     int updateNovaDeletion(
             @Param("instanceId") String instanceId,
+            @Param("phase") InstancePhase phase,
             @Param("osServerId") String osServerId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
     int updateFailure(
             @Param("instanceId") String instanceId,
-            @Param("phase") String phase,
+            @Param("phase") InstancePhase phase,
             @Param("failureCode") String failureCode,
             @Param("failureMessage") String failureMessage,
             @Param("version") long version,

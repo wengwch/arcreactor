@@ -40,6 +40,10 @@ hostname 约束保存在创建事件的 `InstanceSpec` 中，重启恢复调度�
 提交 Actor 创建流程。调度候选宿主机限定在所选区域和宿主机类型内，
 并且必须处于 ACTIVE 状态且有足够资源；指定 hostname 时，数据库在候选数量限制之前完成筛选，
 调度器的 `HostnameFilter` 再校验匹配结果。
+`SchedulerService` 直接实现 `HypervisorPlacement`：通过 `HypervisorHostRepo` 查询候选并完成筛选、排名，
+通过 `HypervisorActor` 执行预留、确认、取消和释放。各筛选器和评分器统一使用
+`HypervisorPlacement.ScheduleRequest`，调度不再经过额外的候选查询、预留调用或请求转换包装层。
+实例工作流仍先持久化目标主机和预留 ID，再请求该主机预留资源；查询候选本身不产生预留。
 GPU 请求采用堆叠调度：满足全部资源要求后，优先选择可用 GPU 数量最少的宿主机，
 使本次分配后的 GPU 余量尽量小。可用数量为 `gpus - used_gpus - reserved_gpu`，包含创建中的预留占用。
 例如请求 1 张 GPU 时，剩余 2 张的主机优先于剩余 8 张的主机；CPU、内存评分只在 GPU 余量相同时比较，
@@ -142,11 +146,18 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 
 ## 创建流程与恢复
 
+所有业务 Actor 的注册和引用获取统一由 `PekkoRuntime` 管理，提供 `hypervisorActor`、
+`instanceActor`、`userActor` 和 `floatingIpActor` 四个入口。
+`PekkoConfig` 在 Spring 单例构造完成后统一注册实体并启动投影，避免 Runtime 与调用服务形成循环依赖。
+`SchedulerService`、`UserResources` 和 `FloatingIpForwardings` 通过 Runtime 获取引用，再发送各自的业务命令。
+运行时配置的读取方法集中在 `PekkoRuntime.Config` 内部类中，通过 `PekkoRuntime.getConfig()` 访问。
+宿主机、实例、用户资源和浮动 IP 的 Actor ask 共用 `cloud.ask-timeout`（默认 3 秒），通过 `PekkoRuntime.getConfig().getAskTimeout()` 获取。
+
 `InstanceService` 完成参数和本地资源校验后，构造包含原始 Share、网络规格的 `InstanceSpec`，
 通过 `PekkoRuntime.instanceActor(instanceId)` 直接 ask `CreateInstance`。
 依赖准备完成前，`ShareRequirement.shareId`、实例状态中的 `shareId` 及 `instance_view.share_id` 均为空，不使用占位 ID。
 查询同样向 Actor 发送 `GetInstanceState`，将返回状态转换成 `InstanceView`；
-创建和查询均使用 `cloud.instance.ask-timeout`。
+创建和查询均使用 `cloud.ask-timeout`。
 InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，进入 `SCHEDULING` 并立即回复受理；
 此阶段仅根据区域、宿主机类型和 CPU、内存、磁盘、GPU 规格查询、排序候选宿主机，不发送资源预留命令。
 选定候选后先持久化 `HypervisorReservationStarted`，记录当前宿主机、预留 ID 和剩余候选，
@@ -166,7 +177,7 @@ InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，�
 ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时才重新提交幂等创建命令。
 准备器识别 Pekko typed ask 返回的 `java.util.concurrent.TimeoutException`，
 包括多层 `CompletionException`、`ExecutionException` 包装，普通准备和重启恢复采用同样的处理。
-准备器向 UserActor 发送的创建和查询 ask 均使用 `cloud.user.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
+准备器向 UserActor 发送的创建和查询 ask 均使用 `cloud.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
 依赖准备不设置整体截止时间，持续查询至资源就绪或明确失败。
 结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 回复中的真实逻辑 `shareId`、访问数据和父子网络/子网 ID，
@@ -341,6 +352,7 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 每个内部端口使用独立 claim ID（包含实例 ID、请求 ID、内部端口），分配一个 `10000–40000`
 范围内的公网端口，同时创建 TCP/UDP 转发，目标为实例父端口的 IPv4 地址。
 每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
+候选列表 `floatingIpIds` 保存 `floating_ip.id`，实例创建、查询、删除和恢复均通过此内部 ID 定位 FIP Actor。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
 每个端口就绪都持久化一条 `ForwardingPrepared`，保存到实例的映射列表；全部就绪后持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。
 新建实例必须配置内部端口 `22` 的转发，缺少时拒绝创建；各阶段使用第一步已选定的宿主机。
@@ -348,6 +360,8 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 重启后沿用已持久化的候选、内部端口和已完成映射，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
 
+FloatingIpActor 的实体 key 为 `floating_ip.id`，通过 `PekkoRuntime.floatingIpActor(floatingIpId)` 获取。
+`FloatingIpIdentity` 持久化内部 `floatingIpId`，以及 OpenStack 调用所需的区域、项目和 `osFloatingIpId`。
 FloatingIpActor 的 claim 状态为 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED`。
 创建失败使用 `FAILED`，删除失败使用 `DELETE_FAILED`，不再保存 `paused` 标记。
 `CreatePortForwarding` 根据 Actor 当前总位图 `usedPorts` 选择端口，将 `ForwardingCreationRequested` 和
@@ -399,13 +413,14 @@ FIP Actor 统一使用 `DeletePortForwarding` 按 `claimId` 删除，不区分�
 不写事件、不记录删除意图，也不改变创建状态；调用方需在创建进入 `READY` 或 `FAILED` 后重新发送删除命令。
 因此不再保存删除意图字段；重启后仍按 `CREATING` 恢复创建。
 实例删除和删除恢复通过 `forwardingsForDeletion()` 汇总系统与用户转发，
-使用每条记录的 `osFloatingIpId` 和 `claimId` 调用 `delete` 和 `get`。
+使用每条记录的内部 `floatingIpId` 和 `claimId` 调用 `delete` 和 `get`。
 删除直接返回 `DELETED` 可确认完成；返回 `IN_PROGRESS` 后通过 `get` 继续查询，
 查询仍为 `IN_PROGRESS` 只等待，`READY`、`FAILED`、`DELETE_FAILED`、`NOT_FOUND` 时重新提交删除并确认结果。
 列表为空时直接完成该步骤；全部记录确认 `DELETED` 才持久化 `InstanceForwardingsDeleted` 并进入 `DELETING_NETWORK`。
 系统转发包含 `preparedForwardings` 中已确认的映射，以及创建阶段当前已开始但未确认就绪的 claim；
 用户转发包含 `management.userForwardings` 中所有尚未标记 `DELETED` 的记录。
 因此用户创建失败或未保存远端资源 ID 时，仍能按已持久化的转发标识清理可能存在的 claim。
+创建结果尚未返回的系统或用户转发也保留内部 `floatingIpId`，删除和恢复无需重新查询数据库确定 Actor。
 外部对尚未创建的 claim 发送单个删除命令时，FloatingIpActor 同样记录 `ForwardingDeleted`，
 在 `outcomes` 中保存已删除标记，阻止保留期内的迟到创建，不调用 OpenStack，也不改变端口位图。
 FloatingIpActor 不再提供实例级批量删除命令，也不保存实例级取消记录。
@@ -616,7 +631,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、Share、用户网络准备以及
 实例安全组、网络、端口转发和 Nova 创建都在工作流中异步执行。等待 Actor 受理期间使用 Spring MVC 异步响应。
 `INSTANCE_CREATE_REQUEST_TIMEOUT` 默认为 30 秒，只需覆盖 Actor 受理等待时间
-（`cloud.instance.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
+（`cloud.ask-timeout` 默认 3 秒），不再覆盖依赖准备时间。
 受理后的依赖准备失败通过 `GET /api/v1/instances/{instanceId}`、`InstanceService.get(instanceId)` 和 `instance_view` 的
 `phase`、`failureCode` / `failure_code`、`failureMessage` / `failure_message` 查询，已创建的用户级资源继续保留。
 响应沿用全局 `RespWrapper`，`result` 包含：
@@ -637,6 +652,48 @@ Actor 持久化受理请求后，接口即返回 HTTP `202 Accepted`；项目、
 密码和 token 使用 `SecureRandom` 独立生成，返回时并不表示实例已处于 ACTIVE 状态。
 参数校验和业务错误通过现有国际化异常处理器返回；创建请求确认超时表示受理结果未确定。
 ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整体截止时间，也不会自动释放宿主机预留。
+
+## 查询用户实例
+
+用户实例查询直接读取数据库 `instance_view`，按路径中的 `userId` 限定范围。
+
+| 接口 | 参数与结果 |
+| --- | --- |
+| `GET /api/v1/users/{userId}/instances` | 可选 `regionId`、`phase`，返回实例列表 |
+| `GET /api/v1/users/{userId}/instances/{instanceId}` | 返回该用户的单个实例；记录不存在或不属于该用户时返回业务 `code = 404` |
+
+`phase` 使用 `InstancePhase` 的枚举名称，例如 `ACTIVE`、`FAILED`、`DELETED`，大小写须一致。
+省略 `phase` 时包含所有阶段，包括已删除的记录。列表按 `created_at DESC, instance_id ASC` 排序，
+一次返回符合条件的全部记录，无匹配项时 `result` 为 `[]`。
+
+响应沿用 `RespWrapper`，字段按 `instance_view` 列名转为 camelCase，包含名称、描述、用户、区域、
+资源规格、实例阶段、已投影的资源 ID、限速值、失败信息和 `workflowVersion`。
+`userForwardings` 是按转发 ID 索引的 JSON 对象，`qosUpdate` 是 JSON 对象或 `null`。
+`createdAt`、`updatedAt` 使用带偏移量的时间格式；默认 JDBC 连接时区为 `Asia/Shanghai`，返回 `+08:00`。
+以下仅展示列表中的部分字段：
+
+```json
+{
+  "code": 200,
+  "result": [
+    {
+      "instanceId": "实例 UUID",
+      "userId": "test-user-003",
+      "name": "test-instance-003",
+      "regionId": "Test-SH-01",
+      "phase": "ACTIVE",
+      "userForwardings": {},
+      "qosUpdate": null,
+      "createdAt": "2026-11-17T10:00:00+08:00",
+      "updatedAt": "2026-11-17T10:01:00+08:00"
+    }
+  ]
+}
+```
+
+此查询读取已完成的投影，创建或变更接口返回 HTTP `202` 后，新记录和新状态可能尚未可见。
+接口不触发 Actor 查询，也不额外读取 `port_forwarding`，不会返回密码、Jupyter token 或 Share 访问凭据。
+`GET /api/v1/instances/{instanceId}` 继续提供 Actor 当前状态及已确认的端口转发映射。
 
 ## 查询端口转发
 
@@ -674,7 +731,8 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 }
 ```
 
-实际每条映射还包含 `claimId`、`osFloatingIpId`、`osTcpForwardingId` 和 `osUdpForwardingId`。
+实际每条映射还包含 `claimId`、`floatingIpId`、`osFloatingIpId`、`osTcpForwardingId` 和 `osUdpForwardingId`。
+`floatingIpId` 是本系统登记的浮动 IP ID，用于 Actor 路由；`osFloatingIpId` 是对应的 OpenStack 资源 ID。
 `domain` 保存该转发创建时浮动 IP 的可选域名；未配置时为空，系统和用户转发均保存并返回此字段。
 SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 username>@203.0.113.10`。
 JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
@@ -846,7 +904,7 @@ QoS 资源记录对应 `os_parent_qos_policy_id`、`os_parent_qos_ingress_rule_i
 
 `FloatingIpProjection` 消费 `FloatingIpActor` 的事件，投影名为 `floating-ip`，
 与其他投影一起由 `cloud.projection.enabled` 和 `cloud.projection.slice-ranges` 控制。
-投影按 `(region_id, os_floating_ip_id)` 直接更新已登记的 `floating_ip` 表中的 `enabled`、`port_mask`
+投影按事件中的内部 `floatingIpId` 匹配 `floating_ip.id`，直接更新已登记记录的 `enabled`、`port_mask`
 和 `resource_version`。`enabled` 为非空布尔值，登记时默认为 `false`，由启用和禁用事件更新。
 名称、描述、外部网络、地址和可选域名 `domain` 等字段仍由登记流程维护；域名最多 255 字符，省略、`null` 或空白均保存为 `NULL`。
 
@@ -864,7 +922,8 @@ claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新
 分配和释放事件同时携带当时的 `enabled`，与位图共用版本保护；禁用期间的清理不会重新启用浮动 IP。
 
 同一投影同时将端口转发生命周期写入 `port_forwarding`，主键为
-`(region_id, os_floating_ip_id, claim_id)`，同一 claim 在不同候选浮动 IP 上的尝试分别保存。
+`(floating_ip_id, claim_id)`，同一 claim 在不同候选浮动 IP 上的尝试分别保存。
+`floating_ip_id` 与 FIP Actor 的实体 key 一致；`region_id` 和 `os_floating_ip_id` 保留为资源信息及查询字段。
 记录包含用户、实例、项目、`kind`（`SYSTEM`／`USER`）、目标 Neutron 端口、固定 IP、内部/公网端口、浮动 IP 地址及可空域名 `domain`、
 TCP/UDP 规则 ID、阶段、失败原因、版本和创建/更新/删除时间。
 
@@ -899,6 +958,7 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 补充版本列，缺少启用字段时执行 `sql/migrations/add-floating-ip-enabled.sql`。
 增列脚本中已有记录默认未启用，不回填历史启用状态。当前状态与事件结构直接用于开发阶段，不提供历史事件兼容转换。
 端口转发表随 `sql/read-model.sql` 初始化，也可单独执行 `sql/migrations/add-port-forwarding-projection.sql`。
+本次实体 key 和端口转发表主键调整按开发阶段重新初始化数据，不转换旧事件、快照、投影进度或旧表记录。
 已有端口转发表可执行 `sql/migrations/add-port-forwarding-kind.sql` 增加类型字段；脚本不回填未知的历史类型。
 缺少域名字段时执行 `sql/migrations/add-port-forwarding-domain.sql`，已有记录的域名为空；删除转发时保留该记录的原域名。
 已有 `floating-ip` 投影进度时，新增表不会自动补齐之前消费的事件；重建该读模型需要从创建事件开始重放。
@@ -951,6 +1011,8 @@ QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新实�
 宿主机元数据和资源账目统一保存在 `hypervisor_host`，调度直接查询该表。
 宿主机查询统一通过 `HypervisorHostRepo` 和 `HypervisorHostMapper`；调度候选复用
 `HypervisorHostEntity` 映射，再转换为调度器的 `HypervisorCandidate`。
+新库使用 `sql/hypervisors.sql`；已有主机表可执行
+`sql/migrations/remove-hypervisor-availability-zone.sql` 删除已移除的可用区字段。
 `hypervisor_status` 表示 Actor 的 `ACTIVE`、`DRAINING`、`MAINTENANCE` 状态；
 原有 `status`、`state` 仍表示 OpenStack 服务状态。
 总容量只保留 `vcpus`、`ram`、`disk`、`gpus`；占用只保留 `used_vcpus`、`used_ram`、

@@ -1,26 +1,19 @@
 package cn.veryai.arcreactor.actor.hypervisor.model;
 
 import java.io.Serializable;
-import java.util.Objects;
 
 /** Hypervisor capacity; memory and disk are measured in GB. */
 public record ResourceCapacity(
         int totalVcpus,
         long totalMemoryGb,
         long totalDiskGb,
-        int gpus,
-        String availabilityZone) implements Serializable {
+        int gpus) implements Serializable {
 
     public ResourceCapacity {
         if (totalVcpus < 0) throw new IllegalArgumentException("totalVcpus must be non-negative");
         if (totalMemoryGb < 0) throw new IllegalArgumentException("totalMemoryGb must be non-negative");
         if (totalDiskGb < 0) throw new IllegalArgumentException("totalDiskGb must be non-negative");
         if (gpus < 0) throw new IllegalArgumentException("gpus must be non-negative");
-        availabilityZone = Objects.requireNonNullElse(availabilityZone, "default");
-    }
-
-    public ResourceCapacity(int totalVcpus, long totalMemoryGb, long totalDiskGb, int gpus) {
-        this(totalVcpus, totalMemoryGb, totalDiskGb, gpus, "default");
     }
 
     public static ResourceCapacity empty() {

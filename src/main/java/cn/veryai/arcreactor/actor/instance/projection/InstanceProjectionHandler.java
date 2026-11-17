@@ -37,6 +37,7 @@ import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.TrunkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.UserForwardingEvent;
+import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import cn.veryai.arcreactor.util.JsonUtil;
 import java.sql.Timestamp;
@@ -56,33 +57,33 @@ public final class InstanceProjectionHandler
         String instanceId = entityId(envelope.persistenceId());
 
         if (event instanceof InstanceCreationRequested created) {
-            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), "SCHEDULING", version,
+            mapper.upsertCreated(instanceId, created.requestId(), created.spec(), InstancePhase.SCHEDULING, version,
                     Timestamp.from(created.requestedAt()), timestamp);
         } else if (event instanceof DependencyPreparationStarted) {
-            mapper.updatePhase(instanceId, "PREPARING_DEPENDENCIES", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_DEPENDENCIES, version, timestamp);
         } else if (event instanceof DependenciesPrepared prepared) {
-            mapper.updateDependencies(instanceId, "PREPARING_DEPENDENCIES", prepared.dependencies(), version, timestamp);
+            mapper.updateDependencies(instanceId, InstancePhase.PREPARING_DEPENDENCIES, prepared.dependencies(), version, timestamp);
         } else if (event instanceof SecurityGroupPreparationStarted) {
-            mapper.updatePhase(instanceId, "PREPARING_SECURITY_GROUP", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_SECURITY_GROUP, version, timestamp);
         } else if (event instanceof SecurityGroupPrepared prepared) {
-            mapper.updateSecurityGroup(instanceId, "PREPARING_SECURITY_GROUP", prepared.osSecurityGroupId(), version, timestamp);
+            mapper.updateSecurityGroup(instanceId, InstancePhase.PREPARING_SECURITY_GROUP, prepared.osSecurityGroupId(), version, timestamp);
         } else if (event instanceof SchedulingStarted) {
-            mapper.updatePhase(instanceId, "SCHEDULING", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.SCHEDULING, version, timestamp);
         } else if (event instanceof ParentPortPreparationStarted) {
-            mapper.updatePhase(instanceId, "PREPARING_PARENT_PORT", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_PARENT_PORT, version, timestamp);
         } else if (event instanceof ParentPortPrepared prepared) {
-            mapper.updateNetwork(instanceId, "PREPARING_PARENT_PORT", prepared.resources(), version, timestamp);
+            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_PARENT_PORT, prepared.resources(), version, timestamp);
         } else if (event instanceof SubPortPreparationStarted) {
-            mapper.updatePhase(instanceId, "PREPARING_SUB_PORT", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_SUB_PORT, version, timestamp);
         } else if (event instanceof SubPortPrepared prepared) {
-            mapper.updateNetwork(instanceId, "PREPARING_SUB_PORT", prepared.resources(), version, timestamp);
+            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_SUB_PORT, prepared.resources(), version, timestamp);
         } else if (event instanceof TrunkPreparationStarted) {
-            mapper.updatePhase(instanceId, "PREPARING_TRUNK", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_TRUNK, version, timestamp);
         } else if (event instanceof TrunkPrepared prepared) {
-            mapper.updateNetwork(instanceId, "PREPARING_TRUNK", prepared.resources(), version, timestamp);
+            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_TRUNK, prepared.resources(), version, timestamp);
         } else if (event instanceof ForwardingPreparationStarted
                 || event instanceof ForwardingCandidateSelected || event instanceof ForwardingPrepared) {
-            mapper.updatePhase(instanceId, "PREPARING_FORWARDING", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_FORWARDING, version, timestamp);
         } else if (event instanceof UserForwardingEvent changed) {
             mapper.updateUserForwarding(instanceId, "$." + JsonUtil.toJson(changed.forwarding().forwardingId()),
                     JsonUtil.toJson(changed.forwarding()), version, timestamp);
@@ -93,43 +94,43 @@ public final class InstanceProjectionHandler
         } else if (event instanceof InstanceQosUpdated updated) {
             mapper.updateQos(instanceId, updated.resources(), JsonUtil.toJson(updated.update()), version, timestamp);
         } else if (event instanceof HypervisorReservationStarted started) {
-            mapper.updateHypervisor(instanceId, "RESERVING_RESOURCES", started.hypervisorId(),
+            mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, started.hypervisorId(),
                     started.reservationId(), version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
-            mapper.updateHypervisor(instanceId, "RESERVING_RESOURCES", selected.hypervisorId(),
+            mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, selected.hypervisorId(),
                     selected.reservationId(), version, timestamp);
         } else if (event instanceof NovaCreationStarted started) {
-            mapper.updateNovaOperation(instanceId, "PROVISIONING", started.operationId(), version, timestamp);
+            mapper.updateNovaOperation(instanceId, InstancePhase.PROVISIONING, started.operationId(), version, timestamp);
         } else if (event instanceof NovaServerCreated created) {
-            mapper.updateNovaServer(instanceId, "PROVISIONING", created.osServerId(),
+            mapper.updateNovaServer(instanceId, InstancePhase.PROVISIONING, created.osServerId(),
                     created.status().name(), version, timestamp);
         } else if (event instanceof NovaReachedActive active) {
-            mapper.updateNovaServer(instanceId, "CHECKING_SSH", active.osServerId(),
+            mapper.updateNovaServer(instanceId, InstancePhase.CHECKING_SSH, active.osServerId(),
                     "ACTIVE", version, timestamp);
         } else if (event instanceof SshConnectivityVerified) {
-            mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.CONFIRMING, version, timestamp);
         } else if (event instanceof ReservationConfirmedForInstance) {
-            mapper.updatePhase(instanceId, "CONFIRMING", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.CONFIRMING, version, timestamp);
         } else if (event instanceof InstanceDeletionStarted) {
-            mapper.updatePhase(instanceId, "DELETING_NOVA", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.DELETING_NOVA, version, timestamp);
         } else if (event instanceof NovaDeletionAccepted accepted) {
-            mapper.updateNovaDeletion(instanceId, accepted.osServerId(), version, timestamp);
+            mapper.updateNovaDeletion(instanceId, InstancePhase.DELETING_NOVA, accepted.osServerId(), version, timestamp);
         } else if (event instanceof NovaServerDeleted) {
-            mapper.updatePhase(instanceId, "DELETING_FORWARDINGS", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.DELETING_FORWARDINGS, version, timestamp);
         } else if (event instanceof InstanceForwardingsDeleted) {
-            mapper.updatePhase(instanceId, "DELETING_NETWORK", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.DELETING_NETWORK, version, timestamp);
         } else if (event instanceof InstanceNetworkDeleted) {
-            mapper.updatePhase(instanceId, "DELETING_SECURITY_GROUP", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.DELETING_SECURITY_GROUP, version, timestamp);
         } else if (event instanceof InstanceSecurityGroupDeleted) {
-            mapper.updatePhase(instanceId, "CANCELLING_RESERVATION", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.CANCELLING_RESERVATION, version, timestamp);
         } else if (event instanceof InstanceReservationCancelled) {
-            mapper.updatePhase(instanceId, "RELEASING_ALLOCATION", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.RELEASING_ALLOCATION, version, timestamp);
         } else if (event instanceof InstanceDeleted) {
-            mapper.updatePhase(instanceId, "DELETED", version, timestamp);
+            mapper.updatePhase(instanceId, InstancePhase.DELETED, version, timestamp);
         } else if (event instanceof InstanceActivated) {
-            mapper.updateFailure(instanceId, "ACTIVE", null, null, version, timestamp);
+            mapper.updateFailure(instanceId, InstancePhase.ACTIVE, null, null, version, timestamp);
         } else if (event instanceof InstanceProvisioningFailed failed) {
-            mapper.updateFailure(instanceId, "FAILED", failed.failureCode(),
+            mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
                     failed.failureMessage(), version, timestamp);
         }
     }

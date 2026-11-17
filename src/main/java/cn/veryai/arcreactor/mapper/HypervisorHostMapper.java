@@ -25,7 +25,6 @@ public interface HypervisorHostMapper {
             @Param("vcpus") int vcpus,
             @Param("memoryGb") long memoryGb,
             @Param("diskGb") long diskGb,
-            @Param("availabilityZone") String availabilityZone,
             @Param("gpuCount") int gpuCount,
             @Param("regionId") String regionId,
             @Param("hypervisorType") String hypervisorType,

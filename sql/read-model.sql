@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS instance_view (
 
 -- One lifecycle record per claim on a floating IP, including failed and deleted mappings.
 CREATE TABLE IF NOT EXISTS port_forwarding (
+  floating_ip_id VARCHAR(255) NOT NULL,
   region_id VARCHAR(255) NOT NULL,
   os_floating_ip_id VARCHAR(255) NOT NULL,
   claim_id VARCHAR(255) NOT NULL,
@@ -172,7 +173,7 @@ CREATE TABLE IF NOT EXISTS port_forwarding (
   created_at TIMESTAMP(6) NOT NULL,
   updated_at TIMESTAMP(6) NOT NULL,
   deleted_at TIMESTAMP(6) NULL,
-  PRIMARY KEY (region_id, os_floating_ip_id, claim_id),
+  PRIMARY KEY (floating_ip_id, claim_id),
   INDEX idx_port_forwarding_instance (instance_id, internal_port),
   INDEX idx_port_forwarding_user_region (user_id, region_id),
   INDEX idx_port_forwarding_region_phase (region_id, phase),

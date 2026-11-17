@@ -98,7 +98,7 @@ public class FloatingIpService {
             entity.setPortMask(Base64.getEncoder().encodeToString(PortForwardingSnapshot.portMask(forwardings)));
             floatingIpRepo.insert(entity);
             Boolean enabled = floatingIpForwardings.enable(
-                    new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
+                    new FloatingIpIdentity(entity.getId(), entity.getRegionId(), entity.getOsFloatingIpId(),
                             entity.getFloatingIp(), entity.getDomain(), entity.getOsProjectId()), forwardings)
                     .toCompletableFuture().get();
             if (!Boolean.TRUE.equals(enabled)) {
@@ -122,7 +122,7 @@ public class FloatingIpService {
     public void enable(String id, EnableFloatingIpParam param) {
         FloatingIpEntity entity = requireFloatingIp(id);
         boolean accepted = awaitControl(floatingIpForwardings.enable(
-                new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
+                new FloatingIpIdentity(entity.getId(), entity.getRegionId(), entity.getOsFloatingIpId(),
                         entity.getFloatingIp(), entity.getDomain(), entity.getOsProjectId()),
                 param == null ? null : param.getForwardings()), ErrorCode.FLOATING_IP_ENABLE_FAILED);
         if (!accepted) throw new BaseException(ErrorCode.FLOATING_IP_ENABLE_REJECTED);
@@ -130,7 +130,7 @@ public class FloatingIpService {
 
     public void disable(String id) {
         FloatingIpEntity entity = requireFloatingIp(id);
-        if (!awaitControl(floatingIpForwardings.disable(entity.getRegionId(), entity.getOsFloatingIpId()),
+        if (!awaitControl(floatingIpForwardings.disable(entity.getId()),
                 ErrorCode.FLOATING_IP_DISABLE_FAILED)) {
             throw new BaseException(ErrorCode.FLOATING_IP_DISABLE_FAILED);
         }

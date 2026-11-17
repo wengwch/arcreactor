@@ -108,7 +108,7 @@ public class InstanceService {
         return AskPattern.<WorkflowCommand, InstanceWorkflowState>ask(
                         pekkoRuntime.instanceActor(instanceId),
                         GetInstanceState::new,
-                        pekkoRuntime.getInstanceAskTimeout(),
+                        pekkoRuntime.getConfig().getAskTimeout(),
                         pekkoRuntime.getActorSystem().scheduler())
                 .thenApply(state -> {
                     if (state.requestId() == null) throw new BaseException(ErrorCode.RESOURCE_NOT_FOUND);
@@ -119,7 +119,7 @@ public class InstanceService {
     public CompletionStage<Void> delete(String instanceId) {
         return get(instanceId).thenCompose(ignored -> AskPattern.<WorkflowCommand, InstanceReply>ask(
                 pekkoRuntime.instanceActor(instanceId), DeleteInstance::new,
-                pekkoRuntime.getInstanceAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
+                pekkoRuntime.getConfig().getAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
                 .<Void>handle((reply, error) -> {
                     if (error != null) {
                         Throwable cause = error;
@@ -156,7 +156,7 @@ public class InstanceService {
             Function<ActorRef<InstanceMutationReply>, WorkflowCommand> command) {
         return get(instanceId).thenCompose(ignored -> AskPattern.<WorkflowCommand, InstanceMutationReply>ask(
                 pekkoRuntime.instanceActor(instanceId), command,
-                pekkoRuntime.getInstanceAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
+                pekkoRuntime.getConfig().getAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
                 .handle((reply, error) -> {
                     if (error != null) {
                         Throwable cause = error;
@@ -183,7 +183,7 @@ public class InstanceService {
         return AskPattern.<WorkflowCommand, InstanceReply>ask(
                 pekkoRuntime.instanceActor(instanceId),
                 replyTo -> new CreateInstance(requestId, instanceId, spec, replyTo),
-                pekkoRuntime.getInstanceAskTimeout(),
+                pekkoRuntime.getConfig().getAskTimeout(),
                 pekkoRuntime.getActorSystem().scheduler()).handle((reply, error) -> {
             if (error != null) {
                 Throwable cause = error;
@@ -227,18 +227,18 @@ public class InstanceService {
 
     private CreationDefaults creationDefaults(CreateInstanceParam param, RegionEntity region) {
         // A user's instances reuse the same regional share and network specification.
-        List<String> osFloatingIpIds = floatingIpRepo.findByRegionId(region.getId()).stream()
+        List<String> floatingIpIds = floatingIpRepo.findByRegionId(region.getId()).stream()
                 .filter(FloatingIpEntity::isEnabled)
-                .filter(ip -> StringUtils.isNoneBlank(ip.getOsFloatingIpId(), ip.getFloatingIp(), ip.getOsProjectId()))
-                .map(FloatingIpEntity::getOsFloatingIpId).distinct().toList();
-        if (osFloatingIpIds.isEmpty()) throw new BaseException(ErrorCode.INSTANCE_FLOATING_IP_UNAVAILABLE);
+                .filter(ip -> StringUtils.isNoneBlank(ip.getId(), ip.getOsFloatingIpId(), ip.getFloatingIp(), ip.getOsProjectId()))
+                .map(FloatingIpEntity::getId).distinct().toList();
+        if (floatingIpIds.isEmpty()) throw new BaseException(ErrorCode.INSTANCE_FLOATING_IP_UNAVAILABLE);
         ShareSpec share;
         NetworkRequirement network;
         CloudInitSpec cloudInit;
         ForwardingRequirement forwarding;
         try {
             cloudInitRenderer.validateConfiguration();
-            forwarding = new ForwardingRequirement(osFloatingIpIds, creationProperties.getForwardingPorts());
+            forwarding = new ForwardingRequirement(floatingIpIds, creationProperties.getForwardingPorts());
             if (!forwarding.internalPorts().contains(22)) {
                 throw new IllegalArgumentException("forwarding-ports must include 22 for SSH connectivity checking");
             }

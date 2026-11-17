@@ -118,11 +118,6 @@ public final class HypervisorActor
             return rejectUnavailable(command, ReserveRejected.Reason.NOT_ACTIVE,
                     "hypervisor status is " + state.status());
         }
-        if (command.availabilityZone() != null
-                && !command.availabilityZone().equals(state.capacity().availabilityZone())) {
-            return rejectUnavailable(command, ReserveRejected.Reason.INVALID_REQUEST,
-                    "host no longer matches placement constraints");
-        }
         var assigned = state.assignResources(command.resources());
         if (assigned.isEmpty()) {
             return rejectUnavailable(command, ReserveRejected.Reason.INSUFFICIENT_RESOURCE,

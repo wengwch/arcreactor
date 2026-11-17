@@ -11,7 +11,6 @@
 
     <update id="updateCapacity">
         UPDATE hypervisor_host SET
-          availability_zone = #{capacity.availabilityZone},
           vcpus = #{capacity.totalVcpus},
           ram = #{capacity.totalMemoryGb},
           disk = #{capacity.totalDiskGb},

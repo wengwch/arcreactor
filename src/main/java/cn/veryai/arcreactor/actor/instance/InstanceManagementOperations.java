@@ -23,39 +23,39 @@ final class InstanceManagementOperations {
   CompletionStage<ForwardingReply> createForwarding(InstanceWorkflowState state, UserForwarding forwarding) {
     return client.ensureInstanceForwardingAccess(target(state), state.instanceId(), state.osSecurityGroupId(),
         forwarding.internalPort()).thenCompose(ignored -> forwardings.create(
-            forwarding.osFloatingIpId(), forwarding.forwardingId(), spec(state, forwarding)));
+            forwarding.floatingIpId(), forwarding.forwardingId(), spec(state, forwarding)));
   }
 
-  CompletionStage<ForwardingReply> checkForwardingCreation(InstanceWorkflowState state, UserForwarding forwarding) {
-    return forwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.forwardingId());
+  CompletionStage<ForwardingReply> checkForwardingCreation(UserForwarding forwarding) {
+    return forwardings.get(forwarding.floatingIpId(), forwarding.forwardingId());
   }
 
   CompletionStage<ForwardingReply> deleteForwarding(InstanceWorkflowState state, UserForwarding forwarding) {
-    return forwardings.delete(state.spec().region(), forwarding.osFloatingIpId(), forwarding.forwardingId())
+    return forwardings.delete(forwarding.floatingIpId(), forwarding.forwardingId())
         .thenCompose(reply -> cleanAccessAfterDeletion(state, forwarding, reply));
   }
 
   CompletionStage<ForwardingReply> checkForwardingDeletion(InstanceWorkflowState state, UserForwarding forwarding) {
-    return forwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.forwardingId())
+    return forwardings.get(forwarding.floatingIpId(), forwarding.forwardingId())
         .thenCompose(reply -> cleanAccessAfterDeletion(state, forwarding, reply));
   }
 
   /** Query first on recovery; only an absent claim allows submitting its durable creation intent again. */
   CompletionStage<ForwardingReply> recoverForwardingCreation(InstanceWorkflowState state, UserForwarding forwarding) {
-    return forwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.forwardingId())
+    return forwardings.get(forwarding.floatingIpId(), forwarding.forwardingId())
         .thenCompose(reply -> {
           if (reply == null || reply.status() != ForwardingReply.Status.NOT_FOUND) {
             return CompletableFuture.completedFuture(reply);
           }
           return client.ensureInstanceForwardingAccess(target(state), state.instanceId(), state.osSecurityGroupId(),
               forwarding.internalPort()).thenCompose(ignored -> forwardings.create(
-                  forwarding.osFloatingIpId(), forwarding.forwardingId(), spec(state, forwarding)));
+                  forwarding.floatingIpId(), forwarding.forwardingId(), spec(state, forwarding)));
         });
   }
 
   /** A persisted deletion is resumed independently of normal submission. */
   CompletionStage<ForwardingReply> recoverForwardingDeletion(InstanceWorkflowState state, UserForwarding forwarding) {
-    return forwardings.get(state.spec().region(), forwarding.osFloatingIpId(), forwarding.forwardingId())
+    return forwardings.get(forwarding.floatingIpId(), forwarding.forwardingId())
         .thenCompose(reply -> {
           if (reply == null || reply.status() == ForwardingReply.Status.IN_PROGRESS) {
             return CompletableFuture.completedFuture(reply);
@@ -63,7 +63,7 @@ final class InstanceManagementOperations {
           if (reply.status() == ForwardingReply.Status.DELETED) {
             return cleanAccessAfterDeletion(state, forwarding, reply);
           }
-          return forwardings.delete(state.spec().region(), forwarding.osFloatingIpId(), forwarding.forwardingId())
+          return forwardings.delete(forwarding.floatingIpId(), forwarding.forwardingId())
               .thenCompose(deleted -> cleanAccessAfterDeletion(state, forwarding, deleted));
         });
   }

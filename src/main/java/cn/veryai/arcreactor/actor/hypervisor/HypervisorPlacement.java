@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
+import org.apache.commons.lang3.StringUtils;
 
 /** Public hypervisor module facade used by instance lifecycle coordinators. */
 public interface HypervisorPlacement {
@@ -34,7 +35,6 @@ public interface HypervisorPlacement {
             String reservationId,
             String instanceId,
             Resources resources,
-            String availabilityZone,
             String regionId,
             String hypervisorType,
             String hostname) implements Serializable {
@@ -43,6 +43,7 @@ public interface HypervisorPlacement {
             requireText(reservationId, "reservationId");
             requireText(instanceId, "instanceId");
             Objects.requireNonNull(resources, "resources");
+            hostname = StringUtils.trimToNull(hostname);
         }
     }
 

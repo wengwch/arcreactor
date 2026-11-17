@@ -6,21 +6,18 @@
         SET enabled = #{enabled,jdbcType=BOOLEAN},
             port_mask = #{portMask,jdbcType=LONGVARCHAR},
             resource_version = #{version,jdbcType=BIGINT}
-        WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}
+        WHERE id = #{identity.floatingIpId,jdbcType=VARCHAR}
           AND resource_version &lt; #{version,jdbcType=BIGINT}
     </update>
 
     <select id="findResourceVersion" resultType="java.lang.Long">
         SELECT resource_version
         FROM floating_ip
-        WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}
+        WHERE id = #{identity.floatingIpId,jdbcType=VARCHAR}
     </select>
 
     <sql id="newerForwarding">
-        WHERE region_id = #{event.identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{event.identity.osFloatingIpId,jdbcType=VARCHAR}
+        WHERE floating_ip_id = #{event.identity.floatingIpId,jdbcType=VARCHAR}
           AND claim_id = #{event.claimId,jdbcType=VARCHAR}
           AND resource_version &lt; #{version,jdbcType=BIGINT}
     </sql>
@@ -29,11 +26,12 @@
          Assign the version last so every guard observes the previous version. -->
     <insert id="upsertForwardingCreated">
         INSERT INTO port_forwarding (
-          region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id, kind,
+          floating_ip_id, region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id, kind,
           floating_ip, domain, os_internal_port_id, fixed_ip, internal_port, external_port,
           os_tcp_forwarding_id, os_udp_forwarding_id, phase, failure_message,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
+          #{event.identity.floatingIpId,jdbcType=VARCHAR},
           #{event.identity.regionId,jdbcType=VARCHAR},
           #{event.identity.osFloatingIpId,jdbcType=VARCHAR},
           #{event.claimId,jdbcType=VARCHAR},
@@ -122,9 +120,10 @@
     <!-- Deleting an unknown claim also creates a terminal row. Existing rows retain their mapping details. -->
     <insert id="upsertForwardingDeleted">
         INSERT INTO port_forwarding (
-          region_id, os_floating_ip_id, claim_id, floating_ip, domain, phase,
+          floating_ip_id, region_id, os_floating_ip_id, claim_id, floating_ip, domain, phase,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
+          #{event.identity.floatingIpId,jdbcType=VARCHAR},
           #{event.identity.regionId,jdbcType=VARCHAR},
           #{event.identity.osFloatingIpId,jdbcType=VARCHAR},
           #{event.claimId,jdbcType=VARCHAR},
@@ -142,8 +141,7 @@
     <select id="findForwardingVersion" resultType="java.lang.Long">
         SELECT resource_version
         FROM port_forwarding
-        WHERE region_id = #{identity.regionId,jdbcType=VARCHAR}
-          AND os_floating_ip_id = #{identity.osFloatingIpId,jdbcType=VARCHAR}
+        WHERE floating_ip_id = #{identity.floatingIpId,jdbcType=VARCHAR}
           AND claim_id = #{claimId,jdbcType=VARCHAR}
     </select>
 </mapper>

@@ -56,7 +56,6 @@ CREATE TABLE IF NOT EXISTS hypervisor_host (
   expected_maintenance_time DATETIME(6),
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   region_id VARCHAR(255) NOT NULL,
-  availability_zone VARCHAR(255) NOT NULL DEFAULT 'default',
   reserved_vcpu INT NOT NULL DEFAULT 0,
   available_vcpu INT GENERATED ALWAYS AS (vcpus - used_vcpus - reserved_vcpu) STORED,
   reserved_memory_gb BIGINT NOT NULL DEFAULT 0 COMMENT 'GB',

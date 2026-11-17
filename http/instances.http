@@ -124,3 +124,21 @@ Accept: application/json
 {
   "parentPort": {"maxKbps": 0, "maxBurstKbits": 0}
 }
+
+### 11. 查询用户名下的实例列表（数据库读模型）
+# 直接查询 instance_view，不调用 Actor；HTTP 202 后可能需要等待异步投影。
+# result 为数组，按 createdAt 降序、instanceId 升序；无分页，默认包含所有阶段（含 DELETED）。
+# 字段按表结构平铺；userForwardings/qosUpdate 返回 JSON 对象，默认连接时区下时间携带 +08:00。
+GET {{baseUrl}}/api/v1/users/{{userId}}/instances
+Accept: application/json
+
+### 12. 按区域和阶段筛选用户实例
+# regionId、phase 均可省略；phase 使用精确枚举名称，例如 ACTIVE、FAILED、DELETED。
+GET {{baseUrl}}/api/v1/users/{{userId}}/instances?regionId={{regionId}}&phase=ACTIVE
+Accept: application/json
+
+### 13. 查询该用户的单个实例（数据库读模型）
+# 同时按 userId 和 instanceId 查询；记录尚未投影、不存在或属于其他用户时返回业务 code=404。
+# 查询结果只来自 instance_view，当前 Actor 状态和已确认转发映射仍可使用第 5 项接口查询。
+GET {{baseUrl}}/api/v1/users/{{userId}}/instances/{{instanceId}}
+Accept: application/json
