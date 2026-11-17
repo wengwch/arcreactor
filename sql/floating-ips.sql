@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS floating_ip (
   os_project_id VARCHAR(255) NOT NULL,
   os_floating_ip_id VARCHAR(255) NOT NULL,
   floating_ip VARCHAR(255) NOT NULL,
+  domain VARCHAR(255) NULL,
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
   port_mask TEXT NOT NULL,
   resource_version BIGINT NOT NULL DEFAULT 0,

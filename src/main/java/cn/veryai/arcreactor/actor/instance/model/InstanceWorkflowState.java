@@ -81,7 +81,7 @@ public record InstanceWorkflowState(
                 && preparedForwardings.size() < spec.forwarding().internalPorts().size()) {
             result.add(new PreparedForwarding(
                     InstanceOperationIds.forwardingClaimId(this),
-                    spec.forwarding().osFloatingIpIds().get(forwardingCandidateIndex), null,
+                    spec.forwarding().osFloatingIpIds().get(forwardingCandidateIndex), null, null,
                     currentForwardingPort(), 0, null, null,
                     ForwardingKind.SYSTEM));
         }

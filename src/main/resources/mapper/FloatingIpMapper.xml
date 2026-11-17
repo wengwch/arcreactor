@@ -3,14 +3,14 @@
 <mapper namespace="cn.veryai.arcreactor.mapper.FloatingIpMapper">
     <select id="findById" resultType="cn.veryai.arcreactor.entity.FloatingIpEntity">
         SELECT id, name, description, region_id, ext_net_id, os_ext_net_id,
-               os_project_id, os_floating_ip_id, floating_ip, enabled, port_mask, resource_version
+               os_project_id, os_floating_ip_id, floating_ip, domain, enabled, port_mask, resource_version
         FROM floating_ip
         WHERE id = #{id}
     </select>
 
     <select id="findByRegionId" resultType="cn.veryai.arcreactor.entity.FloatingIpEntity">
         SELECT id, name, description, region_id, ext_net_id, os_ext_net_id,
-               os_project_id, os_floating_ip_id, floating_ip, enabled, port_mask, resource_version
+               os_project_id, os_floating_ip_id, floating_ip, domain, enabled, port_mask, resource_version
         FROM floating_ip
         WHERE region_id = #{regionId}
         ORDER BY name, id
@@ -18,9 +18,10 @@
 
     <insert id="insert">
         INSERT INTO floating_ip (id, name, description, region_id, ext_net_id,
-                                 os_ext_net_id, os_project_id, os_floating_ip_id, floating_ip, enabled, port_mask)
+                                 os_ext_net_id, os_project_id, os_floating_ip_id, floating_ip, domain, enabled, port_mask)
         VALUES (#{id}, #{name}, #{description}, #{regionId}, #{extNetId},
-                #{osExtNetId}, #{osProjectId}, #{osFloatingIpId}, #{floatingIp}, #{enabled,jdbcType=BOOLEAN},
+                #{osExtNetId}, #{osProjectId}, #{osFloatingIpId}, #{floatingIp}, #{domain,jdbcType=VARCHAR},
+                #{enabled,jdbcType=BOOLEAN},
                 #{portMask,jdbcType=LONGVARCHAR})
     </insert>
 </mapper>

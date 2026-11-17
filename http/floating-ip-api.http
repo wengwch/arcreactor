@@ -1,10 +1,12 @@
 # 新库先执行 sql/floating-ips.sql；已按旧结构建表的库执行 sql/migrations/add-floating-ip-port-mask.sql。
 # 已有 floating_ip 表还需执行 sql/migrations/add-floating-ip-projection-version.sql，增加投影版本列。
 # 缺少 enabled 字段时执行 sql/migrations/add-floating-ip-enabled.sql；已有记录默认未启用，不回填历史状态。
+# 缺少 domain 字段时执行 sql/migrations/add-floating-ip-domain.sql，已有记录的域名为空。
 # 先执行 http/sys-network-router.http 中的公网网络请求，保存 csvPublicNetworkId，
 # 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
 # Test-SH-01 所属集群的 osAdminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
 # 创建参数不再接收 portMask；新建地址使用空占用，登记已有地址时由服务端查询 OpenStack 的现有转发规则。
+# domain 为可选域名，最多 255 字符；省略、null、空字符串或仅空白均表示无域名，保存为 NULL。
 # 新建和登记都会通过 EnableFloatingIp 启用对应 Actor，等待 FloatingIpEnabled 持久化启用状态、身份和初始位图后返回。
 # 响应 enabled=true 表示 Actor 已确认启用，数据库 enabled 在投影完成后更新。
 # 未启用的 Actor 会立即拒绝创建转发；重启后从事件和快照恢复启用状态，无需重新启用。
@@ -21,6 +23,7 @@ Content-Type: application/json
 
 {
   "name": "shared-floating-ip",
+  "domain": "gateway.example.com",
   "regionId": "{{regionId}}",
   "extNetId": "{{extNetId}}"
 }

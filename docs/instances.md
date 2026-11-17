@@ -667,14 +667,15 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
       }
     },
     "forwardings": [
-      {"internalPort": 22, "floatingIp": "203.0.113.10", "externalPort": 10000, "kind": "SYSTEM"},
-      {"internalPort": 8888, "floatingIp": "203.0.113.10", "externalPort": 10001, "kind": "SYSTEM"}
+      {"internalPort": 22, "floatingIp": "203.0.113.10", "domain": "gateway.example.com", "externalPort": 10000, "kind": "SYSTEM"},
+      {"internalPort": 8888, "floatingIp": "203.0.113.10", "domain": "gateway.example.com", "externalPort": 10001, "kind": "SYSTEM"}
     ]
   }
 }
 ```
 
 实际每条映射还包含 `claimId`、`osFloatingIpId`、`osTcpForwardingId` 和 `osUdpForwardingId`。
+`domain` 保存该转发创建时浮动 IP 的可选域名；未配置时为空，系统和用户转发均保存并返回此字段。
 SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 username>@203.0.113.10`。
 JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
 创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动。
@@ -847,7 +848,7 @@ QoS 资源记录对应 `os_parent_qos_policy_id`、`os_parent_qos_ingress_rule_i
 与其他投影一起由 `cloud.projection.enabled` 和 `cloud.projection.slice-ranges` 控制。
 投影按 `(region_id, os_floating_ip_id)` 直接更新已登记的 `floating_ip` 表中的 `enabled`、`port_mask`
 和 `resource_version`。`enabled` 为非空布尔值，登记时默认为 `false`，由启用和禁用事件更新。
-名称、描述、外部网络和地址等字段仍由登记流程维护。
+名称、描述、外部网络、地址和可选域名 `domain` 等字段仍由登记流程维护；域名最多 255 字符，省略、`null` 或空白均保存为 `NULL`。
 
 `FloatingIpEnabled`、`FloatingIpDisabled`、`ForwardingPortAllocated` 和 `ForwardingDeleted`
 携带事件生效后的完整端口位图 `usedPortMask`，投影将该总位图编码为标准 Base64 字符串，
@@ -864,12 +865,12 @@ claim 已不存在时，`ForwardingDeleted` 携带当前位图，投影仍更新
 
 同一投影同时将端口转发生命周期写入 `port_forwarding`，主键为
 `(region_id, os_floating_ip_id, claim_id)`，同一 claim 在不同候选浮动 IP 上的尝试分别保存。
-记录包含用户、实例、项目、`kind`（`SYSTEM`／`USER`）、目标 Neutron 端口、固定 IP、内部/公网端口、浮动 IP 地址、
+记录包含用户、实例、项目、`kind`（`SYSTEM`／`USER`）、目标 Neutron 端口、固定 IP、内部/公网端口、浮动 IP 地址及可空域名 `domain`、
 TCP/UDP 规则 ID、阶段、失败原因、版本和创建/更新/删除时间。
 
 | 事件 | 端口转发记录 |
 | --- | --- |
-| `ForwardingCreationRequested` | 写入请求规格，阶段为 `CREATING` |
+| `ForwardingCreationRequested` | 写入请求规格和创建时的浮动 IP 域名，阶段为 `CREATING` |
 | `ForwardingPortAllocated` | 写入预留的公网端口 |
 | `ForwardingBecameReady` | 写入 TCP/UDP 规则 ID，阶段为 `READY` |
 | `ForwardingCreationFailed` | 阶段为 `FAILED`，记录失败原因 |
@@ -899,6 +900,7 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 增列脚本中已有记录默认未启用，不回填历史启用状态。当前状态与事件结构直接用于开发阶段，不提供历史事件兼容转换。
 端口转发表随 `sql/read-model.sql` 初始化，也可单独执行 `sql/migrations/add-port-forwarding-projection.sql`。
 已有端口转发表可执行 `sql/migrations/add-port-forwarding-kind.sql` 增加类型字段；脚本不回填未知的历史类型。
+缺少域名字段时执行 `sql/migrations/add-port-forwarding-domain.sql`，已有记录的域名为空；删除转发时保留该记录的原域名。
 已有 `floating-ip` 投影进度时，新增表不会自动补齐之前消费的事件；重建该读模型需要从创建事件开始重放。
 
 ## 实例读模型

@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS port_forwarding (
   os_project_id VARCHAR(255),
   kind VARCHAR(16),
   floating_ip VARCHAR(45) NOT NULL,
+  domain VARCHAR(255) NULL,
   os_internal_port_id VARCHAR(255),
   fixed_ip VARCHAR(45),
   internal_port INT,

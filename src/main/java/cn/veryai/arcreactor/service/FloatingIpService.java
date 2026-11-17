@@ -77,6 +77,7 @@ public class FloatingIpService {
         entity.setOsProjectId(osProjectId);
         entity.setOsFloatingIpId(param.getOsFloatingIpId());
         entity.setFloatingIp(param.getFloatingIp());
+        entity.setDomain(StringUtils.trimToNull(param.getDomain()));
 
         try {
             List<PortForwardingSnapshot> forwardings = List.of();
@@ -98,7 +99,7 @@ public class FloatingIpService {
             floatingIpRepo.insert(entity);
             Boolean enabled = floatingIpForwardings.enable(
                     new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
-                            entity.getFloatingIp(), entity.getOsProjectId()), forwardings)
+                            entity.getFloatingIp(), entity.getDomain(), entity.getOsProjectId()), forwardings)
                     .toCompletableFuture().get();
             if (!Boolean.TRUE.equals(enabled)) {
                 throw new IllegalStateException("Floating IP actor identity conflicts or it is already enabled");
@@ -122,7 +123,7 @@ public class FloatingIpService {
         FloatingIpEntity entity = requireFloatingIp(id);
         boolean accepted = awaitControl(floatingIpForwardings.enable(
                 new FloatingIpIdentity(entity.getRegionId(), entity.getOsFloatingIpId(),
-                        entity.getFloatingIp(), entity.getOsProjectId()),
+                        entity.getFloatingIp(), entity.getDomain(), entity.getOsProjectId()),
                 param == null ? null : param.getForwardings()), ErrorCode.FLOATING_IP_ENABLE_FAILED);
         if (!accepted) throw new BaseException(ErrorCode.FLOATING_IP_ENABLE_REJECTED);
     }

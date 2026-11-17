@@ -30,7 +30,7 @@
     <insert id="upsertForwardingCreated">
         INSERT INTO port_forwarding (
           region_id, os_floating_ip_id, claim_id, instance_id, user_id, os_project_id, kind,
-          floating_ip, os_internal_port_id, fixed_ip, internal_port, external_port,
+          floating_ip, domain, os_internal_port_id, fixed_ip, internal_port, external_port,
           os_tcp_forwarding_id, os_udp_forwarding_id, phase, failure_message,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
@@ -42,6 +42,7 @@
           #{event.spec.osProjectId,jdbcType=VARCHAR},
           #{event.spec.kind,jdbcType=VARCHAR},
           #{event.identity.floatingIp,jdbcType=VARCHAR},
+          #{event.identity.domain,jdbcType=VARCHAR},
           #{event.spec.osInternalPortId,jdbcType=VARCHAR},
           #{event.spec.fixedIp,jdbcType=VARCHAR},
           #{event.spec.internalPort,jdbcType=INTEGER},
@@ -53,6 +54,7 @@
           os_project_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_project_id), os_project_id),
           kind = IF(resource_version &lt; VALUES(resource_version), VALUES(kind), kind),
           floating_ip = IF(resource_version &lt; VALUES(resource_version), VALUES(floating_ip), floating_ip),
+          domain = IF(resource_version &lt; VALUES(resource_version), VALUES(domain), domain),
           os_internal_port_id = IF(resource_version &lt; VALUES(resource_version), VALUES(os_internal_port_id), os_internal_port_id),
           fixed_ip = IF(resource_version &lt; VALUES(resource_version), VALUES(fixed_ip), fixed_ip),
           internal_port = IF(resource_version &lt; VALUES(resource_version), VALUES(internal_port), internal_port),
@@ -80,6 +82,7 @@
     <update id="updateForwardingReady">
         UPDATE port_forwarding SET
           floating_ip = #{event.resources.floatingIpAddress,jdbcType=VARCHAR},
+          domain = #{event.resources.domain,jdbcType=VARCHAR},
           external_port = #{event.resources.externalPort,jdbcType=INTEGER},
           os_tcp_forwarding_id = #{event.resources.osTcpForwardingId,jdbcType=VARCHAR},
           os_udp_forwarding_id = #{event.resources.osUdpForwardingId,jdbcType=VARCHAR},
@@ -119,13 +122,14 @@
     <!-- Deleting an unknown claim also creates a terminal row. Existing rows retain their mapping details. -->
     <insert id="upsertForwardingDeleted">
         INSERT INTO port_forwarding (
-          region_id, os_floating_ip_id, claim_id, floating_ip, phase,
+          region_id, os_floating_ip_id, claim_id, floating_ip, domain, phase,
           resource_version, created_at, updated_at, deleted_at)
         VALUES (
           #{event.identity.regionId,jdbcType=VARCHAR},
           #{event.identity.osFloatingIpId,jdbcType=VARCHAR},
           #{event.claimId,jdbcType=VARCHAR},
           #{event.identity.floatingIp,jdbcType=VARCHAR},
+          #{event.identity.domain,jdbcType=VARCHAR},
           'DELETED', #{version,jdbcType=BIGINT},
           #{updatedAt,jdbcType=TIMESTAMP}, #{updatedAt,jdbcType=TIMESTAMP}, #{deletedAt,jdbcType=TIMESTAMP})
         ON DUPLICATE KEY UPDATE

@@ -4,7 +4,7 @@ import java.io.Serializable;
 import java.util.List;
 
 /** Immutable OpenStack identity persisted when enabling one floating-IP actor. */
-public record FloatingIpIdentity(String regionId, String osFloatingIpId, String floatingIp,
+public record FloatingIpIdentity(String regionId, String osFloatingIpId, String floatingIp, String domain,
     String osProjectId) implements Serializable {
   public FloatingIpIdentity {
     for (String value : List.of(regionId, osFloatingIpId, floatingIp, osProjectId)) {

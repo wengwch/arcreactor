@@ -20,5 +20,7 @@ public class SaveFloatingIpParam {
     private String osFloatingIpId;
     @Size(max = 255)
     private String floatingIp;
+    @Size(max = 255)
+    private String domain;
     private boolean initOpenstack = true;
 }

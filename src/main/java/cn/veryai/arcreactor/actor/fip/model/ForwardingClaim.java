@@ -22,9 +22,9 @@ public record ForwardingClaim(String claimId, String osFloatingIpId, ForwardingS
 
   public boolean ownsPort() { return resources.externalPort() > 0; }
 
-  public ForwardingClaim allocated(String address, int port) {
+  public ForwardingClaim allocated(String address, String domain, int port) {
     // Reservation and rule creation belong to the same async operation and generation.
-    return copy(Phase.CREATING, new ForwardingResources(address, port, null, null),
+    return copy(Phase.CREATING, new ForwardingResources(address, domain, port, null, null),
         generation, null);
   }
 

@@ -493,7 +493,8 @@ public class OpenStackClient {
           forwardingMarker(claimId, NetProtocol.TCP));
       String osUdpForwardingId = createPortForwarding(service, identity.osFloatingIpId(), externalPort, spec, NetProtocol.UDP,
           forwardingMarker(claimId, NetProtocol.UDP));
-      return new ForwardingResources(identity.floatingIp(), externalPort, osTcpForwardingId, osUdpForwardingId);
+      return new ForwardingResources(identity.floatingIp(), identity.domain(), externalPort,
+          osTcpForwardingId, osUdpForwardingId);
     }, NETWORK_EXECUTOR);
   }
 
@@ -516,7 +517,8 @@ public class OpenStackClient {
       if (osUdpForwardingId == null) {
         osUdpForwardingId = createPortForwarding(service, identity.osFloatingIpId(), externalPort, spec, NetProtocol.UDP, udpMarker);
       }
-      return new ForwardingResources(identity.floatingIp(), externalPort, osTcpForwardingId, osUdpForwardingId);
+      return new ForwardingResources(identity.floatingIp(), identity.domain(), externalPort,
+          osTcpForwardingId, osUdpForwardingId);
     }, NETWORK_EXECUTOR);
   }
 

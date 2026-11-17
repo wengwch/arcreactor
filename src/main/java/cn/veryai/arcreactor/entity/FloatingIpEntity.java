@@ -15,6 +15,7 @@ public class FloatingIpEntity {
     private String osProjectId;
     private String osFloatingIpId;
     private String floatingIp;
+    private String domain;
     private boolean enabled;
     /** Base64-encoded port bitmap; an empty bitmap is stored as an empty string. */
     private String portMask = "";

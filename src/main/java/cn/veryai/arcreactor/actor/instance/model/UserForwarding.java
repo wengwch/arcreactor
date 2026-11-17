@@ -16,7 +16,7 @@ public record UserForwarding(String forwardingId, String osFloatingIpId, int int
     return new UserForwarding(forwardingId, osFloatingIpId, internalPort, next, resources, detail, generation + 1);
   }
   public PreparedForwarding deletionTarget() {
-    return resources != null ? resources : new PreparedForwarding(forwardingId, osFloatingIpId, null,
+    return resources != null ? resources : new PreparedForwarding(forwardingId, osFloatingIpId, null, null,
         internalPort, 0, null, null, ForwardingKind.USER);
   }
 }

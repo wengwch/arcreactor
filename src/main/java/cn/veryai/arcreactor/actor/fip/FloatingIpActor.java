@@ -151,7 +151,7 @@ public final class FloatingIpActor
           .thenRun(next -> command.replyTo().tell(reply(next, command.claimId())));
     }
     ForwardingClaim allocated = ForwardingClaim.requested(command.claimId(), state.identity().osFloatingIpId(),
-        command.spec()).allocated(state.identity().floatingIp(), port);
+        command.spec()).allocated(state.identity().floatingIp(), state.identity().domain(), port);
     events.add(new ForwardingPortAllocated(state.identity(), command.claimId(), port, state.enabled(),
         state.updated(allocated).usedPorts().toByteArray()));
     return Effect().persist(events)
@@ -282,6 +282,7 @@ public final class FloatingIpActor
     return resources != null && resources.externalPort() == claim.resources().externalPort()
         && identity.floatingIp().equals(resources.floatingIpAddress())
         && Objects.equals(claim.resources().floatingIpAddress(), resources.floatingIpAddress())
+        && Objects.equals(claim.resources().domain(), resources.domain())
         && resources.osTcpForwardingId() != null && !resources.osTcpForwardingId().isBlank()
         && resources.osUdpForwardingId() != null && !resources.osUdpForwardingId().isBlank();
   }
@@ -335,7 +336,8 @@ public final class FloatingIpActor
             state.updated(ForwardingClaim.requested(event.claimId(), event.identity().osFloatingIpId(),
                 event.spec())))
         .onEvent(ForwardingPortAllocated.class, (state, event) ->
-            state.updated(state.claims().get(event.claimId()).allocated(event.identity().floatingIp(), event.externalPort())))
+            state.updated(state.claims().get(event.claimId()).allocated(
+                event.identity().floatingIp(), event.identity().domain(), event.externalPort())))
         .onEvent(ForwardingBecameReady.class, (state, event) ->
             state.updated(state.claims().get(event.claimId()).ready(event.resources())))
         .onEvent(ForwardingCreationFailed.class, (state, event) ->
