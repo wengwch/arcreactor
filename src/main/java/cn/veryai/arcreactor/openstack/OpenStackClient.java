@@ -387,64 +387,6 @@ public class OpenStackClient {
     }
   }
 
-  public void updateProject(String region, String osProjectId, String name) {
-    OSClient.OSClientV3 osClient = getOsAdminClient(region, osProjectId);
-    osClient.identity().projects().update(Builders.project().id(osProjectId).name(name).build());
-  }
-
-  public SecurityGroup getSecurityGroup(String region, String osProjectId) {
-    OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
-    return client.networking().securitygroup().list(Map.of("project_id", osProjectId)).stream()
-        .filter(s -> s.getName().equalsIgnoreCase("default"))
-        .findFirst()
-        .orElse(null);
-  }
-
-  public void deleteSecurityGroupRule(String region, String osProjectId, String osSecurityGroupRuleId) {
-    OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
-    client.networking().securityrule().delete(osSecurityGroupRuleId);
-  }
-
-  public SecurityGroupRule addSecurityGroupRule(
-      String region, String osProjectId, String osSecurityGroupId, int port, NetProtocol protocol) {
-    OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
-    SecurityGroupRule sgr =
-        client
-            .networking()
-            .securityrule()
-            .list(Map.of("project_id", osProjectId, "security_group_id", osSecurityGroupId))
-            .stream()
-            .filter(
-                securityGroupRule ->
-                    protocol.name().equalsIgnoreCase(securityGroupRule.getProtocol()))
-            .filter(
-                securityGroupRule ->
-                    securityGroupRule.getPortRangeMin() != null
-                        && securityGroupRule.getPortRangeMax() != null)
-            .filter(
-                securityGroupRule ->
-                    port >= securityGroupRule.getPortRangeMin()
-                        && port <= securityGroupRule.getPortRangeMax())
-            .findFirst()
-            .orElse(null);
-    if (sgr != null) {
-      return sgr;
-    }
-    return client
-        .networking()
-        .securityrule()
-        .create(
-            Builders.securityGroupRule()
-                .securityGroupId(osSecurityGroupId)
-                .protocol(protocol.name().toLowerCase())
-                .direction("ingress")
-                .ethertype("IPv4")
-                .portRangeMin(port)
-                .portRangeMax(port)
-                .remoteIpPrefix("0.0.0.0/0")
-                .build());
-  }
-
   /** Reads existing rule IDs and external ports for floating IP activation. */
   public CompletionStage<List<PortForwardingSnapshot>> listPortForwardings(
       String region, String osProjectId, String osFloatingIpId) {
@@ -466,22 +408,6 @@ public class OpenStackClient {
         if (error.getStatus() != 404) throw error;
       }
     }, NETWORK_EXECUTOR);
-  }
-
-  public CompletionStage<PortForwarding> createPortForwarding(
-      String region,
-      String osFloatingIpId,
-      int externalPort,
-      String fixedIp,
-      int internalPort,
-      String osInternalPortId,
-      NetProtocol protocol) {
-
-    return CompletableFuture.supplyAsync(() -> getOsForwardingClient(region).networking()
-        .floatingip().portForwarding().create(osFloatingIpId, Builders.portForwarding()
-            .externalPort(externalPort).internalIpAddress(fixedIp).internalPort(internalPort)
-            .internalPortId(osInternalPortId).protocol(protocol.name().toLowerCase(Locale.ROOT)).build()),
-        NETWORK_EXECUTOR);
   }
 
   /** Directly creates TCP and UDP rules; markers are retained for creation recovery. */
@@ -564,58 +490,32 @@ public class OpenStackClient {
     return "veryai:pf:" + key;
   }
 
-  /** Creates the instance's own group and ingress rules before creating any ports. */
-  public CompletionStage<String> prepareInstanceSecurityGroup(ServerTarget target, String instanceId,
-      List<Integer> internalPorts) {
-    List<Integer> ports = List.copyOf(internalPorts);
-    if (ports.stream().anyMatch(port -> port < 1 || port > 65535)) {
-      throw new IllegalArgumentException("Invalid instance security group port");
-    }
-    String marker = instanceSecurityGroupMarker(instanceId);
-    return CompletableFuture.supplyAsync(() -> {
-      OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-      SecurityGroup group = client.networking().securitygroup().create(Builders.securityGroup()
-          .name(marker).description(marker).tenantId(target.osProjectId()).build());
-      if (group == null || group.getId() == null || group.getId().isBlank()
-          || !target.osProjectId().equals(group.getTenantId()) || !marker.equals(group.getDescription())) {
-        throw new OpenStackOperationException("Missing or mismatched instance security group", null);
-      }
-      for (int port : ports) {
-        for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
-          createInstanceSecurityRule(client, group.getId(), port, protocol, marker);
-        }
-      }
-      return group.getId();
-    }, NETWORK_EXECUTOR);
+  /** Ensures the instance's own security group exists before creating its network ports. */
+  public CompletionStage<String> prepareInstanceSecurityGroup(ServerTarget target, String instanceId) {
+    return findOrCreateInstanceSecurityGroup(target, instanceId);
   }
 
-  /** Independently resumes the instance's group and missing rules after recovery. */
-  public CompletionStage<String> recoverInstanceSecurityGroup(ServerTarget target, String instanceId,
-      List<Integer> internalPorts) {
-    List<Integer> ports = List.copyOf(internalPorts);
-    if (ports.stream().anyMatch(port -> port < 1 || port > 65535)) {
-      throw new IllegalArgumentException("Invalid instance security group port");
-    }
+  /** Finds the instance's security group or creates it if the original request did not complete. */
+  public CompletionStage<String> recoverInstanceSecurityGroup(ServerTarget target, String instanceId) {
+    return findOrCreateInstanceSecurityGroup(target, instanceId);
+  }
+
+  private CompletionStage<String> findOrCreateInstanceSecurityGroup(ServerTarget target, String instanceId) {
     String marker = instanceSecurityGroupMarker(instanceId);
     return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-      List<? extends SecurityGroup> matches = findInstanceSecurityGroups(client, target.osProjectId(), marker);
+      List<? extends SecurityGroup> matches = findSecurityGroupsByName(client, target.osProjectId(), marker);
       if (matches.size() > 1) {
-        throw new OpenStackOperationException("Duplicate instance security group marker", null);
+        throw new OpenStackOperationException("Multiple security groups named " + marker + " in project " + target.osProjectId(), null);
       }
-      SecurityGroup group = matches.isEmpty() ? null : matches.getFirst();
-      if (group == null) {
-        group = client.networking().securitygroup().create(Builders.securityGroup()
-            .name(marker).description(marker).tenantId(target.osProjectId()).build());
-      }
+      SecurityGroup group = matches.isEmpty()
+          ? client.networking().securitygroup().create(Builders.securityGroup()
+              .name(marker).description(marker).tenantId(target.osProjectId()).build())
+          : matches.getFirst();
       if (group == null || group.getId() == null || group.getId().isBlank()
-          || !target.osProjectId().equals(group.getTenantId()) || !marker.equals(group.getDescription())) {
+          || !target.osProjectId().equals(group.getTenantId()) || !marker.equals(group.getName())
+          || !marker.equals(group.getDescription())) {
         throw new OpenStackOperationException("Missing or mismatched instance security group", null);
-      }
-      for (int port : ports) {
-        for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
-          ensureInstanceSecurityRule(client, target.osProjectId(), group.getId(), port, protocol, marker);
-        }
       }
       return group.getId();
     }, NETWORK_EXECUTOR);
@@ -718,10 +618,10 @@ public class OpenStackClient {
     }
   }
 
-  private List<? extends SecurityGroup> findInstanceSecurityGroups(OSClient.OSClientV3 client,
-      String osProjectId, String marker) {
-    return client.networking().securitygroup().list(Map.of("project_id", osProjectId)).stream()
-        .filter(group -> osProjectId.equals(group.getTenantId()) && marker.equals(group.getDescription())).toList();
+  private List<? extends SecurityGroup> findSecurityGroupsByName(OSClient.OSClientV3 client,
+      String osProjectId, String name) {
+    return client.networking().securitygroup().list(Map.of("project_id", osProjectId, "name", name)).stream()
+        .filter(group -> osProjectId.equals(group.getTenantId()) && name.equals(group.getName())).toList();
   }
 
   private static String instanceSecurityGroupMarker(String instanceId) {
@@ -733,8 +633,11 @@ public class OpenStackClient {
   public CompletionStage<Void> deleteInstanceSecurityGroup(ServerTarget target, String instanceId) {
     return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-      for (SecurityGroup group : findInstanceSecurityGroups(client, target.osProjectId(), instanceSecurityGroupMarker(instanceId))) {
-        requireDeleteResponse(client.networking().securitygroup().delete(group.getId()));
+      String marker = instanceSecurityGroupMarker(instanceId);
+      for (SecurityGroup group : findSecurityGroupsByName(client, target.osProjectId(), marker)) {
+        if (marker.equals(group.getDescription())) {
+          requireDeleteResponse(client.networking().securitygroup().delete(group.getId()));
+        }
       }
     }, NETWORK_EXECUTOR);
   }
@@ -1538,6 +1441,16 @@ public class OpenStackClient {
 
   private enum InstanceNetworkStep { PARENT_PORT, SUB_PORT, TRUNK }
 
+  /** Creates the parent port, subport and trunk in order. */
+  public CompletionStage<PreparedNetwork> prepareInstanceNetwork(ServerTarget target,
+      String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
+    return prepareInstanceParentPort(target, operationId, requirement, osSecurityGroupId)
+        .thenCompose(parent -> prepareInstanceSubPort(target, operationId, requirement, osSecurityGroupId,
+            Objects.requireNonNull(parent, "Missing parent port preparation result")))
+        .thenCompose(sub -> prepareInstanceTrunk(target, operationId, requirement,
+            Objects.requireNonNull(sub, "Missing subport preparation result")));
+  }
+
   /** Prepares QoS first, then creates the parent port using that policy. */
   public CompletionStage<PreparedNetwork> prepareInstanceParentPort(ServerTarget target,
       String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
@@ -1728,7 +1641,7 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
-  /** Creates the trunk using the persisted parent and subport IDs. */
+  /** Creates the trunk using the prepared parent and subport IDs. */
   public CompletionStage<PreparedNetwork> prepareInstanceTrunk(ServerTarget target,
       String operationId, NetworkRequirement requirement, PreparedNetwork prepared) {
     if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");

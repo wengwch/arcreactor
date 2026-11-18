@@ -88,6 +88,13 @@
         <include refid="newerWorkflow"/>
     </update>
 
+    <update id="updateVersion">
+        UPDATE instance_view SET
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
     <update id="updateHypervisor">
         UPDATE instance_view SET
           phase = #{phase},
@@ -151,7 +158,14 @@
     <update id="updateUserForwarding">
         UPDATE instance_view SET
           user_forwardings = JSON_SET(COALESCE(user_forwardings, JSON_OBJECT()),
-            #{forwardingPath,jdbcType=VARCHAR}, CAST(#{forwardingJson,jdbcType=LONGVARCHAR} AS JSON)),
+            #{forwardingPath,jdbcType=VARCHAR},
+            <choose>
+                <when test="preserveResources">
+                    JSON_SET(CAST(#{forwardingJson,jdbcType=LONGVARCHAR} AS JSON), '$.resources',
+                        JSON_EXTRACT(user_forwardings, CONCAT(#{forwardingPath,jdbcType=VARCHAR}, '.resources')))
+                </when>
+                <otherwise>CAST(#{forwardingJson,jdbcType=LONGVARCHAR} AS JSON)</otherwise>
+            </choose>),
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

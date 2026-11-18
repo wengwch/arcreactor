@@ -3,9 +3,9 @@ package cn.veryai.arcreactor.service;
 import cn.veryai.arcreactor.actor.PekkoRuntime;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
-import cn.veryai.arcreactor.actor.instance.command.CreateUserForwarding;
+import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstance;
-import cn.veryai.arcreactor.actor.instance.command.DeleteUserForwarding;
+import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
 import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
@@ -139,11 +139,11 @@ public class InstanceService {
     }
 
     public CompletionStage<InstanceMutationResult> createForwarding(String instanceId, CreateUserForwardingParam param) {
-        return submitMutation(instanceId, replyTo -> new CreateUserForwarding(param.getInternalPort(), replyTo));
+        return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), false, 0, replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> deleteForwarding(String instanceId, String forwardingId) {
-        return submitMutation(instanceId, replyTo -> new DeleteUserForwarding(forwardingId, replyTo));
+        return submitMutation(instanceId, replyTo -> DeleteInstanceForwarding.user(forwardingId, replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> updateQos(String instanceId, UpdateInstanceQosParam param) {

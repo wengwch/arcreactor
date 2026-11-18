@@ -67,7 +67,7 @@ Accept: application/json
 # forwardings 按 internalPort 区分 22 和 8888，每项都有自己的 floatingIp/externalPort，以及创建时保存的可空 domain。
 # 创建中可能只出现一条映射；映射创建成功后还需要等待 Nova 和实例内服务启动。
 # SSH: ssh -p <22 对应的 externalPort> <创建响应中的 username>@<22 对应的 floatingIp>
-# Nova ACTIVE 后进入 CHECKING_SSH，探测 internalPort=22 对应的 floatingIp:externalPort。
+# 在 PROVISIONING 阶段，每轮先查询 Nova，返回 ACTIVE 后探测 internalPort=22 对应的 floatingIp:externalPort。
 # SSH 连通性检查通过、资源预留确认后才进入 ACTIVE；未连通时继续定时检查，不代表 JupyterLab 已就绪。
 # Jupyter: http://<8888 对应的 floatingIp>:<8888 对应的 externalPort>/lab?token=<jupyterToken>
 GET {{baseUrl}}/api/v1/instances/{{instanceId}}

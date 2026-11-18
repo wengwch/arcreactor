@@ -3,7 +3,6 @@ package cn.veryai.arcreactor.actor.instance;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.util.SSHValidator;
-import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -22,12 +21,8 @@ final class InstanceSshChecker {
   }
 
   CompletionStage<Boolean> check(InstanceWorkflowState state) {
-    List<PreparedForwarding> matches = state.preparedForwardings().stream()
-        .filter(forwarding -> forwarding.internalPort() == 22).toList();
-    if (matches.size() != 1) {
-      throw new IllegalStateException("Exactly one prepared SSH forwarding for internal port 22 is required");
-    }
-    PreparedForwarding forwarding = matches.getFirst();
+    PreparedForwarding forwarding = state.preparedForwardings().get(22);
+    if (forwarding == null) throw new IllegalStateException("Missing prepared SSH forwarding for internal port 22");
     if (forwarding.floatingIp() == null || forwarding.floatingIp().isBlank()
         || forwarding.externalPort() < 1 || forwarding.externalPort() > 65535
         || forwarding.osTcpForwardingId() == null || forwarding.osTcpForwardingId().isBlank()) {

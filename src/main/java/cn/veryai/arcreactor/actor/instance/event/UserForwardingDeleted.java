@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.instance.event;
 
-import cn.veryai.arcreactor.actor.instance.model.UserForwarding;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingSpec;
 
-public record UserForwardingDeleted(String instanceId, UserForwarding forwarding) implements UserForwardingEvent {}
+public record UserForwardingDeleted(String instanceId, InstanceForwardingSpec spec) implements InstanceForwardingEvent {}
 

@@ -1,16 +1,18 @@
 package cn.veryai.arcreactor.actor.instance.projection;
 
+import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingCreated;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingPrepared;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorReservationStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
 import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceDeletionStarted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceDeleted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingEvent;
 import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingsDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceNetworkDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
@@ -20,26 +22,21 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceReservationCancelled;
 import cn.veryai.arcreactor.actor.instance.event.InstanceSecurityGroupDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
+import cn.veryai.arcreactor.actor.instance.event.NetworkPreparationStarted;
+import cn.veryai.arcreactor.actor.instance.event.NetworkPrepared;
 import cn.veryai.arcreactor.actor.instance.event.NovaCreationStarted;
 import cn.veryai.arcreactor.actor.instance.event.NovaDeletionAccepted;
-import cn.veryai.arcreactor.actor.instance.event.NovaReachedActive;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerCreated;
 import cn.veryai.arcreactor.actor.instance.event.NovaServerDeleted;
-import cn.veryai.arcreactor.actor.instance.event.ParentPortPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.ParentPortPrepared;
 import cn.veryai.arcreactor.actor.instance.event.ReservationConfirmedForInstance;
 import cn.veryai.arcreactor.actor.instance.event.SchedulingStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
 import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
-import cn.veryai.arcreactor.actor.instance.event.SubPortPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.SubPortPrepared;
-import cn.veryai.arcreactor.actor.instance.event.TrunkPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.TrunkPrepared;
-import cn.veryai.arcreactor.actor.instance.event.UserForwardingEvent;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import cn.veryai.arcreactor.util.JsonUtil;
+import cn.veryai.arcreactor.vo.UserForwardingView;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
@@ -69,24 +66,22 @@ public final class InstanceProjectionHandler
             mapper.updateSecurityGroup(instanceId, InstancePhase.PREPARING_SECURITY_GROUP, prepared.osSecurityGroupId(), version, timestamp);
         } else if (event instanceof SchedulingStarted) {
             mapper.updatePhase(instanceId, InstancePhase.SCHEDULING, version, timestamp);
-        } else if (event instanceof ParentPortPreparationStarted) {
-            mapper.updatePhase(instanceId, InstancePhase.PREPARING_PARENT_PORT, version, timestamp);
-        } else if (event instanceof ParentPortPrepared prepared) {
-            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_PARENT_PORT, prepared.resources(), version, timestamp);
-        } else if (event instanceof SubPortPreparationStarted) {
-            mapper.updatePhase(instanceId, InstancePhase.PREPARING_SUB_PORT, version, timestamp);
-        } else if (event instanceof SubPortPrepared prepared) {
-            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_SUB_PORT, prepared.resources(), version, timestamp);
-        } else if (event instanceof TrunkPreparationStarted) {
-            mapper.updatePhase(instanceId, InstancePhase.PREPARING_TRUNK, version, timestamp);
-        } else if (event instanceof TrunkPrepared prepared) {
-            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_TRUNK, prepared.resources(), version, timestamp);
-        } else if (event instanceof ForwardingPreparationStarted
-                || event instanceof ForwardingCandidateSelected || event instanceof ForwardingPrepared) {
+        } else if (event instanceof NetworkPreparationStarted) {
+            mapper.updatePhase(instanceId, InstancePhase.PREPARING_NETWORK, version, timestamp);
+        } else if (event instanceof NetworkPrepared prepared) {
+            mapper.updateNetwork(instanceId, InstancePhase.PREPARING_NETWORK, prepared.resources(), version, timestamp);
+        } else if (event instanceof ForwardingPreparationStarted) {
             mapper.updatePhase(instanceId, InstancePhase.PREPARING_FORWARDING, version, timestamp);
-        } else if (event instanceof UserForwardingEvent changed) {
-            mapper.updateUserForwarding(instanceId, "$." + JsonUtil.toJson(changed.forwarding().forwardingId()),
-                    JsonUtil.toJson(changed.forwarding()), version, timestamp);
+        } else if (event instanceof InstanceForwardingEvent changed) {
+            if (changed.spec().kind() == ForwardingKind.USER) {
+                var resources = changed instanceof ForwardingCreated created ? created.resources() : null;
+                var forwarding = UserForwardingView.from(changed.spec(), resources);
+                boolean preserveResources = !(changed instanceof ForwardingCreationRequested || changed instanceof ForwardingCreated);
+                mapper.updateUserForwarding(instanceId, "$." + JsonUtil.toJson(forwarding.forwardingId()),
+                        JsonUtil.toJson(forwarding), preserveResources, version, timestamp);
+            } else {
+                mapper.updateVersion(instanceId, version, timestamp);
+            }
         } else if (event instanceof InstanceQosUpdateRequested requested) {
             mapper.updateQosState(instanceId, JsonUtil.toJson(requested.update()), version, timestamp);
         } else if (event instanceof InstanceQosUpdateFailed failed) {
@@ -104,12 +99,7 @@ public final class InstanceProjectionHandler
         } else if (event instanceof NovaServerCreated created) {
             mapper.updateNovaServer(instanceId, InstancePhase.PROVISIONING, created.osServerId(),
                     created.status().name(), version, timestamp);
-        } else if (event instanceof NovaReachedActive active) {
-            mapper.updateNovaServer(instanceId, InstancePhase.CHECKING_SSH, active.osServerId(),
-                    "ACTIVE", version, timestamp);
-        } else if (event instanceof SshConnectivityVerified) {
-            mapper.updatePhase(instanceId, InstancePhase.CONFIRMING, version, timestamp);
-        } else if (event instanceof ReservationConfirmedForInstance) {
+        } else if (event instanceof SshConnectivityVerified || event instanceof ReservationConfirmedForInstance) {
             mapper.updatePhase(instanceId, InstancePhase.CONFIRMING, version, timestamp);
         } else if (event instanceof InstanceDeletionStarted) {
             mapper.updatePhase(instanceId, InstancePhase.DELETING_NOVA, version, timestamp);

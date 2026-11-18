@@ -25,6 +25,11 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateVersion(
+            @Param("instanceId") String instanceId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updateDependencies(
             @Param("instanceId") String instanceId,
             @Param("phase") InstancePhase phase,
@@ -58,6 +63,7 @@ public interface InstanceProjectionMapper {
             @Param("instanceId") String instanceId,
             @Param("forwardingPath") String forwardingPath,
             @Param("forwardingJson") String forwardingJson,
+            @Param("preserveResources") boolean preserveResources,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
