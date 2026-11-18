@@ -355,11 +355,15 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 范围内的公网端口，同时创建 TCP/UDP 转发，目标为实例父端口的 IPv4 地址。
 每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
 候选列表 `floatingIpIds` 保存 `floating_ip.id`，实例创建、查询、删除和恢复均通过此内部 ID 定位 FIP Actor。
+`CreateInstanceForwarding` 可携带有序、不重复且 ID 非空白的 `floatingIpIds`，受理后保存到转发状态中供候选切换和恢复使用。
+未指定或传空列表时，初始化使用实例配置中的候选列表，用户转发使用系统 SSH 映射的浮动 IP；HTTP 用户转发接口沿用此默认选择。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
 实例初始化和管理 API 都先持久化 `ForwardingCreationRequested`，再按 claim ID 提交创建和查询。
 FIP 返回有效的 `READY` 后，工作流补建该内部端口缺失的 TCP、UDP 入站规则，再持久化 `ForwardingCreated`。创建最终失败时持久化 `ForwardingCreationFailed`。
 实例初始化发起的转发成功后继续下一个配置端口，最后一个端口就绪时持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。管理 API 发起的创建在该转发就绪后完成。
-实例状态按内部端口号保存两张表。`forwardingSpecs` 登记系统和用户的转发需求，`preparedForwardings` 保存两类转发已取得的资源。删除完成后释放相应端口。
+实例状态按内部端口号保存两张表。`forwardingStates` 保存已发起请求的系统和用户转发状态（`InstanceForwardingState`），`preparedForwardings` 保存两类转发已取得的资源。尚未发起请求的系统端口直接读取 `InstanceSpec.forwarding`，不创建占位状态。删除完成后释放相应端口。
+转发状态直接保存 claim、候选浮动 IP、阶段和代次；`kind` 区分系统初始化和用户管理流程。当前结构用于开发阶段，不提供旧格式转发事件及实例快照的兼容转换。
+`osFloatingIpId` 由 FIP Actor 返回并保存在 `PreparedForwarding` 资源中，`InstanceForwardingState` 只通过内部 `floatingIpId` 和 `claimId` 发起操作。
 创建受理前校验 `forwarding` 必须存在且包含内部端口 `22`，不满足时直接拒绝，不记录创建事件。
 正常创建和恢复在网络准备完成后均进入 `PREPARING_FORWARDING`；各阶段使用第一步已选定的宿主机。
 转发阶段不设置整体等待超时，保留轮询以等待异步创建完成。
@@ -423,7 +427,7 @@ FIP Actor 统一使用 `DeletePortForwarding` 按 `claimId` 删除，不区分�
 删除直接返回 `DELETED` 可确认完成；返回 `IN_PROGRESS` 后通过 `get` 继续查询，
 查询仍为 `IN_PROGRESS` 只等待，`READY`、`FAILED`、`DELETE_FAILED`、`NOT_FOUND` 时重新提交删除并确认结果。
 列表为空时直接完成该步骤；全部记录确认 `DELETED` 才持久化 `InstanceForwardingsDeleted` 并进入 `DELETING_NETWORK`。
-系统转发清理已就绪的映射和当前已开始创建的 claim。用户转发清理 `forwardingSpecs` 中登记的全部用户转发需求。
+系统转发清理已就绪的映射和当前已开始创建的 claim。用户转发清理 `forwardingStates` 中登记的全部用户转发。
 因此用户创建失败或未保存远端资源 ID 时，仍能按已持久化的转发标识清理可能存在的 claim。
 创建结果尚未返回的系统或用户转发也保留内部 `floatingIpId`，删除和恢复无需重新查询数据库确定 Actor。
 外部对尚未创建的 claim 发送单个删除命令时，FloatingIpActor 同样记录 `ForwardingDeleted`，
@@ -669,7 +673,7 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 
 响应沿用 `RespWrapper`，字段按 `instance_view` 列名转为 camelCase，包含名称、描述、用户、区域、
 资源规格、实例阶段、已投影的资源 ID、限速值、失败信息和 `workflowVersion`。
-`userForwardings` 是按转发 ID 索引的 JSON 对象，`qosUpdate` 是 JSON 对象或 `null`。
+`qosUpdate` 是 JSON 对象或 `null`；端口转发通过独立的转发查询接口读取。
 `createdAt`、`updatedAt` 使用带偏移量的时间格式；默认 JDBC 连接时区为 `Asia/Shanghai`，返回 `+08:00`。
 以下仅展示列表中的部分字段：
 
@@ -683,7 +687,6 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
       "name": "test-instance-003",
       "regionId": "Test-SH-01",
       "phase": "ACTIVE",
-      "userForwardings": {},
       "qosUpdate": null,
       "createdAt": "2026-11-17T10:00:00+08:00",
       "updatedAt": "2026-11-17T10:01:00+08:00"
@@ -697,6 +700,16 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 `GET /api/v1/instances/{instanceId}` 继续提供 Actor 当前状态及已确认的端口转发映射。
 
 ## 查询端口转发
+
+`GET /api/v1/instances/{instanceId}/forwardings` 直接查询 `port_forwarding`，不调用 Actor。
+返回该实例的全部 `SYSTEM`、`USER` 转发记录，包括创建中、失败和已删除的记录，
+按 `createdAt DESC, floatingIpId ASC, claimId ASC` 排序；没有已投影的匹配记录时返回 `[]`。
+响应字段按表结构平铺，包含 `claimId`、`floatingIpId`、`kind`、`internalPort`、`externalPort`、
+`phase`、`failureMessage`、TCP/UDP 规则 ID、`resourceVersion` 和时间字段。
+`claimId` 对应创建或删除接口返回的 `operationId`，也用于删除接口的 `forwardingId` 参数。
+同一 claim 在不同候选浮动 IP 上的尝试按 `(floatingIpId, claimId)` 分别返回。
+该查询读取异步投影，HTTP `202` 返回后可能暂时没有记录；`phase` 表示 FIP 规则状态，
+实例安全组的放行或清理步骤由实例 Actor 继续执行，FIP 的 `READY`、`DELETED` 不代表这些步骤已完成。
 
 创建后轮询 `GET /api/v1/instances/{instanceId}`。接口查询 Actor 的当前状态，返回创建阶段、
 失败信息、专属 `osSecurityGroupId` 及 `forwardings` 列表，不包含密码、Jupyter token 或 Share 访问凭据。
@@ -757,10 +770,10 @@ JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab
 用户转发复用该实例系统 SSH 映射的浮动 IP，由 FloatingIpActor 在位图空闲范围内按随机起点分配公网端口，
 同时建立 TCP、UDP 映射；请求不接收类型、浮动 IP 或公网端口。内部端口已被系统转发或尚未删除的
 用户转发占用时拒绝创建。FIP claim 就绪后，工作流校验转发结果，补齐该内部端口的 TCP/UDP IPv4 入站规则，再将用户转发标记为 `READY`。
-通过 `GET /api/v1/instances/{instanceId}` 查询 `management.userForwardings[forwardingId]`，
-可见 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED` 及资源和失败信息。
+通过 `GET /api/v1/instances/{instanceId}/forwardings` 按 `claimId` 查找转发记录，
+可见 FIP 的 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED` 及资源和失败信息。
 顶层 `forwardings` 列出 `preparedForwardings` 中的系统和用户转发，每项带有 `kind`。
-查询响应的 `management` 从当前转发需求、就绪资源、删除历史及 QoS 操作状态组装，可按 `forwardingId` 查询已删除的用户转发。
+实例查询在顶层返回 `qosUpdate`；转发操作的内部状态和删除历史仍由实例 Actor 保存，用于恢复和幂等处理。
 
 用户转发删除先等待 FIP claim 返回 `DELETED`，再删除实例安全组中该端口的专属规则，
 两步完成后记录 `UserForwardingDeleted`。重复删除同一 `DELETING` 或 `DELETED` 记录幂等返回。
@@ -780,7 +793,7 @@ QoS 修改示例：
 `maxKbps` 单位为 kbit/s，`maxBurstKbits` 单位为 kbit，同一端口的 ingress 和 egress 使用相同参数。
 `0 / 0` 表示删除该端口的限速规则、保留专属 QoS policy；重新设置正速率时补齐所需规则。
 操作只修改已有实例端口绑定的专属 policy，不重建端口或替换 policy。
-通过实例查询的 `management.qosUpdate` 查看 `UPDATING`、`READY`、`FAILED`、请求参数和失败信息；
+通过实例查询的顶层 `qosUpdate` 查看 `UPDATING`、`READY`、`FAILED`、请求参数和失败信息；
 成功后 `network.parentQos`、`network.subQos` 更新实际规则 ID 及 `bandwidthLimit`。
 失败不回滚已经修改的远端规则，实例仍为 `ACTIVE`；需使用与失败操作相同的参数重试，完成后才能提交其他限速值。
 
@@ -980,14 +993,14 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 `SecurityGroupPreparationStarted` 更新安全组准备阶段，`SecurityGroupPrepared` 写入专属安全组 ID；
 `NetworkPreparationStarted` 更新为 `PREPARING_NETWORK`，`NetworkPrepared` 一次写入父子端口、QoS、
 子端口浮动 IP 和 Trunk 资源。`ForwardingPreparationStarted` 将实例投影置为 `PREPARING_FORWARDING`。
-共享转发事件更新投影版本和时间。对于 `USER` 类型，还按 claim ID 更新 `instance_view.user_forwardings` JSON，查询接口将该 ID 返回为 `forwardingId`。
-`ForwardingCreated` 写入已就绪的资源，后续删除事件更新操作状态并保留这份资源信息。
-FIP 事件继续独立投影底层 `port_forwarding` 生命周期。
+共享转发事件只更新实例投影版本和时间；转发详情及历史统一由 FIP 事件投影到 `port_forwarding`。
 QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新实际规则 ID 和
 `parent_max_kbps`、`parent_max_burst_kbits`、`sub_max_kbps`、`sub_max_burst_kbits`。
 网络准备完成时也写入父子端口对应限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
 新库使用 `sql/read-model.sql`，已有 `instance_view` 可执行
 `sql/migrations/add-instance-network-management.sql` 增加两列 JSON 和四列限速值，不转换旧事件或快照。
+该历史脚本中的 `user_forwardings` JSON 已停用，升级后可执行
+`sql/migrations/remove-instance-user-forwardings.sql` 删除旧列；新库不再创建该列。
 `InstanceDeletionStarted` 将实例投影置为 `DELETING_NOVA`；各资源清理完成事件分别推进到上表中的下一删除阶段。
 `NovaDeletionAccepted` 保存服务器 ID 并保持 `DELETING_NOVA`，只有 `InstanceDeleted` 才将投影置为 `DELETED`。
 删除阶段切换保留已有资源 ID 和原创建失败信息，便于查询进度及排查。

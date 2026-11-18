@@ -24,6 +24,7 @@ import cn.veryai.arcreactor.entity.FlavorEntity;
 import cn.veryai.arcreactor.entity.FloatingIpEntity;
 import cn.veryai.arcreactor.entity.HypervisorTypeEntity;
 import cn.veryai.arcreactor.entity.ImageEntity;
+import cn.veryai.arcreactor.entity.PortForwardingEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.i18n.ErrorCode;
@@ -32,6 +33,7 @@ import cn.veryai.arcreactor.repo.FloatingIpRepo;
 import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
 import cn.veryai.arcreactor.repo.ImageRepo;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
+import cn.veryai.arcreactor.repo.PortForwardingRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
 import cn.veryai.arcreactor.vo.InstanceView;
@@ -72,6 +74,7 @@ public class InstanceService {
     private final ImageRepo imageRepo;
     private final HypervisorTypeRepo hypervisorTypeRepo;
     private final FloatingIpRepo floatingIpRepo;
+    private final PortForwardingRepo portForwardingRepo;
     private final InstanceCreationProperties creationProperties;
     private final CloudInitRenderer cloudInitRenderer;
     private final PekkoRuntime pekkoRuntime;
@@ -138,8 +141,12 @@ public class InstanceService {
                 }));
     }
 
+    public List<PortForwardingEntity> getForwardings(String instanceId) {
+        return portForwardingRepo.findByInstanceId(instanceId);
+    }
+
     public CompletionStage<InstanceMutationResult> createForwarding(String instanceId, CreateUserForwardingParam param) {
-        return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), false, 0, replyTo));
+        return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), List.of(), false, 0, replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> deleteForwarding(String instanceId, String forwardingId) {

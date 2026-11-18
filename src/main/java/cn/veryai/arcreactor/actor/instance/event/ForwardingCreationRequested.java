@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.instance.event;
 
-import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingSpec;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 
-public record ForwardingCreationRequested(String instanceId, InstanceForwardingSpec spec)
+public record ForwardingCreationRequested(String instanceId, InstanceForwardingState forwarding)
     implements InstanceForwardingEvent {}

@@ -83,7 +83,7 @@ DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}
 Accept: application/json
 
 ### 7. 为 ACTIVE 实例创建用户端口转发
-# 返回 HTTP 202，result.operationId 为本次用户转发标识；通过 GET 实例查询进度和公网映射。
+# 返回 HTTP 202，result.operationId 对应端口转发查询中的 claimId；通过第 14 项查询 FIP 状态和公网映射。
 # internalPort 为实例内部服务端口；公网端口由浮动 IP Actor 分配，同时创建 TCP/UDP 转发和对应安全组放行。
 # 创建实例时生成的 22/8888 等映射属于 SYSTEM，此接口创建 USER 类型。
 # 类型、浮动 IP 和公网端口不由请求指定；已有系统/用户转发占用的内部端口不能重复创建。
@@ -96,9 +96,9 @@ Accept: application/json
 }
 
 ### 8. 删除用户端口转发
-# 将上方创建结果或实例状态中的用户转发标识填写到 forwardingId。
+# 将上方创建结果的 operationId 或第 14 项中 USER 记录的 claimId 填写到 forwardingId。
 # 仅允许 USER 转发；SYSTEM 转发不支持单独删除，删除整个实例时统一清理。
-# 返回 HTTP 202 表示已受理；通过 GET 实例确认删除完成后，才会释放公网端口并完成安全组规则清理。
+# 返回 HTTP 202 表示已受理；第 14 项的 DELETED 表示 FIP 规则已删除，实例 Actor 随后清理安全组规则。
 DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings/{{forwardingId}}
 Accept: application/json
 
@@ -128,7 +128,7 @@ Accept: application/json
 ### 11. 查询用户名下的实例列表（数据库读模型）
 # 直接查询 instance_view，不调用 Actor；HTTP 202 后可能需要等待异步投影。
 # result 为数组，按 createdAt 降序、instanceId 升序；无分页，默认包含所有阶段（含 DELETED）。
-# 字段按表结构平铺；userForwardings/qosUpdate 返回 JSON 对象，默认连接时区下时间携带 +08:00。
+# 字段按表结构平铺；qosUpdate 返回 JSON 对象或 null，端口转发见第 14 项，时间默认携带 +08:00。
 GET {{baseUrl}}/api/v1/users/{{userId}}/instances
 Accept: application/json
 
@@ -141,4 +141,12 @@ Accept: application/json
 # 同时按 userId 和 instanceId 查询；记录尚未投影、不存在或属于其他用户时返回业务 code=404。
 # 查询结果只来自 instance_view，当前 Actor 状态和已确认转发映射仍可使用第 5 项接口查询。
 GET {{baseUrl}}/api/v1/users/{{userId}}/instances/{{instanceId}}
+Accept: application/json
+
+### 14. 查询实例的全部端口转发（数据库读模型）
+# 直接查询 port_forwarding，不调用 Actor；HTTP 202 后可能需要等待异步投影。
+# 包含 SYSTEM、USER 和所有阶段（含 FAILED、DELETED）；无匹配记录时 result 为 []。
+# claimId 对应创建/删除接口返回的 operationId，删除 USER 转发时将它填写到 forwardingId。
+# phase 表示 FIP 规则状态；READY、DELETED 不代表实例安全组的放行或清理步骤已完成。
+GET {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings
 Accept: application/json

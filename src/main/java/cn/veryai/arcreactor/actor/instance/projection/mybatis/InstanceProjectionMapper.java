@@ -59,14 +59,6 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
-    int updateUserForwarding(
-            @Param("instanceId") String instanceId,
-            @Param("forwardingPath") String forwardingPath,
-            @Param("forwardingJson") String forwardingJson,
-            @Param("preserveResources") boolean preserveResources,
-            @Param("version") long version,
-            @Param("updatedAt") Timestamp updatedAt);
-
     int updateQosState(
             @Param("instanceId") String instanceId,
             @Param("qosUpdateJson") String qosUpdateJson,

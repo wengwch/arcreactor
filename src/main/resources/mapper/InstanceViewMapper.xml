@@ -49,7 +49,6 @@
         <result column="os_sub_floating_ip_id" property="osSubFloatingIpId"/>
         <result column="sub_floating_ip_address" property="subFloatingIpAddress"/>
         <result column="os_trunk_id" property="osTrunkId"/>
-        <result column="user_forwardings" property="userForwardings" typeHandler="cn.veryai.arcreactor.mapper.typehandler.UserForwardingMapJsonTypeHandler"/>
         <result column="qos_update" property="qosUpdate" typeHandler="cn.veryai.arcreactor.mapper.typehandler.InstanceQosUpdateJsonTypeHandler"/>
         <result column="failure_code" property="failureCode"/>
         <result column="failure_message" property="failureMessage"/>
@@ -70,7 +69,7 @@
         os_parent_qos_policy_id, os_parent_qos_ingress_rule_id, os_parent_qos_egress_rule_id, parent_max_kbps,
         parent_max_burst_kbits, os_sub_port_id, sub_fixed_ip, os_sub_qos_policy_id,
         os_sub_qos_ingress_rule_id, os_sub_qos_egress_rule_id, sub_max_kbps, sub_max_burst_kbits,
-        os_sub_floating_ip_id, sub_floating_ip_address, os_trunk_id, user_forwardings,
+        os_sub_floating_ip_id, sub_floating_ip_address, os_trunk_id,
         qos_update, failure_code, failure_message, workflow_version,
         created_at, updated_at
     </sql>

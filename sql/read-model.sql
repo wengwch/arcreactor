@@ -134,7 +134,6 @@ CREATE TABLE IF NOT EXISTS instance_view (
   os_sub_floating_ip_id VARCHAR(255),
   sub_floating_ip_address VARCHAR(45),
   os_trunk_id VARCHAR(255),
-  user_forwardings JSON,
   qos_update JSON,
   failure_code VARCHAR(128),
   failure_message TEXT,

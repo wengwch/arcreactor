@@ -8,8 +8,8 @@ import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
 import cn.veryai.arcreactor.actor.instance.command.ForwardingScope;
 import cn.veryai.arcreactor.actor.instance.command.QosUpdateCompleted;
-import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingSpec;
-import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingSpec.Phase;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState.Phase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationRequested;
@@ -326,34 +326,29 @@ public final class InstanceWorkflowActor
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCreateForwarding(
       InstanceWorkflowState state, CreateInstanceForwarding command) {
-    InstanceForwardingSpec forwarding;
+    InstanceForwardingState forwarding;
     int port = command.internalPort();
+    List<String> floatingIpIds = command.floatingIpIds().isEmpty() ? state.spec().forwarding().floatingIpIds() : command.floatingIpIds();
     if (command.instanceInitialization()) {
       if (state.phase() != InstancePhase.PREPARING_FORWARDING || state.pollingGeneration() != command.generation()
           || state.currentForwardingPort() != port) return Effect().none();
-      InstanceForwardingSpec requirement = state.forwardingSpecs().get(port);
-      if (requirement.operation() != null) return Effect().none();
-      forwarding = InstanceForwardingSpec.creating(port, requirement.kind(), forwardingClaimId(state, port),
-          command.instanceInitialization(), state.spec().forwarding().floatingIpIds(), null);
+      if (state.forwardingStates().containsKey(port)) return Effect().none();
+      forwarding = InstanceForwardingState.creating(port, ForwardingKind.SYSTEM, UUID.randomUUID().toString(),
+          floatingIpIds);
     } else {
       if (state.phase() != InstancePhase.ACTIVE || state.hasPendingOperation()) {
         command.replyTo().tell(InstanceMutationReply.rejected("Instance must be ACTIVE with no pending management operation"));
         return Effect().none();
       }
-      if (state.forwardingSpecs().containsKey(port)) {
+      if (state.spec().forwarding().internalPorts().contains(port) || state.forwardingStates().containsKey(port)) {
         command.replyTo().tell(InstanceMutationReply.rejected("The internal port already has a system or user forwarding"));
         return Effect().none();
       }
-      PreparedForwarding ssh = state.preparedForwardings().get(22);
-      if (ssh == null) {
-        command.replyTo().tell(InstanceMutationReply.rejected("No SSH floating IP is available"));
-        return Effect().none();
-      }
-      forwarding = InstanceForwardingSpec.creating(port, ForwardingKind.USER, UUID.randomUUID().toString(),
-          command.instanceInitialization(), List.of(ssh.floatingIpId()), ssh.osFloatingIpId());
+      forwarding = InstanceForwardingState.creating(port, ForwardingKind.USER, UUID.randomUUID().toString(),
+          floatingIpIds);
     }
     return Effect().persist(new ForwardingCreationRequested(instanceId, forwarding)).thenRun(next -> {
-      if (command.replyTo() != null) command.replyTo().tell(InstanceMutationReply.accepted(forwarding.operation().claimId()));
+      if (command.replyTo() != null) command.replyTo().tell(InstanceMutationReply.accepted(forwarding.claimId()));
       requestForwarding(next, forwarding, 1, true);
     });
   }
@@ -375,12 +370,12 @@ public final class InstanceWorkflowActor
       command.replyTo().tell(InstanceMutationReply.rejected("System forwardings cannot be deleted individually"));
       return Effect().none();
     }
-    InstanceForwardingSpec forwarding = state.userForwarding(command.forwardingId());
+    InstanceForwardingState forwarding = state.userForwarding(command.forwardingId());
     if (forwarding == null) {
       command.replyTo().tell(InstanceMutationReply.rejected("User forwarding was not found"));
       return Effect().none();
     }
-    Phase phase = forwarding.operation().phase();
+    Phase phase = forwarding.phase();
     if (phase == Phase.DELETED || phase == Phase.DELETING) {
       command.replyTo().tell(InstanceMutationReply.accepted(command.forwardingId()));
       return Effect().none();
@@ -389,7 +384,7 @@ public final class InstanceWorkflowActor
       command.replyTo().tell(InstanceMutationReply.rejected("Wait for the pending forwarding or QoS operation"));
       return Effect().none();
     }
-    InstanceForwardingSpec deleting = forwarding.transition(Phase.DELETING, null);
+    InstanceForwardingState deleting = forwarding.transition(Phase.DELETING, null);
     return Effect().persist(new UserForwardingDeletionRequested(instanceId, deleting))
         .thenRun(next -> {
           command.replyTo().tell(InstanceMutationReply.accepted(command.forwardingId()));
@@ -397,24 +392,23 @@ public final class InstanceWorkflowActor
         });
   }
 
-  private void requestForwarding(InstanceWorkflowState state, InstanceForwardingSpec forwarding,
+  private void requestForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding,
       int attempt, boolean submit) {
-    pipeForwarding(forwarding, attempt, submit, () -> forwarding.operation().phase() == Phase.CREATING
+    pipeForwarding(forwarding, attempt, submit, () -> forwarding.phase() == Phase.CREATING
         ? forwardingOperations.requestCreation(state, forwarding, submit)
         : forwardingOperations.requestDeletion(state, forwarding.deletionTarget(), submit));
   }
 
-  private void recoverForwarding(InstanceWorkflowState state, InstanceForwardingSpec forwarding) {
-    pipeForwarding(forwarding, 1, true, () -> forwarding.operation().phase() == Phase.CREATING
+  private void recoverForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding) {
+    pipeForwarding(forwarding, 1, true, () -> forwarding.phase() == Phase.CREATING
         ? forwardingOperations.recoverForwardingCreation(state, forwarding)
         : forwardingOperations.recoverForwardingDeletion(state, forwarding.deletionTarget()));
   }
 
-  private void pipeForwarding(InstanceForwardingSpec forwarding, int attempt, boolean submission,
+  private void pipeForwarding(InstanceForwardingState forwarding, int attempt, boolean submission,
       java.util.function.Supplier<CompletionStage<ForwardingReply>> operation) {
-    var claim = forwarding.operation();
     String token = UUID.randomUUID().toString();
-    if (forwardingRequests.putIfAbsent(claim.claimId(), token) != null) return;
+    if (forwardingRequests.putIfAbsent(forwarding.claimId(), token) != null) return;
     CompletionStage<ForwardingReply> request;
     try { request = operation.get(); }
     catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
@@ -424,9 +418,9 @@ public final class InstanceWorkflowActor
       if (cause instanceof InstanceForwardingOperations.InvalidForwardingResult) {
         failureCode = "FORWARDING_RESULT_INVALID";
       } else if (definitiveOperationFailure(cause)) {
-        failureCode = claim.phase() == Phase.CREATING ? "SECURITY_GROUP_RULE_FAILED" : "FORWARDING_DELETE_FAILED";
+        failureCode = forwarding.phase() == Phase.CREATING ? "SECURITY_GROUP_RULE_FAILED" : "FORWARDING_DELETE_FAILED";
       }
-      return new ForwardingStatusCompleted(claim.claimId(), claim.generation(), token, attempt, submission,
+      return new ForwardingStatusCompleted(forwarding.claimId(), forwarding.generation(), token, attempt, submission,
           reply, failureCode, cause == null ? null : cause.toString());
     });
   }
@@ -441,33 +435,32 @@ public final class InstanceWorkflowActor
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckForwardingStatus(
       InstanceWorkflowState state, CheckForwardingStatus command) {
-    InstanceForwardingSpec forwarding = state.forwardingByClaimId(command.claimId());
+    InstanceForwardingState forwarding = state.forwardingByClaimId(command.claimId());
     if (matchesForwarding(state, forwarding, command.generation())) {
       requestForwarding(state, forwarding, command.attempt(), false);
     }
     return Effect().none();
   }
 
-  private boolean matchesForwarding(InstanceWorkflowState state, InstanceForwardingSpec forwarding, long generation) {
-    if (forwarding == null || !forwarding.inProgress() || forwarding.operation().generation() != generation) return false;
-    var operation = forwarding.operation();
-    return state.phase() == (operation.phase() == Phase.CREATING && operation.instanceInitialization()
+  private boolean matchesForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding, long generation) {
+    if (forwarding == null || !forwarding.inProgress() || forwarding.generation() != generation) return false;
+    return state.phase() == (forwarding.phase() == Phase.CREATING && forwarding.kind() == ForwardingKind.SYSTEM
         ? InstancePhase.PREPARING_FORWARDING : InstancePhase.ACTIVE);
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onForwardingStatusCompleted(
       InstanceWorkflowState state, ForwardingStatusCompleted command) {
-    InstanceForwardingSpec forwarding = state.forwardingByClaimId(command.claimId());
+    InstanceForwardingState forwarding = state.forwardingByClaimId(command.claimId());
     if (!matchesForwarding(state, forwarding, command.generation())
         || !forwardingRequests.remove(command.claimId(), command.requestToken())) return Effect().none();
 
     if (command.failureCode() != null) {
-      if (forwarding.operation().phase() == Phase.DELETING) return failForwardingDeletion(forwarding, command.failure());
+      if (forwarding.phase() == Phase.DELETING) return failForwardingDeletion(forwarding, command.failure());
       return failForwardingCreation(forwarding, command.failureCode(), command.failure());
     }
     ForwardingReply reply = command.reply();
     if (reply == null) return pollForwarding(forwarding, command.attempt() + 1);
-    if (forwarding.operation().phase() == Phase.DELETING) {
+    if (forwarding.phase() == Phase.DELETING) {
       return switch (reply.status()) {
         case DELETED -> Effect().persist(new UserForwardingDeleted(instanceId, forwarding.transition(Phase.DELETED, null)));
         case DELETE_FAILED, REJECTED -> failForwardingDeletion(forwarding, forwardingFailure(reply));
@@ -484,7 +477,7 @@ public final class InstanceWorkflowActor
       case IN_PROGRESS -> pollForwarding(forwarding, command.attempt() + 1);
       case FAILED, DELETE_FAILED, REJECTED, DELETED -> {
         if ((reply.claim() == null || !reply.claim().ownsPort()) && forwarding.hasNextCandidate()) {
-          InstanceForwardingSpec nextCandidate = forwarding.nextCandidate();
+          InstanceForwardingState nextCandidate = forwarding.nextCandidate();
           yield Effect().persist(new ForwardingCandidateSelected(instanceId, nextCandidate))
               .thenRun(next -> requestForwarding(next, nextCandidate, 1, true));
         }
@@ -494,20 +487,19 @@ public final class InstanceWorkflowActor
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> forwardingReady(InstanceWorkflowState state,
-      InstanceForwardingSpec forwarding, PreparedForwarding resources) {
+      InstanceForwardingState forwarding, PreparedForwarding resources) {
     var created = new ForwardingCreated(instanceId, forwarding.transition(Phase.READY, null), resources);
-    if (!forwarding.operation().instanceInitialization()) return Effect().persist(created);
+    if (forwarding.kind() == ForwardingKind.USER) return Effect().persist(created);
     if (state.onlyCurrentInitializationPortPending()) {
       return Effect().persist(List.of(created, novaCreationStarted(state, clock.instant()))).thenRun(this::requestNovaCreation);
     }
     return Effect().persist(created).thenRun(this::startForwardingPreparation);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> pollForwarding(InstanceForwardingSpec forwarding, int attempt) {
-    var operation = forwarding.operation();
-    Duration delay = operation.phase() == Phase.DELETING ? settings.pollInitialDelay() : settings.pollDelay(attempt);
-    timers.startSingleTimer("forwarding:" + operation.claimId(),
-        new CheckForwardingStatus(operation.claimId(), operation.generation(), attempt), delay);
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> pollForwarding(InstanceForwardingState forwarding, int attempt) {
+    Duration delay = forwarding.phase() == Phase.DELETING ? settings.pollInitialDelay() : settings.pollDelay(attempt);
+    timers.startSingleTimer("forwarding:" + forwarding.claimId(),
+        new CheckForwardingStatus(forwarding.claimId(), forwarding.generation(), attempt), delay);
     return Effect().none();
   }
 
@@ -516,14 +508,14 @@ public final class InstanceWorkflowActor
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingCreation(
-      InstanceForwardingSpec forwarding, String code, String detail) {
+      InstanceForwardingState forwarding, String code, String detail) {
     var failed = new ForwardingCreationFailed(instanceId, forwarding.transition(Phase.FAILED, detail));
-    if (!forwarding.operation().instanceInitialization()) return Effect().persist(failed);
+    if (forwarding.kind() == ForwardingKind.USER) return Effect().persist(failed);
     return Effect().persist(List.of(failed, new InstanceProvisioningFailed(instanceId, code, detail, clock.instant())))
         .thenRun(next -> creationFailed());
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingDeletion(InstanceForwardingSpec forwarding, String detail) {
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingDeletion(InstanceForwardingState forwarding, String detail) {
     return Effect().persist(new UserForwardingDeletionFailed(instanceId, forwarding.transition(Phase.DELETE_FAILED, detail)));
   }
 
@@ -581,7 +573,7 @@ public final class InstanceWorkflowActor
   }
 
   private void recoverManagement(InstanceWorkflowState state) {
-    for (InstanceForwardingSpec forwarding : state.forwardingSpecs().values()) {
+    for (InstanceForwardingState forwarding : state.forwardingStates().values()) {
       if (forwarding.inProgress()) recoverForwarding(state, forwarding);
     }
     InstanceQosUpdate update = state.qosUpdate();
@@ -711,7 +703,8 @@ public final class InstanceWorkflowActor
   }
 
   private void startForwardingPreparation(InstanceWorkflowState state) {
-    context.getSelf().tell(new CreateInstanceForwarding(state.currentForwardingPort(), true, state.pollingGeneration(), null));
+    context.getSelf().tell(new CreateInstanceForwarding(state.currentForwardingPort(), state.spec().forwarding().floatingIpIds(),
+        true, state.pollingGeneration(), null));
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSchedulingSucceeded(
@@ -1343,12 +1336,12 @@ public final class InstanceWorkflowActor
         .onEvent(
             InstanceCreationRequested.class,
             (state, event) -> state.created(event.requestId(), event.spec()))
-        .onEvent(ForwardingCreationRequested.class, (state, event) -> state.forwardingChanged(event.spec()))
-        .onEvent(ForwardingCreated.class, (state, event) -> state.forwardingCreated(event.spec(), event.resources()))
-        .onEvent(ForwardingCreationFailed.class, (state, event) -> state.forwardingChanged(event.spec()))
-        .onEvent(UserForwardingDeletionRequested.class, (state, event) -> state.forwardingChanged(event.spec()))
-        .onEvent(UserForwardingDeleted.class, (state, event) -> state.userForwardingDeleted(event.spec()))
-        .onEvent(UserForwardingDeletionFailed.class, (state, event) -> state.forwardingChanged(event.spec()))
+        .onEvent(ForwardingCreationRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
+        .onEvent(ForwardingCreated.class, (state, event) -> state.forwardingCreated(event.forwarding(), event.resources()))
+        .onEvent(ForwardingCreationFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingDeletionRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
+        .onEvent(UserForwardingDeleted.class, (state, event) -> state.userForwardingDeleted(event.forwarding()))
+        .onEvent(UserForwardingDeletionFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.qosUpdateChanged(event.update()))
         .onEvent(InstanceQosUpdated.class, (state, event) -> state.qosUpdated(event.update(), event.resources()))
         .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.qosUpdateChanged(event.update()))
@@ -1359,7 +1352,7 @@ public final class InstanceWorkflowActor
         .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork())
         .onEvent(NetworkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding())
-        .onEvent(ForwardingCandidateSelected.class, (state, event) -> state.forwardingChanged(event.spec()))
+        .onEvent(ForwardingCandidateSelected.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(SchedulingStarted.class, (state, event) -> state.scheduling())
         .onEvent(HypervisorReservationStarted.class, (state, event) -> state.reservingResources(
             event.hypervisorId(), event.reservationId(), event.remainingHypervisorIds()))
@@ -1440,8 +1433,8 @@ public final class InstanceWorkflowActor
     };
     if (recoveringPhase == null) {
       if (state.phase() == InstancePhase.PREPARING_FORWARDING) {
-        InstanceForwardingSpec pending = state.forwardingSpecs().get(state.currentForwardingPort());
-        if (pending.operation() == null) startForwardingPreparation(state);
+        InstanceForwardingState pending = state.forwardingStates().get(state.currentForwardingPort());
+        if (pending == null) startForwardingPreparation(state);
         else recoverForwarding(state, pending);
       } else if (state.phase() == InstancePhase.ACTIVE) {
         recoverManagement(state);

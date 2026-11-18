@@ -1,5 +1,6 @@
 package cn.veryai.arcreactor.web.api;
 
+import cn.veryai.arcreactor.entity.PortForwardingEntity;
 import cn.veryai.arcreactor.service.InstanceService;
 import cn.veryai.arcreactor.vo.CreateInstanceResult;
 import cn.veryai.arcreactor.vo.InstanceView;
@@ -8,6 +9,7 @@ import cn.veryai.arcreactor.web.params.CreateInstanceParam;
 import cn.veryai.arcreactor.web.params.CreateUserForwardingParam;
 import cn.veryai.arcreactor.web.params.UpdateInstanceQosParam;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -42,6 +44,11 @@ public class InstanceController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public CompletionStage<Void> deleteInstance(@PathVariable("instanceId") String instanceId) {
         return instanceService.delete(instanceId);
+    }
+
+    @GetMapping("/{instanceId}/forwardings")
+    public List<PortForwardingEntity> getForwardings(@PathVariable("instanceId") String instanceId) {
+        return instanceService.getForwardings(instanceId);
     }
 
     @PostMapping("/{instanceId}/forwardings")

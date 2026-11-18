@@ -20,7 +20,4 @@ public final class InstanceOperationIds {
     return "network:" + state.instanceId() + ":" + state.requestId();
   }
 
-  public static String forwardingClaimId(InstanceWorkflowState state, int internalPort) {
-    return "veryai:fip:" + state.instanceId() + ":" + state.requestId() + ":" + internalPort;
-  }
 }

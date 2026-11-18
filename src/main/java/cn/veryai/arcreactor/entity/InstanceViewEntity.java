@@ -2,9 +2,7 @@ package cn.veryai.arcreactor.entity;
 
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
-import cn.veryai.arcreactor.vo.UserForwardingView;
 import java.time.OffsetDateTime;
-import java.util.Map;
 import lombok.Data;
 import lombok.experimental.FieldNameConstants;
 
@@ -59,7 +57,6 @@ public class InstanceViewEntity {
     private String osSubFloatingIpId;
     private String subFloatingIpAddress;
     private String osTrunkId;
-    private Map<String, UserForwardingView> userForwardings;
     private InstanceQosUpdate qosUpdate;
     private String failureCode;
     private String failureMessage;

@@ -8,7 +8,7 @@ import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
 import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.instance.model.ForwardingDeletionTarget;
-import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingSpec;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import java.util.concurrent.CompletableFuture;
@@ -31,11 +31,10 @@ final class InstanceForwardingOperations {
     this.forwardings = forwardings;
   }
 
-  CompletionStage<ForwardingReply> requestCreation(InstanceWorkflowState state, InstanceForwardingSpec forwarding, boolean submit) {
-    var operation = forwarding.operation();
+  CompletionStage<ForwardingReply> requestCreation(InstanceWorkflowState state, InstanceForwardingState forwarding, boolean submit) {
     ForwardingSpec spec = targetSpec(state, forwarding);
-    return askForwarding(() -> submit ? forwardings.create(operation.floatingIpId(), operation.claimId(), spec)
-        : forwardings.get(operation.floatingIpId(), operation.claimId()))
+    return askForwarding(() -> submit ? forwardings.create(forwarding.floatingIpId(), forwarding.claimId(), spec)
+        : forwardings.get(forwarding.floatingIpId(), forwarding.claimId()))
         .thenCompose(reply -> ensureAccessAfterCreation(state, forwarding, spec, reply));
   }
 
@@ -68,15 +67,14 @@ final class InstanceForwardingOperations {
   }
 
   /** Query first on recovery; only an absent claim allows submitting its durable creation intent again. */
-  CompletionStage<ForwardingReply> recoverForwardingCreation(InstanceWorkflowState state, InstanceForwardingSpec forwarding) {
-    var operation = forwarding.operation();
+  CompletionStage<ForwardingReply> recoverForwardingCreation(InstanceWorkflowState state, InstanceForwardingState forwarding) {
     ForwardingSpec spec = targetSpec(state, forwarding);
-    return askForwarding(() -> forwardings.get(operation.floatingIpId(), operation.claimId())
+    return askForwarding(() -> forwardings.get(forwarding.floatingIpId(), forwarding.claimId())
         .thenCompose(reply -> {
           if (reply == null || reply.status() != ForwardingReply.Status.NOT_FOUND) {
             return CompletableFuture.completedFuture(reply);
           }
-          return forwardings.create(operation.floatingIpId(), operation.claimId(), spec);
+          return forwardings.create(forwarding.floatingIpId(), forwarding.claimId(), spec);
         })).thenCompose(reply -> ensureAccessAfterCreation(state, forwarding, spec, reply));
   }
 
@@ -95,7 +93,7 @@ final class InstanceForwardingOperations {
         });
   }
 
-  private static ForwardingSpec targetSpec(InstanceWorkflowState state, InstanceForwardingSpec forwarding) {
+  private static ForwardingSpec targetSpec(InstanceWorkflowState state, InstanceForwardingState forwarding) {
     var network = state.networkPreparation().resources();
     return new ForwardingSpec(state.instanceId(), state.userId(), state.spec().region(), state.osProjectId(),
         network.osParentPortId(), network.parentFixedIp(), forwarding.internalPort(), forwarding.kind());
@@ -110,12 +108,10 @@ final class InstanceForwardingOperations {
     }
   }
 
-  private static boolean matchesReady(InstanceForwardingSpec forwarding, ForwardingSpec expected, ForwardingClaim claim) {
-    var operation = forwarding.operation();
+  private static boolean matchesReady(InstanceForwardingState forwarding, ForwardingSpec expected, ForwardingClaim claim) {
     if (claim == null || claim.phase() != ForwardingClaim.Phase.READY || !expected.equals(claim.spec())
-        || !operation.claimId().equals(claim.claimId()) || !operation.floatingIpId().equals(claim.floatingIpId())
+        || !forwarding.claimId().equals(claim.claimId()) || !forwarding.floatingIpId().equals(claim.floatingIpId())
         || !hasText(claim.osFloatingIpId())) return false;
-    if (operation.osFloatingIpId() != null && !operation.osFloatingIpId().equals(claim.osFloatingIpId())) return false;
     var resources = claim.resources();
     return hasText(resources.floatingIpAddress()) && hasText(resources.osTcpForwardingId())
         && hasText(resources.osUdpForwardingId()) && resources.externalPort() >= FloatingIpSettings.FIRST_PORT
@@ -123,7 +119,7 @@ final class InstanceForwardingOperations {
   }
 
   private CompletionStage<ForwardingReply> ensureAccessAfterCreation(InstanceWorkflowState state,
-      InstanceForwardingSpec forwarding, ForwardingSpec spec, ForwardingReply reply) {
+      InstanceForwardingState forwarding, ForwardingSpec spec, ForwardingReply reply) {
     if (reply == null || reply.status() != ForwardingReply.Status.READY) {
       return CompletableFuture.completedFuture(reply);
     }

@@ -1,10 +1,7 @@
 package cn.veryai.arcreactor.actor.instance.projection;
 
-import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCreated;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorReservationStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
@@ -36,7 +33,6 @@ import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
 import cn.veryai.arcreactor.util.JsonUtil;
-import cn.veryai.arcreactor.vo.UserForwardingView;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
@@ -72,16 +68,8 @@ public final class InstanceProjectionHandler
             mapper.updateNetwork(instanceId, InstancePhase.PREPARING_NETWORK, prepared.resources(), version, timestamp);
         } else if (event instanceof ForwardingPreparationStarted) {
             mapper.updatePhase(instanceId, InstancePhase.PREPARING_FORWARDING, version, timestamp);
-        } else if (event instanceof InstanceForwardingEvent changed) {
-            if (changed.spec().kind() == ForwardingKind.USER) {
-                var resources = changed instanceof ForwardingCreated created ? created.resources() : null;
-                var forwarding = UserForwardingView.from(changed.spec(), resources);
-                boolean preserveResources = !(changed instanceof ForwardingCreationRequested || changed instanceof ForwardingCreated);
-                mapper.updateUserForwarding(instanceId, "$." + JsonUtil.toJson(forwarding.forwardingId()),
-                        JsonUtil.toJson(forwarding), preserveResources, version, timestamp);
-            } else {
-                mapper.updateVersion(instanceId, version, timestamp);
-            }
+        } else if (event instanceof InstanceForwardingEvent) {
+            mapper.updateVersion(instanceId, version, timestamp);
         } else if (event instanceof InstanceQosUpdateRequested requested) {
             mapper.updateQosState(instanceId, JsonUtil.toJson(requested.update()), version, timestamp);
         } else if (event instanceof InstanceQosUpdateFailed failed) {

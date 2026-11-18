@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.PortForwardingMapper">
+    <resultMap id="entity" type="cn.veryai.arcreactor.entity.PortForwardingEntity">
+        <id column="floating_ip_id" property="floatingIpId"/>
+        <id column="claim_id" property="claimId"/>
+        <result column="region_id" property="regionId"/>
+        <result column="os_floating_ip_id" property="osFloatingIpId"/>
+        <result column="instance_id" property="instanceId"/>
+        <result column="user_id" property="userId"/>
+        <result column="os_project_id" property="osProjectId"/>
+        <result column="kind" property="kind"/>
+        <result column="floating_ip" property="floatingIp"/>
+        <result column="domain" property="domain"/>
+        <result column="os_internal_port_id" property="osInternalPortId"/>
+        <result column="fixed_ip" property="fixedIp"/>
+        <result column="internal_port" property="internalPort"/>
+        <result column="external_port" property="externalPort"/>
+        <result column="os_tcp_forwarding_id" property="osTcpForwardingId"/>
+        <result column="os_udp_forwarding_id" property="osUdpForwardingId"/>
+        <result column="phase" property="phase"/>
+        <result column="failure_message" property="failureMessage"/>
+        <result column="resource_version" property="resourceVersion"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="deleted_at" property="deletedAt"/>
+    </resultMap>
+
+    <select id="findByInstanceId" resultMap="entity">
+        SELECT floating_ip_id, region_id, os_floating_ip_id, claim_id,
+               instance_id, user_id, os_project_id, kind, floating_ip, domain,
+               os_internal_port_id, fixed_ip, internal_port, external_port,
+               os_tcp_forwarding_id, os_udp_forwarding_id, phase, failure_message,
+               resource_version, created_at, updated_at, deleted_at
+        FROM port_forwarding
+        WHERE instance_id = #{instanceId}
+        ORDER BY created_at DESC, floating_ip_id ASC, claim_id ASC
+    </select>
+</mapper>
