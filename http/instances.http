@@ -75,7 +75,7 @@ Accept: application/json
 
 ### 6. 删除运行中或创建失败的实例
 # 创建失败停留在 FAILED，保留资源和失败原因，不自动清理；先排查，再单独执行此请求。
-# 允许 ACTIVE、FAILED 开始删除，创建中返回业务 code=11721。
+# 允许 ACTIVE、FAILED 开始删除，创建、重启、重建或其他管理操作进行中时返回业务 code=11721。
 # 返回 HTTP 202 表示删除意图已持久化；通过上方 GET 查询具体删除阶段和 DELETED。
 # 各删除阶段及 DELETED 下重复删除幂等；已受理的删除在重启后继续。
 # 未完成的删除会继续检查和重试，用户级项目、Share 和网络保持不变。
@@ -129,7 +129,7 @@ Accept: application/json
 ### 11. 查询用户名下的实例列表（数据库读模型）
 # 直接查询 instance_view，不调用 Actor；HTTP 202 后可能需要等待异步投影。
 # result 为数组，按 createdAt 降序、instanceId 升序；无分页，默认包含所有阶段（含 DELETED）。
-# 字段按表结构平铺；qosUpdate 返回 JSON 对象或 null，端口转发见第 14 项，时间默认携带 +08:00。
+# 字段按表结构平铺；qosUpdate、serverOperation 返回 JSON 对象或 null，端口转发见第 14 项，时间默认携带 +08:00。
 GET {{baseUrl}}/api/v1/users/{{userId}}/instances
 Accept: application/json
 
@@ -151,3 +151,22 @@ Accept: application/json
 # phase 表示 FIP 规则状态；READY、DELETED 不代表实例安全组的放行或清理步骤已完成。
 GET {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings
 Accept: application/json
+
+### 15. 硬重启实例
+# 要求 ACTIVE 且无进行中的管理操作；也允许重试重启/重建失败的实例。
+# 返回 HTTP 202 和 result.operationId，通过第 5 项查询 REBOOTING 和 serverOperation 状态。
+# Nova 恢复 ACTIVE、任务结束且 SSH 可连通后，实例恢复 ACTIVE，操作为 SUCCEEDED。
+POST {{baseUrl}}/api/v1/instances/{{instanceId}}/reboot
+Accept: application/json
+
+### 16. 使用指定镜像重建实例系统盘
+# imageId 使用与实例同区域且已启用的本地镜像业务 ID，沿用原 Nova 实例和附属资源。
+# 返回 HTTP 202 和 result.operationId，通过第 5 项查询 REBUILDING 和 serverOperation 状态。
+# 受理结果不确定时先查询；恢复过程不自动重复发送重启或重建请求。
+POST {{baseUrl}}/api/v1/instances/{{instanceId}}/rebuild
+Content-Type: application/json
+Accept: application/json
+
+{
+  "imageId": "{{imageId}}"
+}

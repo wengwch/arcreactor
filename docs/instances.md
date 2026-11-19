@@ -628,7 +628,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 
 运行中的实例或创建失败的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
 该入口允许对 `ACTIVE`、`FAILED` 实例开始删除；创建中的实例会拒绝，业务错误码为 `11721`。
-用户转发创建、删除或 QoS 修改尚在进行时也拒绝实例删除，避免管理请求与资源清理同时执行。
+用户转发创建、删除、QoS 修改、重启或重建尚在进行时也拒绝实例删除，避免管理请求与资源清理同时执行。
 `InstanceDeletionStarted` 持久化后进入 `DELETING_NOVA` 并返回 HTTP `202`，所有删除阶段及 `DELETED` 下的重复删除请求均幂等受理。
 删除按以下六个阶段执行，当前阶段完成后先持久化明确的完成事件，再执行下一阶段：
 
@@ -732,7 +732,7 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 
 响应沿用 `RespWrapper`，字段按 `instance_view` 列名转为 camelCase，包含名称、描述、用户、区域、
 资源规格、实例阶段、已投影的资源 ID、限速值、失败信息和 `workflowVersion`。
-`qosUpdate` 是 JSON 对象或 `null`；端口转发通过独立的转发查询接口读取。
+`qosUpdate`、`serverOperation` 是 JSON 对象或 `null`；端口转发通过独立的转发查询接口读取。
 `createdAt`、`updatedAt` 使用带偏移量的时间格式；默认 JDBC 连接时区为 `Asia/Shanghai`，返回 `+08:00`。
 以下仅展示列表中的部分字段：
 
@@ -811,6 +811,37 @@ SSH 使用内部端口为 22 的映射：`ssh -p 10000 <创建响应中的 usern
 JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab?token=<创建响应中的 jupyterToken>`。
 创建过程中列表可能为空或仅有一条记录；转发就绪先于 Nova 启动。
 `ACTIVE` 表示 SSH 转发已通过连通性检查且资源预留已确认，仍不代表 cloud-init 全部完成或 JupyterLab 已就绪。
+
+## 实例重启与重建
+
+| 接口 | 请求内容 | 操作 |
+| --- | --- | --- |
+| `POST /api/v1/instances/{instanceId}/reboot` | 无请求体 | 对已有 Nova 实例执行 `HARD` 重启 |
+| `POST /api/v1/instances/{instanceId}/rebuild` | `{"imageId":"demo-image-debian"}` | 使用指定镜像原地重建系统盘 |
+
+`imageId` 是本地镜像业务 ID，必填且最多 255 个字符；镜像须已启用、有 OpenStack 镜像 ID，
+并与实例属于同一区域。重建沿用原 Nova 实例、网络、端口转发、共享存储、资源分配和已保存的
+cloud-init 数据，不重新调度或创建实例。成功后更新 Actor 和读模型中的 `osImageId`。
+[Nova API](https://docs.openstack.org/api-ref/compute/#rebuild-server-rebuild-action) 定义了系统盘重建及异步状态语义。
+
+首次操作要求实例为 `ACTIVE`，且没有进行中的用户转发、QoS、重启或重建操作。
+重启或重建失败后，可在 `FAILED` 状态显式重试这两类操作或删除实例；创建失败的实例仍沿用原处理流程。
+调用 OpenStack 前还会检查实例项目归属，要求远端没有正在执行的任务，状态为 `ACTIVE` 或 `ERROR`。
+进行中的相同操作（重建时目标镜像也相同）返回已有 `operationId`，不重复提交；其他管理操作和删除等待其完成。
+
+意图持久化后返回 HTTP `202` 和 `{"code":200,"result":{"operationId":"..."}}`。
+通过实例查询或用户实例读模型的 `serverOperation` 查看 `operationId`、`type`（`REBOOT` / `REBUILD`）、
+`phase`（`SUBMITTING` / `RUNNING` / `SUCCEEDED` / `FAILED`）、目标 `osImageId`、请求时间和失败信息。
+实例生命周期依次为 `REBOOTING` 或 `REBUILDING` → `ACTIVE`；失败进入 `FAILED`。
+Nova 恢复 `ACTIVE`、没有在途任务且原 SSH 映射连通后才完成；重建还会确认目标镜像。
+失败代码使用 `NOVA_REBOOT_...`、`NOVA_REBUILD_...` 前缀。接口拒绝、受理超时和受理未确认沿用管理操作错误码。
+
+Actor 恢复后只查询，不重新提交重启或重建。已记录 Nova 受理的操作继续等待完成；
+受理响应丢失时，按对应 Nova 任务状态或已变化的目标镜像确认后继续。
+无法确认是否受理时记录 `NOVA_REBOOT_UNCONFIRMED` 或 `NOVA_REBUILD_UNCONFIRMED`，等待外部核实后重试。
+这些操作使用独立的操作 ID，不修改创建时的 `novaOperationId`，保留后续资源查找所用的标记。
+
+已有数据库先执行 `sql/migrations/add-instance-server-operation.sql`；新库使用更新后的 `sql/read-model.sql`。
 
 ## 实例端口转发与 QoS 管理
 
@@ -1074,6 +1105,8 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新实际规则 ID 和
 `parent_max_kbps`、`parent_max_burst_kbits`、`sub_max_kbps`、`sub_max_burst_kbits`。
 网络准备完成时也写入父子端口对应限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
+重启、重建的请求、Nova 受理、完成和失败事件写入 `server_operation` JSON，并同步实例生命周期阶段；
+完成事件更新已确认的 `os_image_id` 和 Nova 状态，失败事件保存失败代码及原因。
 新库使用 `sql/read-model.sql`，已有 `instance_view` 可执行
 `sql/migrations/add-instance-network-management.sql` 增加两列 JSON 和四列限速值，不转换旧事件或快照。
 该历史脚本中的 `user_forwardings` JSON 已停用，升级后可执行

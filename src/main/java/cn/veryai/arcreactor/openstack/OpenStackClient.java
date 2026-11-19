@@ -127,9 +127,14 @@ public class OpenStackClient {
     }
   }
 
-  public record NovaServer(String osServerId, Status status, String fault) implements Serializable {
+  public record NovaServer(String osServerId, Status status, String fault, String osImageId,
+      String taskState) implements Serializable {
+    public NovaServer(String osServerId, Status status, String fault) {
+      this(osServerId, status, fault, null, null);
+    }
+
     public enum Status {
-      BUILD, ACTIVE, ERROR, OTHER
+      BUILD, ACTIVE, ERROR, REBOOT, HARD_REBOOT, REBUILD, OTHER
     }
   }
 
@@ -2264,6 +2269,42 @@ public class OpenStackClient {
     }, NOVA_EXECUTOR);
   }
 
+  public CompletionStage<Void> rebootServer(ServerTarget target, String osServerId) {
+    return submitServerAction(target, osServerId,
+        client -> client.compute().servers().reboot(osServerId, RebootType.HARD));
+  }
+
+  /** Omitting user_data preserves the cloud-init data saved when the server was created. */
+  public CompletionStage<Void> rebuildServer(ServerTarget target, String osServerId, String osImageId) {
+    requireServerText(osImageId, "osImageId");
+    return submitServerAction(target, osServerId,
+        client -> client.compute().servers().rebuild(osServerId, RebuildOptions.create().image(osImageId)));
+  }
+
+  private CompletionStage<Void> submitServerAction(ServerTarget target, String osServerId,
+      java.util.function.Function<OSClient.OSClientV3, ActionResponse> action) {
+    return CompletableFuture.runAsync(() -> {
+      requireServerText(osServerId, "osServerId");
+      String region = resolveServerRegion(target);
+      Server server = getServer(region, target.osProjectId(), osServerId);
+      if (server == null) throw new OpenStackOperationException("Nova server no longer exists", null);
+      if (StringUtils.isNotBlank(server.getTaskState())
+          || (server.getStatus() != Server.Status.ACTIVE && server.getStatus() != Server.Status.ERROR)) {
+        throw new OpenStackOperationException("Nova server must be idle and ACTIVE or ERROR", null);
+      }
+      OSClient.OSClientV3 client = getOsAdminClient(region, target.osProjectId());
+      if (client instanceof OSClientSession.OSClientSessionV3 session) {
+        session.headers(Map.of("OpenStack-API-Version", "compute 2.100"));
+      }
+      ActionResponse response = action.apply(client);
+      // An absent response or a transient HTTP failure leaves acceptance uncertain.
+      if (response == null) throw new ResponseException("Nova returned no server action response", 0);
+      if (!response.isSuccess()) {
+        throw new ResponseException("Nova server action failed: " + response.getFault(), response.getCode());
+      }
+    }, NOVA_EXECUTOR);
+  }
+
   public CompletionStage<ServerLookupResult> findServerByOperationId(
       ServerTarget target, String operationId) {
     return CompletableFuture.supplyAsync(
@@ -2365,13 +2406,17 @@ public class OpenStackClient {
         case BUILD -> NovaServer.Status.BUILD;
         case ACTIVE -> NovaServer.Status.ACTIVE;
         case ERROR -> NovaServer.Status.ERROR;
+        case REBOOT -> NovaServer.Status.REBOOT;
+        case HARD_REBOOT -> NovaServer.Status.HARD_REBOOT;
+        case REBUILD -> NovaServer.Status.REBUILD;
         default -> NovaServer.Status.OTHER;
       };
     }
     return new NovaServer(
         server.getId(),
         status,
-        server.getFault() == null ? null : server.getFault().getMessage());
+        server.getFault() == null ? null : server.getFault().getMessage(),
+        server.getImageId(), server.getTaskState());
   }
 
   public String getVNCLink(String region, String osProjectId, String osServerId) {

@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.actor.instance.projection.mybatis;
 
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
+import cn.veryai.arcreactor.actor.instance.model.InstanceServerOperation;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import java.sql.Timestamp;
@@ -76,6 +77,16 @@ public interface InstanceProjectionMapper {
             @Param("instanceId") String instanceId,
             @Param("phase") InstancePhase phase,
             @Param("operationId") String operationId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateServerOperation(
+            @Param("instanceId") String instanceId,
+            @Param("phase") InstancePhase phase,
+            @Param("operation") InstanceServerOperation operation,
+            @Param("novaStatus") String novaStatus,
+            @Param("osImageId") String osImageId,
+            @Param("failureCode") String failureCode,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

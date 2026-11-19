@@ -6,11 +6,17 @@ import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
+import cn.veryai.arcreactor.actor.instance.command.RebootInstance;
+import cn.veryai.arcreactor.actor.instance.command.RebuildInstance;
+import cn.veryai.arcreactor.actor.instance.command.CheckServerOperation;
+import cn.veryai.arcreactor.actor.instance.command.ServerOperationSubmitted;
+import cn.veryai.arcreactor.actor.instance.command.ServerOperationChecked;
 import cn.veryai.arcreactor.actor.instance.command.ForwardingScope;
 import cn.veryai.arcreactor.actor.instance.command.QosUpdateCompleted;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState.Phase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
+import cn.veryai.arcreactor.actor.instance.model.InstanceServerOperation;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreated;
@@ -21,6 +27,10 @@ import cn.veryai.arcreactor.actor.instance.event.ForwardingDeletionFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationSubmitted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationCompleted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationFailed;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
 import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
@@ -121,7 +131,7 @@ import org.apache.pekko.persistence.typed.javadsl.EventSourcedBehavior;
 import org.apache.pekko.persistence.typed.javadsl.RetentionCriteria;
 import org.apache.pekko.persistence.typed.javadsl.SignalHandler;
 
-/** Coordinates instance creation and externally requested deletion. */
+/** Coordinates instance creation, management operations and externally requested deletion. */
 public final class InstanceWorkflowActor
     extends EventSourcedBehavior<WorkflowCommand, InstanceWorkflowEvent, InstanceWorkflowState> {
   public static final String ENTITY_TYPE = "InstanceWorkflow";
@@ -133,6 +143,7 @@ public final class InstanceWorkflowActor
   private static final String RESERVATION_TIMER = "resource-reservation";
   private static final String DELETION_TIMER = "instance-deletion";
   private static final String RECOVERY_TIMER = "instance-recovery";
+  private static final String SERVER_OPERATION_TIMER = "instance-server-operation";
   private static final Executor CLOUD_INIT_EXECUTOR =
       task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
 
@@ -149,6 +160,7 @@ public final class InstanceWorkflowActor
   private final InstanceForwardingOperations forwardingOperations;
   private final Map<String, String> forwardingRequests = new java.util.HashMap<>();
   private String qosUpdateRequestToken;
+  private String serverOperationRequestToken;
   private final InstanceSshChecker sshChecker = new InstanceSshChecker(new SSHValidator());
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private String dependencyRequestToken;
@@ -239,6 +251,11 @@ public final class InstanceWorkflowActor
         .onCommand(DeleteInstanceForwarding.class, this::onDeleteForwarding)
         .onCommand(UpdateInstanceQos.class, this::onUpdateInstanceQos)
         .onCommand(QosUpdateCompleted.class, this::onQosUpdateCompleted)
+        .onCommand(RebootInstance.class, this::onReboot)
+        .onCommand(RebuildInstance.class, this::onRebuild)
+        .onCommand(ServerOperationSubmitted.class, this::onServerOperationSubmitted)
+        .onCommand(CheckServerOperation.class, this::onCheckServerOperation)
+        .onCommand(ServerOperationChecked.class, this::onServerOperationChecked)
         .onCommand(DependenciesReady.class, this::onDependenciesReady)
         .onCommand(DependenciesFailed.class, this::onDependenciesFailed)
         .onCommand(GetInstanceState.class, this::onGetState)
@@ -275,7 +292,8 @@ public final class InstanceWorkflowActor
               || command instanceof CreateInstance || command instanceof DeleteInstance
               || (command instanceof CreateInstanceForwarding create && !create.instanceInitialization())
               || (command instanceof DeleteInstanceForwarding delete && delete.scope() == ForwardingScope.USER)
-              || command instanceof UpdateInstanceQos)) {
+              || command instanceof UpdateInstanceQos
+              || command instanceof RebootInstance || command instanceof RebuildInstance)) {
         return Effect().none();
       }
       return handler.apply(state, command);
@@ -611,6 +629,201 @@ public final class InstanceWorkflowActor
       pipeQosUpdate(update, () -> openStackClient.updateInstanceQos(target(state), networkOperationId(state),
           state.networkPreparation().resources(), update.parentPort(), update.subPort()));
     }
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onReboot(
+      InstanceWorkflowState state, RebootInstance command) {
+    return onServerOperation(state, InstanceServerOperation.Type.REBOOT, null, command.replyTo());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onRebuild(
+      InstanceWorkflowState state, RebuildInstance command) {
+    return onServerOperation(state, InstanceServerOperation.Type.REBUILD, command.osImageId(), command.replyTo());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onServerOperation(
+      InstanceWorkflowState state, InstanceServerOperation.Type type, String osImageId,
+      ActorRef<InstanceMutationReply> replyTo) {
+    InstanceServerOperation previous = state.serverOperation();
+    if (previous != null && matchesServerOperation(state, previous.operationId())
+        && previous.type() == type && Objects.equals(previous.osImageId(), osImageId)) {
+      replyTo.tell(InstanceMutationReply.accepted(previous.operationId()));
+      return Effect().none();
+    }
+    boolean retrying = state.phase() == InstancePhase.FAILED && previous != null
+        && previous.phase() == InstanceServerOperation.Phase.FAILED;
+    if ((state.phase() != InstancePhase.ACTIVE && !retrying) || state.hasPendingOperation()) {
+      replyTo.tell(InstanceMutationReply.rejected(
+          "Instance must be ACTIVE or have a failed server operation, with no pending management operation"));
+      return Effect().none();
+    }
+    if (state.osNovaServerId() == null || state.osNovaServerId().isBlank()) {
+      replyTo.tell(InstanceMutationReply.rejected("Instance has no recorded Nova server"));
+      return Effect().none();
+    }
+    InstanceServerOperation operation = new InstanceServerOperation(UUID.randomUUID().toString(), type,
+        InstanceServerOperation.Phase.SUBMITTING, osImageId, clock.instant(), null);
+    return Effect().persist(new InstanceServerOperationRequested(instanceId, operation)).thenRun(next -> {
+      replyTo.tell(InstanceMutationReply.accepted(operation.operationId()));
+      requestServerOperation(next);
+    });
+  }
+
+  private void requestServerOperation(InstanceWorkflowState state) {
+    InstanceServerOperation operation = state.serverOperation();
+    String token = UUID.randomUUID().toString();
+    serverOperationRequestToken = token;
+    CompletionStage<Void> request;
+    try {
+      request = operation.type() == InstanceServerOperation.Type.REBOOT
+          ? openStackClient.rebootServer(target(state), state.osNovaServerId())
+          : openStackClient.rebuildServer(target(state), state.osNovaServerId(), operation.osImageId());
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    context.pipeToSelf(request, (ignored, error) -> {
+      Throwable cause = error == null ? null : rootCause(error);
+      return new ServerOperationSubmitted(operation.operationId(), token,
+          definitiveOperationFailure(cause), cause == null ? null : cause.toString());
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onServerOperationSubmitted(
+      InstanceWorkflowState state, ServerOperationSubmitted command) {
+    if (!matchesServerOperation(state, command.operationId()) || serverOperationRequestToken == null
+        || !serverOperationRequestToken.equals(command.requestToken())) return Effect().none();
+    serverOperationRequestToken = null;
+    InstanceServerOperation operation = state.serverOperation();
+    if (operation.phase() != InstanceServerOperation.Phase.SUBMITTING) return Effect().none();
+    if (command.rejected()) return failServerOperation(state, "REJECTED", command.failure(), null);
+    if (command.failure() != null) {
+      // A timeout is not permission to repeat a destructive action; reconcile using read-only checks.
+      context.getLog().warn("Nova server operation acceptance uncertain: instanceId={} operationId={} reason={}",
+          instanceId, operation.operationId(), command.failure());
+      scheduleServerOperationCheck(state, 1);
+      return Effect().none();
+    }
+    return Effect().persist(new InstanceServerOperationSubmitted(instanceId, operation.running()))
+        .thenRun(next -> scheduleServerOperationCheck(next, 1));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckServerOperation(
+      InstanceWorkflowState state, CheckServerOperation command) {
+    if (matchesServerOperation(state, command.operationId()) && serverOperationRequestToken == null) {
+      requestServerOperationCheck(state, command.attempt());
+    }
+    return Effect().none();
+  }
+
+  private void requestServerOperationCheck(InstanceWorkflowState state, int attempt) {
+    InstanceServerOperation operation = state.serverOperation();
+    String token = UUID.randomUUID().toString();
+    serverOperationRequestToken = token;
+    CompletionStage<OpenStackClient.NovaServer> request;
+    try {
+      request = openStackClient.getServer(target(state), state.osNovaServerId());
+    } catch (RuntimeException error) {
+      request = CompletableFuture.failedFuture(error);
+    }
+    var check = request.thenCompose(server -> {
+      if (operation.phase() != InstanceServerOperation.Phase.RUNNING || !serverOperationReady(operation, server)
+          || !state.osNovaServerId().equals(server.osServerId())) {
+        return CompletableFuture.completedFuture(new ServerOperationChecked(operation.operationId(), token,
+            attempt, server, false, false, null));
+      }
+      return sshChecker.check(state).thenApply(connected -> new ServerOperationChecked(operation.operationId(),
+          token, attempt, server, Boolean.TRUE.equals(connected), false, null));
+    });
+    context.pipeToSelf(check, (result, error) -> {
+      if (error == null) return result;
+      Throwable cause = rootCause(error);
+      return new ServerOperationChecked(operation.operationId(), token, attempt, null, false,
+          definitiveOperationFailure(cause), cause.toString());
+    });
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onServerOperationChecked(
+      InstanceWorkflowState state, ServerOperationChecked command) {
+    if (!matchesServerOperation(state, command.operationId()) || serverOperationRequestToken == null
+        || !serverOperationRequestToken.equals(command.requestToken())) return Effect().none();
+    serverOperationRequestToken = null;
+    if (command.failure() != null) {
+      if (command.rejected()) return failServerOperation(state, "CHECK_FAILED", command.failure(), null);
+      scheduleServerOperationCheck(state, command.attempt() + 1);
+      return Effect().none();
+    }
+    OpenStackClient.NovaServer server = command.server();
+    if (server == null) {
+      return failServerOperation(state, "SERVER_MISSING", "The recorded Nova server no longer exists", null);
+    }
+    if (!state.osNovaServerId().equals(server.osServerId())) {
+      return failServerOperation(state, "RESULT_INVALID", "Nova returned a different server", null);
+    }
+    if (server.status() == OpenStackClient.NovaServer.Status.ERROR && serverIdle(server)) {
+      return failServerOperation(state, "NOVA_ERROR",
+          server.fault() == null ? "Nova server entered ERROR" : server.fault(), server.status());
+    }
+    InstanceServerOperation operation = state.serverOperation();
+    if (operation.phase() == InstanceServerOperation.Phase.SUBMITTING) {
+      // Recovery may observe an accepted action whose response was never persisted.
+      boolean imageChanged = operation.type() == InstanceServerOperation.Type.REBUILD
+          && operation.osImageId().equals(server.osImageId())
+          && !operation.osImageId().equals(state.osImageId());
+      if (serverOperationObserved(operation, server) || imageChanged) {
+        return Effect().persist(new InstanceServerOperationSubmitted(instanceId, operation.running()))
+            .thenRun(next -> scheduleServerOperationCheck(next, 1));
+      }
+      return failServerOperation(state, "UNCONFIRMED",
+          "Nova acceptance could not be confirmed; the server action was not resubmitted", server.status());
+    }
+    if (server.status() == OpenStackClient.NovaServer.Status.ACTIVE && serverIdle(server)
+        && operation.type() == InstanceServerOperation.Type.REBUILD
+        && !operation.osImageId().equals(server.osImageId())) {
+      return failServerOperation(state, "IMAGE_MISMATCH", "Nova server is not using the requested image", server.status());
+    }
+    if (serverOperationReady(operation, server) && command.sshConnected()) {
+      return Effect().persist(new InstanceServerOperationCompleted(instanceId, operation.succeeded(), server.osImageId()))
+          .thenRun(next -> timers.cancel(SERVER_OPERATION_TIMER));
+    }
+    scheduleServerOperationCheck(state, command.attempt() + 1);
+    return Effect().none();
+  }
+
+  private boolean matchesServerOperation(InstanceWorkflowState state, String operationId) {
+    InstanceServerOperation operation = state.serverOperation();
+    return operation != null && operation.inProgress() && operation.operationId().equals(operationId)
+        && state.phase() == operation.type().instancePhase();
+  }
+
+  private static boolean serverIdle(OpenStackClient.NovaServer server) {
+    return server.taskState() == null || server.taskState().isBlank();
+  }
+
+  private static boolean serverOperationReady(InstanceServerOperation operation, OpenStackClient.NovaServer server) {
+    return server != null && server.status() == OpenStackClient.NovaServer.Status.ACTIVE && serverIdle(server)
+        && (operation.type() == InstanceServerOperation.Type.REBOOT || operation.osImageId().equals(server.osImageId()));
+  }
+
+  private static boolean serverOperationObserved(InstanceServerOperation operation, OpenStackClient.NovaServer server) {
+    String task = server.taskState();
+    return operation.type() == InstanceServerOperation.Type.REBOOT
+        ? server.status() == OpenStackClient.NovaServer.Status.REBOOT
+            || server.status() == OpenStackClient.NovaServer.Status.HARD_REBOOT
+            || (task != null && task.startsWith("reboot"))
+        : server.status() == OpenStackClient.NovaServer.Status.REBUILD
+            || (task != null && task.startsWith("rebuild"));
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failServerOperation(InstanceWorkflowState state,
+      String code, String detail, OpenStackClient.NovaServer.Status status) {
+    return Effect().persist(new InstanceServerOperationFailed(instanceId, state.serverOperation().failed(detail),
+        status, "NOVA_" + state.serverOperation().type().name() + "_" + code))
+        .thenRun(next -> timers.cancel(SERVER_OPERATION_TIMER));
+  }
+
+  private void scheduleServerOperationCheck(InstanceWorkflowState state, int attempt) {
+    timers.startSingleTimer(SERVER_OPERATION_TIMER,
+        new CheckServerOperation(state.serverOperation().operationId(), attempt), settings.pollDelay(attempt));
   }
 
   private void requestDependencies(InstanceWorkflowState state) {
@@ -969,7 +1182,7 @@ public final class InstanceWorkflowActor
       return Effect().none();
     }
     if (state.hasPendingOperation()) {
-      command.replyTo().tell(InstanceReply.rejected("Wait for instance forwarding or QoS operations before deletion"));
+      command.replyTo().tell(InstanceReply.rejected("Wait for pending instance management operations before deletion"));
       return Effect().none();
     }
     return Effect().persist(new InstanceDeletionStarted(instanceId, clock.instant()))
@@ -1341,6 +1554,15 @@ public final class InstanceWorkflowActor
         .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.qosUpdateChanged(event.update()))
         .onEvent(InstanceQosUpdated.class, (state, event) -> state.qosUpdated(event.update(), event.resources()))
         .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.qosUpdateChanged(event.update()))
+        .onEvent(InstanceServerOperationRequested.class,
+            (state, event) -> state.serverOperationChanged(event.operation(), null, null, null))
+        .onEvent(InstanceServerOperationSubmitted.class,
+            (state, event) -> state.serverOperationChanged(event.operation(), null, null, null))
+        .onEvent(InstanceServerOperationCompleted.class,
+            (state, event) -> state.serverOperationChanged(event.operation(), OpenStackClient.NovaServer.Status.ACTIVE,
+                event.osImageId(), null))
+        .onEvent(InstanceServerOperationFailed.class,
+            (state, event) -> state.serverOperationChanged(event.operation(), event.novaStatus(), null, event.failureCode()))
         .onEvent(DependencyPreparationStarted.class, (state, event) -> state.preparingDependencies())
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(SecurityGroupPreparationStarted.class, (state, event) -> state.preparingSecurityGroup())
@@ -1402,6 +1624,7 @@ public final class InstanceWorkflowActor
     timers.cancelAll();
     forwardingRequests.clear();
     qosUpdateRequestToken = null;
+    serverOperationRequestToken = null;
     dependencyRequestToken = null;
     resourceReservationRequestToken = null;
     securityGroupRequestToken = null;
@@ -1435,6 +1658,9 @@ public final class InstanceWorkflowActor
         InstanceForwardingState pending = state.forwardingByInternalPort(state.currentForwardingPort());
         if (pending == null) startForwardingPreparation(state);
         else recoverForwarding(state, pending);
+      } else if (state.phase() == InstancePhase.REBOOTING || state.phase() == InstancePhase.REBUILDING) {
+        // Reboot/rebuild are not idempotent. Recovery only observes the saved operation.
+        scheduleServerOperationCheck(state, 1);
       } else if (state.phase() == InstancePhase.ACTIVE) {
         recoverManagement(state);
       }

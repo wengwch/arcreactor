@@ -8,6 +8,8 @@ import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstance;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.GetInstanceState;
+import cn.veryai.arcreactor.actor.instance.command.RebootInstance;
+import cn.veryai.arcreactor.actor.instance.command.RebuildInstance;
 import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.model.CloudInitSpec;
@@ -42,6 +44,7 @@ import cn.veryai.arcreactor.vo.InstanceMutationResult;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
 import cn.veryai.arcreactor.web.params.CreateUserForwardingParam;
 import cn.veryai.arcreactor.web.params.UpdateInstanceQosParam;
+import cn.veryai.arcreactor.web.params.RebuildInstanceParam;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
@@ -109,6 +112,10 @@ public class InstanceService {
     }
 
     public CompletionStage<InstanceView> get(String instanceId) {
+        return getState(instanceId).thenApply(InstanceView::from);
+    }
+
+    private CompletionStage<InstanceWorkflowState> getState(String instanceId) {
         return AskPattern.<WorkflowCommand, InstanceWorkflowState>ask(
                         pekkoRuntime.instanceActor(instanceId),
                         GetInstanceState::new,
@@ -116,7 +123,7 @@ public class InstanceService {
                         pekkoRuntime.getActorSystem().scheduler())
                 .thenApply(state -> {
                     if (state.requestId() == null) throw new BaseException(ErrorCode.RESOURCE_NOT_FOUND);
-                    return InstanceView.from(state);
+                    return state;
                 });
     }
 
@@ -160,9 +167,32 @@ public class InstanceService {
                 param.getSubPort() == null ? null : param.getSubPort().toLimit(), replyTo));
     }
 
+    public CompletionStage<InstanceMutationResult> reboot(String instanceId) {
+        return submitMutation(instanceId, RebootInstance::new);
+    }
+
+    public CompletionStage<InstanceMutationResult> rebuild(String instanceId, RebuildInstanceParam param) {
+        ImageEntity image = imageRepo.findById(param.getImageId());
+        if (image == null) throw new BaseException(ErrorCode.IMAGE_NOT_FOUND);
+        if (!image.isEnabled() || StringUtils.isBlank(image.getOsImageId())) {
+            throw new BaseException(ErrorCode.INSTANCE_IMAGE_UNAVAILABLE);
+        }
+        return getState(instanceId).thenCompose(state -> {
+            if (!Objects.equals(state.spec().region(), image.getRegionId())) {
+                throw new BaseException(ErrorCode.INSTANCE_RESOURCE_REGION_MISMATCH);
+            }
+            return askMutation(instanceId, replyTo -> new RebuildInstance(image.getOsImageId(), replyTo));
+        });
+    }
+
     private CompletionStage<InstanceMutationResult> submitMutation(String instanceId,
             Function<ActorRef<InstanceMutationReply>, WorkflowCommand> command) {
-        return get(instanceId).thenCompose(ignored -> AskPattern.<WorkflowCommand, InstanceMutationReply>ask(
+        return getState(instanceId).thenCompose(ignored -> askMutation(instanceId, command));
+    }
+
+    private CompletionStage<InstanceMutationResult> askMutation(String instanceId,
+            Function<ActorRef<InstanceMutationReply>, WorkflowCommand> command) {
+        return AskPattern.<WorkflowCommand, InstanceMutationReply>ask(
                 pekkoRuntime.instanceActor(instanceId), command,
                 pekkoRuntime.getConfig().getAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
                 .handle((reply, error) -> {
@@ -184,7 +214,7 @@ public class InstanceService {
                         throw new BaseException(ErrorCode.INSTANCE_MUTATION_UNCONFIRMED);
                     }
                     return new InstanceMutationResult(reply.operationId());
-                }));
+                });
     }
 
     private CompletionStage<CreateInstanceResult> submit(String requestId, String instanceId, InstanceSpec spec) {

@@ -54,10 +54,6 @@ public record FloatingIpState(Status status, FloatingIpIdentity identity,
     return new FloatingIpState(Status.DESTROYING, identity, claims, outcomes, usedPorts);
   }
 
-  public FloatingIpState destructionFailed() {
-    return disabled();
-  }
-
   public FloatingIpState destructionCompleted() {
     return new FloatingIpState(Status.DESTROYED, identity, claims, outcomes, usedPorts);
   }

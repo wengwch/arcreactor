@@ -393,7 +393,7 @@ public final class FloatingIpActor
         .onEvent(FloatingIpEnabled.class, (state, event) -> state.enabled(event.identity(), event.usedPortMask()))
         .onEvent(FloatingIpDisabled.class, (state, event) -> state.disabled())
         .onEvent(FloatingIpDestructionStarted.class, (state, event) -> state.destructionStarted())
-        .onEvent(FloatingIpDestructionFailed.class, (state, event) -> state.destructionFailed())
+        .onEvent(FloatingIpDestructionFailed.class, (state, event) -> state.disabled())
         .onEvent(FloatingIpDestroyed.class, (state, event) -> state.destructionCompleted())
         .onEvent(ForwardingCreationRequested.class, (state, event) ->
             state.updated(ForwardingClaim.requested(event.claimId(), event.identity(),

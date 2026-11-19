@@ -2,6 +2,7 @@ package cn.veryai.arcreactor.entity;
 
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
+import cn.veryai.arcreactor.actor.instance.model.InstanceServerOperation;
 import java.time.OffsetDateTime;
 import lombok.Data;
 import lombok.experimental.FieldNameConstants;
@@ -58,6 +59,7 @@ public class InstanceViewEntity {
     private String subFloatingIpAddress;
     private String osTrunkId;
     private InstanceQosUpdate qosUpdate;
+    private InstanceServerOperation serverOperation;
     private String failureCode;
     private String failureMessage;
     private long workflowVersion;

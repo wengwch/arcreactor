@@ -28,6 +28,7 @@
           share_id,
           segmentation_id,
           qos_update,
+          server_operation,
           phase,
           workflow_version,
           created_at,
@@ -50,6 +51,7 @@
           NULL,
           #{spec.network.segmentationId,jdbcType=INTEGER},
           NULL,
+          NULL,
           #{phase},
           #{version},
           #{createdAt},
@@ -71,6 +73,7 @@
           share_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(share_id), share_id),
           segmentation_id = IF(workflow_version &lt; VALUES(workflow_version), VALUES(segmentation_id), segmentation_id),
           qos_update = IF(workflow_version &lt; VALUES(workflow_version), VALUES(qos_update), qos_update),
+          server_operation = IF(workflow_version &lt; VALUES(workflow_version), VALUES(server_operation), server_operation),
           phase = IF(workflow_version &lt; VALUES(workflow_version), VALUES(phase), phase),
           created_at = IF(workflow_version &lt; VALUES(workflow_version), VALUES(created_at), created_at),
           updated_at = IF(workflow_version &lt; VALUES(workflow_version), VALUES(updated_at), updated_at),
@@ -192,6 +195,23 @@
           phase = #{phase},
           os_nova_server_id = #{osServerId,jdbcType=VARCHAR},
           nova_status = #{novaStatus,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
+    <update id="updateServerOperation">
+        UPDATE instance_view SET
+          phase = #{phase},
+          server_operation = CAST(#{operation,jdbcType=LONGVARCHAR,typeHandler=cn.veryai.arcreactor.mapper.typehandler.InstanceServerOperationJsonTypeHandler} AS JSON),
+          <if test="novaStatus != null">
+              nova_status = #{novaStatus,jdbcType=VARCHAR},
+          </if>
+          <if test="osImageId != null and osImageId != ''">
+              os_image_id = #{osImageId,jdbcType=VARCHAR},
+          </if>
+          failure_code = #{failureCode,jdbcType=VARCHAR},
+          failure_message = #{operation.failure,jdbcType=LONGVARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

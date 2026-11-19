@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS instance_view (
   sub_floating_ip_address VARCHAR(45),
   os_trunk_id VARCHAR(255),
   qos_update JSON,
+  server_operation JSON,
   failure_code VARCHAR(128),
   failure_message TEXT,
   workflow_version BIGINT NOT NULL,

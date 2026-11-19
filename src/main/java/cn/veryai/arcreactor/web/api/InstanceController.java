@@ -8,6 +8,7 @@ import cn.veryai.arcreactor.vo.InstanceMutationResult;
 import cn.veryai.arcreactor.web.params.CreateInstanceParam;
 import cn.veryai.arcreactor.web.params.CreateUserForwardingParam;
 import cn.veryai.arcreactor.web.params.UpdateInstanceQosParam;
+import cn.veryai.arcreactor.web.params.RebuildInstanceParam;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
@@ -49,6 +50,19 @@ public class InstanceController {
     @GetMapping("/{instanceId}/forwardings")
     public List<PortForwardingEntity> getForwardings(@PathVariable("instanceId") String instanceId) {
         return instanceService.getForwardings(instanceId);
+    }
+
+    @PostMapping("/{instanceId}/reboot")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public CompletionStage<InstanceMutationResult> rebootInstance(@PathVariable("instanceId") String instanceId) {
+        return instanceService.reboot(instanceId);
+    }
+
+    @PostMapping("/{instanceId}/rebuild")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public CompletionStage<InstanceMutationResult> rebuildInstance(@PathVariable("instanceId") String instanceId,
+            @Valid @RequestBody RebuildInstanceParam param) {
+        return instanceService.rebuild(instanceId, param);
     }
 
     @PostMapping("/{instanceId}/forwardings")

@@ -16,6 +16,10 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationSubmitted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationCompleted;
+import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceReservationCancelled;
 import cn.veryai.arcreactor.actor.instance.event.InstanceSecurityGroupDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceWorkflowEvent;
@@ -76,6 +80,19 @@ public final class InstanceProjectionHandler
             mapper.updateQosState(instanceId, JsonUtil.toJson(failed.update()), version, timestamp);
         } else if (event instanceof InstanceQosUpdated updated) {
             mapper.updateQos(instanceId, updated.resources(), JsonUtil.toJson(updated.update()), version, timestamp);
+        } else if (event instanceof InstanceServerOperationRequested requested) {
+            mapper.updateServerOperation(instanceId, requested.operation().type().instancePhase(), requested.operation(),
+                    null, null, null, version, timestamp);
+        } else if (event instanceof InstanceServerOperationSubmitted submitted) {
+            mapper.updateServerOperation(instanceId, submitted.operation().type().instancePhase(), submitted.operation(),
+                    null, null, null, version, timestamp);
+        } else if (event instanceof InstanceServerOperationCompleted completed) {
+            mapper.updateServerOperation(instanceId, InstancePhase.ACTIVE, completed.operation(),
+                    "ACTIVE", completed.osImageId(), null, version, timestamp);
+        } else if (event instanceof InstanceServerOperationFailed failed) {
+            mapper.updateServerOperation(instanceId, InstancePhase.FAILED, failed.operation(),
+                    failed.novaStatus() == null ? null : failed.novaStatus().name(), null,
+                    failed.failureCode(), version, timestamp);
         } else if (event instanceof HypervisorReservationStarted started) {
             mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, started.hypervisorId(),
                     started.reservationId(), version, timestamp);
