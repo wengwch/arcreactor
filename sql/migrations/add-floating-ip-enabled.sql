@@ -1,4 +1,5 @@
 -- Run once if floating_ip was created before enabled was introduced.
+-- Legacy boolean layout only; follow with migrate-floating-ip-status.sql.
 -- New installations should use sql/floating-ips.sql directly.
 -- Existing rows default to disabled; this script does not infer actor state or backfill historical data.
 ALTER TABLE floating_ip

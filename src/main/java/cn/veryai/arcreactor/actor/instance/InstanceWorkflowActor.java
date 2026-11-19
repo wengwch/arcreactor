@@ -85,7 +85,7 @@ import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
-import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingResources;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
@@ -329,7 +329,7 @@ public final class InstanceWorkflowActor
     if (command.instanceInitialization()) {
       if (state.phase() != InstancePhase.PREPARING_FORWARDING || state.pollingGeneration() != command.generation()
           || state.currentForwardingPort() != port) return Effect().none();
-      if (state.forwardingStates().containsKey(port)) return Effect().none();
+      if (state.forwardingByInternalPort(port) != null) return Effect().none();
       forwarding = InstanceForwardingState.creating(port, ForwardingKind.SYSTEM, UUID.randomUUID().toString(),
           floatingIpIds);
     } else {
@@ -337,7 +337,7 @@ public final class InstanceWorkflowActor
         command.replyTo().tell(InstanceMutationReply.rejected("Instance must be ACTIVE with no pending management operation"));
         return Effect().none();
       }
-      if (state.spec().forwarding().internalPorts().contains(port) || state.forwardingStates().containsKey(port)) {
+      if (state.spec().forwarding().internalPorts().contains(port) || state.forwardingByInternalPort(port) != null) {
         command.replyTo().tell(InstanceMutationReply.rejected("The internal port already has a system or user forwarding"));
         return Effect().none();
       }
@@ -367,18 +367,17 @@ public final class InstanceWorkflowActor
       command.replyTo().tell(InstanceMutationReply.rejected("Only ACTIVE instances allow user forwarding management"));
       return Effect().none();
     }
-    if (state.preparedForwardings().values().stream().anyMatch(item ->
-        item.kind() == ForwardingKind.SYSTEM && item.claimId().equals(command.claimId()))) {
+    InstanceForwardingState forwarding = state.forwardingByClaimId(command.claimId());
+    if (forwarding == null) {
+      // Completed deletions are removed from state; an absent claim is already at the requested outcome.
+      command.replyTo().tell(InstanceMutationReply.accepted(command.claimId()));
+      return Effect().none();
+    }
+    if (forwarding.kind() == ForwardingKind.SYSTEM) {
       command.replyTo().tell(InstanceMutationReply.rejected("System forwardings cannot be deleted individually"));
       return Effect().none();
     }
-    InstanceForwardingState forwarding = state.userForwarding(command.claimId());
-    if (forwarding == null) {
-      command.replyTo().tell(InstanceMutationReply.rejected("User forwarding was not found"));
-      return Effect().none();
-    }
-    Phase phase = forwarding.phase();
-    if (phase == Phase.DELETED || phase == Phase.DELETING) {
+    if (forwarding.phase() == Phase.DELETING) {
       command.replyTo().tell(InstanceMutationReply.accepted(command.claimId()));
       return Effect().none();
     }
@@ -484,7 +483,7 @@ public final class InstanceWorkflowActor
       };
     }
     return switch (reply.status()) {
-      case READY -> forwardingReady(state, forwarding, PreparedForwarding.from(reply.claim()));
+      case READY -> forwardingReady(state, forwarding, InstanceForwardingResources.from(reply.claim()));
       case NOT_FOUND -> {
         if (command.submission()) yield pollForwarding(forwarding, command.attempt() + 1);
         requestForwarding(state, forwarding, command.attempt(), true);
@@ -503,8 +502,8 @@ public final class InstanceWorkflowActor
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> forwardingReady(InstanceWorkflowState state,
-      InstanceForwardingState forwarding, PreparedForwarding resources) {
-    var created = new ForwardingCreated(instanceId, forwarding.transition(Phase.READY, null), resources);
+      InstanceForwardingState forwarding, InstanceForwardingResources resources) {
+    var created = new ForwardingCreated(instanceId, forwarding.ready(resources));
     if (forwarding.kind() == ForwardingKind.USER) return Effect().persist(created);
     if (state.onlyCurrentInitializationPortPending()) {
       return Effect().persist(List.of(created, novaCreationStarted(state, clock.instant()))).thenRun(this::requestNovaCreation);
@@ -1334,7 +1333,7 @@ public final class InstanceWorkflowActor
             InstanceCreationRequested.class,
             (state, event) -> state.created(event.requestId(), event.spec()))
         .onEvent(ForwardingCreationRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(ForwardingCreated.class, (state, event) -> state.forwardingCreated(event.forwarding(), event.resources()))
+        .onEvent(ForwardingCreated.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(ForwardingCreationFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(ForwardingDeletionRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(ForwardingDeleted.class, (state, event) -> state.forwardingDeleted(event.forwarding()))
@@ -1433,7 +1432,7 @@ public final class InstanceWorkflowActor
     };
     if (recoveringPhase == null) {
       if (state.phase() == InstancePhase.PREPARING_FORWARDING) {
-        InstanceForwardingState pending = state.forwardingStates().get(state.currentForwardingPort());
+        InstanceForwardingState pending = state.forwardingByInternalPort(state.currentForwardingPort());
         if (pending == null) startForwardingPreparation(state);
         else recoverForwarding(state, pending);
       } else if (state.phase() == InstancePhase.ACTIVE) {

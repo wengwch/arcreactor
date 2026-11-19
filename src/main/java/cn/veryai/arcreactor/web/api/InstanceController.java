@@ -58,11 +58,11 @@ public class InstanceController {
         return instanceService.createForwarding(instanceId, param);
     }
 
-    @DeleteMapping("/{instanceId}/forwardings/{forwardingId}")
+    @DeleteMapping("/{instanceId}/forwardings/{claimId}")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public CompletionStage<InstanceMutationResult> deleteForwarding(@PathVariable("instanceId") String instanceId,
-            @PathVariable("forwardingId") String forwardingId) {
-        return instanceService.deleteForwarding(instanceId, forwardingId);
+            @PathVariable("claimId") String claimId) {
+        return instanceService.deleteForwarding(instanceId, claimId);
     }
 
     @PutMapping("/{instanceId}/qos")

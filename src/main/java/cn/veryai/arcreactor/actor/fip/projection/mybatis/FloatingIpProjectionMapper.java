@@ -8,6 +8,7 @@ import cn.veryai.arcreactor.actor.fip.event.ForwardingDeletionFailed;
 import cn.veryai.arcreactor.actor.fip.event.ForwardingDeletionStarted;
 import cn.veryai.arcreactor.actor.fip.event.ForwardingPortAllocated;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
+import cn.veryai.arcreactor.actor.fip.model.FloatingIpState.Status;
 import java.sql.Timestamp;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -16,11 +17,9 @@ import org.apache.ibatis.annotations.Param;
 public interface FloatingIpProjectionMapper {
   int updateState(
       @Param("identity") FloatingIpIdentity identity,
-      @Param("enabled") boolean enabled,
+      @Param("status") Status status,
       @Param("portMask") String portMask,
       @Param("version") long version);
-
-  Long findResourceVersion(@Param("identity") FloatingIpIdentity identity);
 
   int upsertForwardingCreated(
       @Param("event") ForwardingCreationRequested event,

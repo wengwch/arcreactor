@@ -1,11 +1,12 @@
 package cn.veryai.arcreactor.actor.fip.event;
 
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
+import cn.veryai.arcreactor.actor.fip.model.FloatingIpState.Status;
 import java.time.Instant;
 import java.util.Objects;
 
 /** Records deletion after cleanup or for an absent claim, carrying the resulting port usage. */
-public record ForwardingDeleted(FloatingIpIdentity identity, String claimId, boolean enabled, byte[] usedPortMask,
+public record ForwardingDeleted(FloatingIpIdentity identity, String claimId, Status status, byte[] usedPortMask,
     Instant deletedAt)
     implements FloatingIpEvent {
   public ForwardingDeleted {

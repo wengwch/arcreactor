@@ -23,7 +23,7 @@
 @hypervisorType = demo-hv-t4
 @instanceName = test-instance-003
 @instanceId = fa346042-5c3d-4b35-929c-40ab1a735d09
-@forwardingId = replace-with-user-forwarding-id
+@claimId = replace-with-user-claim-id
 
 ### 1. 查询区域内的规格，从 result 中选择 enabled=true 的记录
 # 记录 id 和 hypervisorType，分别填写 flavorId 和 hypervisorType。
@@ -96,10 +96,11 @@ Accept: application/json
 }
 
 ### 8. 删除用户端口转发
-# 将上方创建结果的 operationId 或第 14 项中 USER 记录的 claimId 填写到 forwardingId。
+# 将上方创建结果的 operationId 或第 14 项中 USER 记录的 claimId 填写到 claimId 变量。
 # 仅允许 USER 转发；SYSTEM 转发不支持单独删除，删除整个实例时统一清理。
+# ACTIVE 实例中，重复删除进行中的 claim 或当前状态中不存在的 claimId 均幂等返回 HTTP 202。
 # 返回 HTTP 202 表示已受理；第 14 项的 DELETED 表示 FIP 规则已删除，实例 Actor 随后清理安全组规则。
-DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings/{{forwardingId}}
+DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings/{{claimId}}
 Accept: application/json
 
 ### 9. 修改 ACTIVE 实例父子端口的 QoS 速率
@@ -146,7 +147,7 @@ Accept: application/json
 ### 14. 查询实例的全部端口转发（数据库读模型）
 # 直接查询 port_forwarding，不调用 Actor；HTTP 202 后可能需要等待异步投影。
 # 包含 SYSTEM、USER 和所有阶段（含 FAILED、DELETED）；无匹配记录时 result 为 []。
-# claimId 对应创建/删除接口返回的 operationId，删除 USER 转发时将它填写到 forwardingId。
+# claimId 对应创建/删除接口返回的 operationId，删除 USER 转发时将它填写到 claimId 变量。
 # phase 表示 FIP 规则状态；READY、DELETED 不代表实例安全组的放行或清理步骤已完成。
 GET {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings
 Accept: application/json

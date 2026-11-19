@@ -27,9 +27,7 @@ public record InstanceWorkflowState(
         String failureCode,
         String failureMessage,
         long version,
-        Map<Integer, InstanceForwardingState> forwardingStates,
-        Map<Integer, PreparedForwarding> preparedForwardings,
-        Map<String, DeletedForwarding> deletedUserForwardings,
+        Map<String, InstanceForwardingState> forwardingStates,
         NetworkPreparation networkPreparation,
         PreparedDependencies dependencies,
         SecurityGroupPreparation securityGroupPreparation,
@@ -37,92 +35,61 @@ public record InstanceWorkflowState(
         List<String> remainingHypervisorIds,
         InstanceQosUpdate qosUpdate) implements Serializable {
 
-    public record DeletedForwarding(InstanceForwardingState forwarding, PreparedForwarding resources) implements Serializable {}
-
     public InstanceWorkflowState {
         forwardingStates = Map.copyOf(forwardingStates);
-        preparedForwardings = Map.copyOf(preparedForwardings);
-        deletedUserForwardings = Map.copyOf(deletedUserForwardings);
         remainingHypervisorIds = List.copyOf(remainingHypervisorIds);
     }
 
     public static InstanceWorkflowState empty(String instanceId) {
         if (instanceId == null || instanceId.isBlank()) throw new IllegalArgumentException("instanceId is required");
         return new InstanceWorkflowState(instanceId, null, null, InstancePhase.NEW, null, null, null,
-                null, null, null, null, 0, null, null, 0, Map.of(), Map.of(), Map.of(), null, null, null,
+                null, null, null, null, 0, null, null, 0, Map.of(), null, null, null,
                 false, List.of(), null);
-    }
-
-    public InstanceWorkflowState forwardingCreated(InstanceForwardingState forwarding, PreparedForwarding resources) {
-        Map<Integer, PreparedForwarding> nextPrepared = new HashMap<>(preparedForwardings);
-        nextPrepared.put(forwarding.internalPort(), resources);
-        return withForwarding(forwarding, nextPrepared);
     }
 
     public InstanceWorkflowState forwardingDeleted(InstanceForwardingState forwarding) {
         String claimId = forwarding.claimId();
-        if (deletedUserForwardings.containsKey(claimId)) return touch();
-        int port = forwarding.internalPort();
-        PreparedForwarding resources = preparedForwardings.get(port);
-        if (resources != null && !claimId.equals(resources.claimId())) resources = null;
-        Map<String, DeletedForwarding> deleted = deletedUserForwardings;
-        if (forwarding.kind() == ForwardingKind.USER) {
-            deleted = new HashMap<>(deletedUserForwardings);
-            deleted.put(claimId, new DeletedForwarding(forwarding, resources));
-        }
-        InstanceForwardingState current = forwardingStates.get(port);
-        if (current == null || !claimId.equals(current.claimId())) {
-            return withUpdatedResources(forwardingStates, preparedForwardings, deleted, networkPreparation, qosUpdate);
-        }
-        Map<Integer, InstanceForwardingState> nextForwardings = new HashMap<>(forwardingStates);
-        nextForwardings.remove(port);
-        Map<Integer, PreparedForwarding> nextPrepared = preparedForwardings;
-        if (resources != null) {
-            nextPrepared = new HashMap<>(preparedForwardings);
-            nextPrepared.remove(port);
-        }
-        return withUpdatedResources(nextForwardings, nextPrepared, deleted, networkPreparation, qosUpdate);
+        if (!forwardingStates.containsKey(claimId)) return touch();
+        Map<String, InstanceForwardingState> nextForwardings = new HashMap<>(forwardingStates);
+        nextForwardings.remove(claimId);
+        return withUpdatedResources(nextForwardings, networkPreparation, qosUpdate);
     }
 
     public InstanceWorkflowState forwardingChanged(InstanceForwardingState forwarding) {
-        return withForwarding(forwarding, preparedForwardings);
-    }
-
-    private InstanceWorkflowState withForwarding(InstanceForwardingState forwarding, Map<Integer, PreparedForwarding> nextPrepared) {
-        Map<Integer, InstanceForwardingState> nextForwardings = new HashMap<>(forwardingStates);
-        nextForwardings.put(forwarding.internalPort(), forwarding);
-        return withUpdatedResources(nextForwardings, nextPrepared, deletedUserForwardings, networkPreparation, qosUpdate);
+        Map<String, InstanceForwardingState> nextForwardings = new HashMap<>(forwardingStates);
+        nextForwardings.put(forwarding.claimId(), forwarding);
+        return withUpdatedResources(nextForwardings, networkPreparation, qosUpdate);
     }
 
     public InstanceWorkflowState qosUpdateChanged(InstanceQosUpdate update) {
-        return withUpdatedResources(forwardingStates, preparedForwardings, deletedUserForwardings, networkPreparation, update);
+        return withUpdatedResources(forwardingStates, networkPreparation, update);
     }
 
     public InstanceWorkflowState qosUpdated(InstanceQosUpdate update, PreparedNetwork resources) {
-        return withUpdatedResources(forwardingStates, preparedForwardings, deletedUserForwardings, new NetworkPreparation(resources), update);
+        return withUpdatedResources(forwardingStates, new NetworkPreparation(resources), update);
     }
 
-    private InstanceWorkflowState withUpdatedResources(Map<Integer, InstanceForwardingState> nextForwardings,
-            Map<Integer, PreparedForwarding> nextPrepared, Map<String, DeletedForwarding> deleted,
+    private InstanceWorkflowState withUpdatedResources(Map<String, InstanceForwardingState> nextForwardings,
             NetworkPreparation network, InstanceQosUpdate nextQosUpdate) {
         return new InstanceWorkflowState(instanceId, userId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt, pollingGeneration,
-                failureCode, failureMessage, version + 1, nextForwardings, nextPrepared, deleted,
+                failureCode, failureMessage, version + 1, nextForwardings,
                 network, dependencies, securityGroupPreparation,
                 novaDeletionAccepted, remainingHypervisorIds, nextQosUpdate);
     }
 
-    public List<PreparedForwarding> visibleForwardings() {
-        if (preparedForwardings.isEmpty()) return List.of();
-        List<PreparedForwarding> result = new ArrayList<>(preparedForwardings.size());
+    public List<InstanceForwardingState> visibleForwardings() {
+        if (forwardingStates.isEmpty()) return List.of();
+        List<InstanceForwardingState> result = new ArrayList<>(forwardingStates.size());
         List<Integer> initialPorts = spec.forwarding().internalPorts();
         for (int port : initialPorts) {
-            PreparedForwarding forwarding = preparedForwardings.get(port);
-            if (forwarding != null) result.add(forwarding);
+            InstanceForwardingState forwarding = forwardingByInternalPort(port);
+            if (forwarding != null && forwarding.resources() != null) result.add(forwarding);
         }
-        preparedForwardings.values().stream()
+        forwardingStates.values().stream()
+                .filter(forwarding -> forwarding.resources() != null)
                 .filter(forwarding -> !initialPorts.contains(forwarding.internalPort()))
-                .sorted(Comparator.comparing(PreparedForwarding::claimId))
+                .sorted(Comparator.comparing(InstanceForwardingState::claimId))
                 .forEach(result::add);
         return List.copyOf(result);
     }
@@ -133,14 +100,16 @@ public record InstanceWorkflowState(
     }
 
     public InstanceForwardingState forwardingByClaimId(String claimId) {
-        return forwardingStates.values().stream().filter(entry -> entry.claimId().equals(claimId)).findFirst().orElse(null);
+        return forwardingStates.get(claimId);
     }
 
-    public InstanceForwardingState userForwarding(String claimId) {
-        DeletedForwarding deleted = deletedUserForwardings.get(claimId);
-        if (deleted != null) return deleted.forwarding();
-        InstanceForwardingState current = forwardingByClaimId(claimId);
-        return current != null && current.kind() == ForwardingKind.USER ? current : null;
+    public InstanceForwardingState forwardingByInternalPort(int internalPort) {
+        return forwardingStates.values().stream().filter(entry -> entry.internalPort() == internalPort).findFirst().orElse(null);
+    }
+
+    public InstanceForwardingResources forwardingResourcesByInternalPort(int internalPort) {
+        InstanceForwardingState forwarding = forwardingByInternalPort(internalPort);
+        return forwarding == null ? null : forwarding.resources();
     }
 
     public boolean hasPendingOperation() {
@@ -168,7 +137,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.PREPARING_SECURITY_GROUP, spec,
                 hypervisorId, reservationId, novaOperationId, osNovaServerId, novaStatus,
                 provisioningStartedAt, pollingGeneration + 1,
-                failureCode, failureMessage, version + 1, forwardingStates, preparedForwardings, deletedUserForwardings,
+                failureCode, failureMessage, version + 1, forwardingStates,
                 networkPreparation, dependencies, preparation,
                 novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }
@@ -185,7 +154,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.PREPARING_DEPENDENCIES, spec,
                 hypervisorId, reservationId, novaOperationId, osNovaServerId, novaStatus,
                 provisioningStartedAt, pollingGeneration + 1,
-                failureCode, failureMessage, version + 1, forwardingStates, preparedForwardings, deletedUserForwardings,
+                failureCode, failureMessage, version + 1, forwardingStates,
                 networkPreparation, dependencies, securityGroupPreparation,
                 novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }
@@ -194,7 +163,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, userId, requestId, phase, spec, hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, failureCode, failureMessage, version + 1,
-                forwardingStates, preparedForwardings, deletedUserForwardings, networkPreparation, prepared,
+                forwardingStates, networkPreparation, prepared,
                 securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }
 
@@ -210,7 +179,7 @@ public record InstanceWorkflowState(
 
     private Stream<Integer> pendingInitializationPorts() {
         return spec.forwarding().internalPorts().stream()
-                .filter(port -> !preparedForwardings.containsKey(port));
+                .filter(port -> forwardingResourcesByInternalPort(port) == null);
     }
 
     public boolean onlyCurrentInitializationPortPending() {
@@ -230,7 +199,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, userId, requestId, nextPhase, spec, hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
-                forwardingStates, preparedForwardings, deletedUserForwardings, preparation, dependencies,
+                forwardingStates, preparation, dependencies,
                 securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }
 
@@ -240,7 +209,7 @@ public record InstanceWorkflowState(
                 hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, null, null, version + 1,
-                Map.of(), preparedForwardings, deletedUserForwardings, networkPreparation, dependencies, securityGroupPreparation,
+                Map.of(), networkPreparation, dependencies, securityGroupPreparation,
                 novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }
 
@@ -256,7 +225,7 @@ public record InstanceWorkflowState(
                 nextHypervisorId, nextReservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
-                forwardingStates, preparedForwardings, deletedUserForwardings, networkPreparation,
+                forwardingStates, networkPreparation,
                 dependencies, securityGroupPreparation, novaDeletionAccepted, nextRemainingHypervisorIds, qosUpdate);
     }
 
@@ -265,7 +234,7 @@ public record InstanceWorkflowState(
                 nextHypervisorId, nextReservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, failureCode, failureMessage, version + 1,
-                forwardingStates, preparedForwardings, deletedUserForwardings, networkPreparation,
+                forwardingStates, networkPreparation,
                 dependencies, securityGroupPreparation, novaDeletionAccepted, List.of(), qosUpdate);
     }
 
@@ -297,7 +266,7 @@ public record InstanceWorkflowState(
                 hypervisorId, reservationId,
                 novaOperationId, osServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
-                forwardingStates, preparedForwardings, deletedUserForwardings, networkPreparation,
+                forwardingStates, networkPreparation,
                 dependencies, securityGroupPreparation, true, remainingHypervisorIds, qosUpdate);
     }
 
@@ -309,7 +278,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.DELETING_NETWORK, spec,
                 hypervisorId, reservationId, novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
-                Map.of(), Map.of(), deletedUserForwardings, networkPreparation, dependencies,
+                Map.of(), networkPreparation, dependencies,
                 securityGroupPreparation, novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }
 
@@ -362,7 +331,7 @@ public record InstanceWorkflowState(
         return new InstanceWorkflowState(instanceId, userId, nextRequestId, nextPhase, nextSpec,
                 nextHypervisorId, nextReservationId, nextOperationId, nextServerId, nextNovaStatus,
                 nextStartedAt, nextGeneration,
-                nextFailureCode, nextFailureMessage, version + 1, forwardingStates, preparedForwardings, deletedUserForwardings,
+                nextFailureCode, nextFailureMessage, version + 1, forwardingStates,
                 networkPreparation, dependencies, securityGroupPreparation,
                 novaDeletionAccepted, remainingHypervisorIds, qosUpdate);
     }

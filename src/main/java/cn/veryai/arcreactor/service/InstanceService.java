@@ -1,6 +1,7 @@
 package cn.veryai.arcreactor.service;
 
 import cn.veryai.arcreactor.actor.PekkoRuntime;
+import cn.veryai.arcreactor.actor.fip.model.FloatingIpState.Status;
 import cn.veryai.arcreactor.actor.instance.CloudInitRenderer;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
@@ -149,8 +150,8 @@ public class InstanceService {
         return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), List.of(), false, 0, replyTo));
     }
 
-    public CompletionStage<InstanceMutationResult> deleteForwarding(String instanceId, String forwardingId) {
-        return submitMutation(instanceId, replyTo -> DeleteInstanceForwarding.user(forwardingId, replyTo));
+    public CompletionStage<InstanceMutationResult> deleteForwarding(String instanceId, String claimId) {
+        return submitMutation(instanceId, replyTo -> DeleteInstanceForwarding.user(claimId, replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> updateQos(String instanceId, UpdateInstanceQosParam param) {
@@ -235,7 +236,7 @@ public class InstanceService {
     private CreationDefaults creationDefaults(CreateInstanceParam param, RegionEntity region) {
         // A user's instances reuse the same regional share and network specification.
         List<String> floatingIpIds = floatingIpRepo.findByRegionId(region.getId()).stream()
-                .filter(FloatingIpEntity::isEnabled)
+                .filter(ip -> ip.getStatus() == Status.ENABLED)
                 .filter(ip -> StringUtils.isNoneBlank(ip.getId(), ip.getOsFloatingIpId(), ip.getFloatingIp(), ip.getOsProjectId()))
                 .map(FloatingIpEntity::getId).distinct().toList();
         if (floatingIpIds.isEmpty()) throw new BaseException(ErrorCode.INSTANCE_FLOATING_IP_UNAVAILABLE);

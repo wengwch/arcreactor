@@ -1,6 +1,9 @@
 package cn.veryai.arcreactor.actor.fip.projection;
 
 import cn.veryai.arcreactor.actor.fip.FloatingIpActor;
+import cn.veryai.arcreactor.actor.fip.event.FloatingIpDestroyed;
+import cn.veryai.arcreactor.actor.fip.event.FloatingIpDestructionFailed;
+import cn.veryai.arcreactor.actor.fip.event.FloatingIpDestructionStarted;
 import cn.veryai.arcreactor.actor.fip.event.FloatingIpDisabled;
 import cn.veryai.arcreactor.actor.fip.event.FloatingIpEnabled;
 import cn.veryai.arcreactor.actor.fip.event.FloatingIpEvent;
@@ -12,6 +15,7 @@ import cn.veryai.arcreactor.actor.fip.event.ForwardingDeletionFailed;
 import cn.veryai.arcreactor.actor.fip.event.ForwardingDeletionStarted;
 import cn.veryai.arcreactor.actor.fip.event.ForwardingPortAllocated;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
+import cn.veryai.arcreactor.actor.fip.model.FloatingIpState.Status;
 import cn.veryai.arcreactor.actor.fip.projection.mybatis.FloatingIpProjectionMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -36,34 +40,35 @@ public final class FloatingIpProjectionHandler
     Timestamp timestamp = Timestamp.from(Instant.ofEpochMilli(envelope.timestamp()));
     projectForwarding(mapper, event, version, timestamp);
 
-    byte[] portMask;
-    boolean enabled;
+    byte[] portMask = null;
+    Status status;
     if (event instanceof FloatingIpEnabled activation) {
-      enabled = true;
+      status = Status.ENABLED;
       portMask = activation.usedPortMask();
     } else if (event instanceof FloatingIpDisabled deactivation) {
-      enabled = false;
+      status = Status.DISABLED;
       portMask = deactivation.usedPortMask();
+    } else if (event instanceof FloatingIpDestructionStarted) {
+      status = Status.DESTROYING;
+    } else if (event instanceof FloatingIpDestructionFailed) {
+      status = Status.DISABLED;
+    } else if (event instanceof FloatingIpDestroyed) {
+      status = Status.DESTROYED;
+      portMask = new byte[0];
     } else if (event instanceof ForwardingPortAllocated allocated) {
-      enabled = allocated.enabled();
+      status = allocated.status();
       portMask = allocated.usedPortMask();
     } else if (event instanceof ForwardingDeleted deleted) {
-      enabled = deleted.enabled();
+      status = deleted.status();
       portMask = deleted.usedPortMask();
     } else {
-      // Forwarding lifecycle changes have already been projected; these events do not change the bitmap.
+      // These events only change forwarding history or retained actor outcomes.
       return;
     }
 
-    // Port changes also carry enabled, so cleanup cannot overwrite a disabled actor's status.
-    String encodedPortMask = Base64.getEncoder().encodeToString(portMask);
-    if (mapper.updateState(identity, enabled, encodedPortMask, version) == 0) {
-      Long projectedVersion = mapper.findResourceVersion(identity);
-      if (projectedVersion == null || projectedVersion < version) {
-        // Registration and actor persistence use separate transactions. Do not lose an early event.
-        throw new IllegalStateException("floating IP row is not available for projection: " + identity.entityId());
-      }
-    }
+    // Status-only events preserve the bitmap; port changes carry the status at the time of the event.
+    String encodedPortMask = portMask == null ? null : Base64.getEncoder().encodeToString(portMask);
+    mapper.updateState(identity, status, encodedPortMask, version);
   }
 
   private static void projectForwarding(FloatingIpProjectionMapper mapper, FloatingIpEvent event,

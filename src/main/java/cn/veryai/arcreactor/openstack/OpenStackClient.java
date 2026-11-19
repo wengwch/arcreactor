@@ -3,7 +3,6 @@ package cn.veryai.arcreactor.openstack;
 import cn.veryai.arcreactor.actor.fip.model.FloatingIpIdentity;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingResources;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
-import cn.veryai.arcreactor.actor.fip.model.PortForwardingSnapshot;
 import cn.veryai.arcreactor.actor.instance.model.NetworkRequirement;
 import cn.veryai.arcreactor.actor.instance.model.PortBandwidthLimit;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
@@ -26,6 +25,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.openstack4j.api.Builders;
 import org.openstack4j.api.OSClient;
 import org.openstack4j.api.exceptions.ResponseException;
@@ -387,14 +387,14 @@ public class OpenStackClient {
     }
   }
 
-  /** Reads existing rule IDs and external ports for floating IP activation. */
-  public CompletionStage<List<PortForwardingSnapshot>> listPortForwardings(
+  /** Reads existing external ports for floating IP activation. */
+  public CompletionStage<List<Integer>> listPortForwardingExternalPorts(
       String region, String osProjectId, String osFloatingIpId) {
     return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
       requireProjectFloatingIp(client, osProjectId, osFloatingIpId);
       return client.networking().floatingip().portForwarding().list(osFloatingIpId).stream()
-          .map(rule -> new PortForwardingSnapshot(rule.getId(), rule.getExternalPort())).toList();
+          .map(PortForwarding::getExternalPort).toList();
     }, NETWORK_EXECUTOR);
   }
 
@@ -410,31 +410,18 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
-  /** Directly creates TCP and UDP rules; markers are retained for creation recovery. */
+  /** Reuses matching TCP and UDP rules by claim marker and creates only missing protocols. */
   public CompletionStage<ForwardingResources> createPortForwardings(FloatingIpIdentity identity,
-      String claimId, ForwardingSpec spec, int externalPort) {
-    return CompletableFuture.supplyAsync(() -> {
-      var service = getOsAdminClient(identity.regionId(), identity.osProjectId()).networking().floatingip().portForwarding();
-      String osTcpForwardingId = createPortForwarding(service, identity.osFloatingIpId(), externalPort, spec, NetProtocol.TCP,
-          forwardingMarker(claimId, NetProtocol.TCP));
-      String osUdpForwardingId = createPortForwarding(service, identity.osFloatingIpId(), externalPort, spec, NetProtocol.UDP,
-          forwardingMarker(claimId, NetProtocol.UDP));
-      return new ForwardingResources(identity.floatingIp(), identity.domain(), externalPort,
-          osTcpForwardingId, osUdpForwardingId);
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Recovery reuses matching rules on the reserved port and creates only missing protocols. */
-  public CompletionStage<ForwardingResources> recoverPortForwardings(FloatingIpIdentity identity,
       String claimId, ForwardingSpec spec, int externalPort) {
     return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(identity.regionId(), identity.osProjectId());
       requireProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId());
       var service = client.networking().floatingip().portForwarding();
-      List<? extends PortForwarding> forwardings = service.list(identity.osFloatingIpId());
+      List<? extends PortForwarding> forwardings = listPortForwardingsByInternalPortId(service,
+          identity.osFloatingIpId(), spec.osInternalPortId());
       String tcpMarker = forwardingMarker(claimId, NetProtocol.TCP);
       String udpMarker = forwardingMarker(claimId, NetProtocol.UDP);
-      // Validate both protocols before creating anything during recovery.
+      // Validate both protocols before creating any missing rules.
       String osTcpForwardingId = findExistingForwardingId(forwardings, externalPort, spec, NetProtocol.TCP, tcpMarker);
       String osUdpForwardingId = findExistingForwardingId(forwardings, externalPort, spec, NetProtocol.UDP, udpMarker);
       if (osTcpForwardingId == null) {
@@ -446,6 +433,11 @@ public class OpenStackClient {
       return new ForwardingResources(identity.floatingIp(), identity.domain(), externalPort,
           osTcpForwardingId, osUdpForwardingId);
     }, NETWORK_EXECUTOR);
+  }
+
+  private static List<? extends PortForwarding> listPortForwardingsByInternalPortId(PortForwardingService service,
+      String osFloatingIpId, String osInternalPortId) {
+    return service.list(osFloatingIpId, Map.of("internal_port_id", osInternalPortId));
   }
 
   private static String findExistingForwardingId(List<? extends PortForwarding> forwardings,
@@ -642,13 +634,13 @@ public class OpenStackClient {
     }, NETWORK_EXECUTOR);
   }
 
-  /** Queries recorded rules, resolving missing IDs by claim marker before deleting partial creations. */
-  public CompletionStage<Boolean> deletePortForwardings(FloatingIpIdentity identity, String claimId,
+  /** Deletes matching rules idempotently, resolving missing IDs by claim marker for partial creations. */
+  public CompletionStage<Void> deletePortForwardings(FloatingIpIdentity identity, String claimId,
       ForwardingSpec spec, ForwardingResources resources) {
-    return CompletableFuture.supplyAsync(() -> {
+    return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(identity.regionId(), identity.osProjectId());
       // A missing floating IP also has no forwarding rules; keep deletion idempotent.
-      if (getProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId()) == null) return true;
+      if (getProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId()) == null) return;
       var service = client.networking().floatingip().portForwarding();
       String osTcpForwardingId = resources.osTcpForwardingId();
       String osUdpForwardingId = resources.osUdpForwardingId();
@@ -656,7 +648,15 @@ public class OpenStackClient {
       String udpMarker = forwardingMarker(claimId, NetProtocol.UDP);
       if (osTcpForwardingId == null || osTcpForwardingId.isBlank()
           || osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
-        List<? extends PortForwarding> forwardings = service.list(identity.osFloatingIpId());
+        List<? extends PortForwarding> forwardings;
+        try {
+          forwardings = listPortForwardingsByInternalPortId(service,
+              identity.osFloatingIpId(), spec.osInternalPortId());
+        } catch (ResponseException error) {
+          // The floating IP may have been removed after the ownership check.
+          if (error.getStatus() == 404) return;
+          throw error;
+        }
         if (osTcpForwardingId == null || osTcpForwardingId.isBlank()) {
           osTcpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.TCP, tcpMarker);
         }
@@ -664,65 +664,25 @@ public class OpenStackClient {
           osUdpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.UDP, udpMarker);
         }
       }
-      boolean tcpDeleted = deleteManagedPortForwarding(service, identity.osFloatingIpId(), osTcpForwardingId,
+      deleteManagedPortForwarding(service, identity.osFloatingIpId(), osTcpForwardingId,
           resources.externalPort(), spec, NetProtocol.TCP, tcpMarker);
-      boolean udpDeleted = deleteManagedPortForwarding(service, identity.osFloatingIpId(), osUdpForwardingId,
+      deleteManagedPortForwarding(service, identity.osFloatingIpId(), osUdpForwardingId,
           resources.externalPort(), spec, NetProtocol.UDP, udpMarker);
-      return tcpDeleted && udpDeleted;
     }, NETWORK_EXECUTOR);
   }
 
-  /** Independently resumes deletion, discovering rules whose creation responses were not persisted. */
-  public CompletionStage<Boolean> recoverPortForwardingDeletion(FloatingIpIdentity identity,
-      String claimId, ForwardingSpec spec, ForwardingResources resources) {
-    return CompletableFuture.supplyAsync(() -> {
-      OSClient.OSClientV3 client = getOsAdminClient(identity.regionId(), identity.osProjectId());
-      if (getProjectFloatingIp(client, identity.osProjectId(), identity.osFloatingIpId()) == null) return true;
-      var service = client.networking().floatingip().portForwarding();
-      String osTcpForwardingId = resources.osTcpForwardingId();
-      String osUdpForwardingId = resources.osUdpForwardingId();
-      if (osTcpForwardingId == null || osTcpForwardingId.isBlank()
-          || osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
-        List<? extends PortForwarding> forwardings = service.list(identity.osFloatingIpId());
-        if (osTcpForwardingId == null || osTcpForwardingId.isBlank()) {
-          osTcpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.TCP,
-              forwardingMarker(claimId, NetProtocol.TCP));
-        }
-        if (osUdpForwardingId == null || osUdpForwardingId.isBlank()) {
-          osUdpForwardingId = findExistingForwardingId(forwardings, resources.externalPort(), spec, NetProtocol.UDP,
-              forwardingMarker(claimId, NetProtocol.UDP));
-        }
-      }
-      for (NetProtocol protocol : List.of(NetProtocol.TCP, NetProtocol.UDP)) {
-        String osRuleId = protocol == NetProtocol.TCP ? osTcpForwardingId : osUdpForwardingId;
-        if (osRuleId == null) continue;
-        try {
-          PortForwarding existing = service.get(identity.osFloatingIpId(), osRuleId);
-          if (existing != null) {
-            requireForwardingMatches(existing, resources.externalPort(), spec, protocol, forwardingMarker(claimId, protocol));
-            requireDeleteResponse(service.delete(identity.osFloatingIpId(), osRuleId));
-          }
-        } catch (ResponseException error) {
-          if (error.getStatus() != 404) throw error;
-        }
-      }
-      return true;
-    }, NETWORK_EXECUTOR);
-  }
-
-  private boolean deleteManagedPortForwarding(PortForwardingService service, String osFloatingIpId,
+  private void deleteManagedPortForwarding(PortForwardingService service, String osFloatingIpId,
       String osRuleId, int externalPort, ForwardingSpec spec, NetProtocol protocol, String marker) {
     // Null is only passed after a successful marker lookup confirmed that the rule is absent.
-    if (osRuleId == null) return true;
+    if (osRuleId == null) return;
     try {
       PortForwarding existing = service.get(osFloatingIpId, osRuleId);
-      if (existing == null) return true;
+      if (existing == null) return;
       requireForwardingMatches(existing, externalPort, spec, protocol, marker);
       requireDeleteResponse(service.delete(osFloatingIpId, osRuleId));
     } catch (ResponseException error) {
       if (error.getStatus() != 404) throw error;
     }
-    return true;
   }
 
   private OSClient.OSClientV3 getOsForwardingClient(String region) {
@@ -784,13 +744,30 @@ public class OpenStackClient {
     }
   }
 
-  public void deleteFloatIP(String region, String osProjectId, String osFloatingIpId) {
-    try {
+  /** Deletes an unused address; false means it still has a port binding or forwarding rules. */
+  public CompletionStage<Boolean> deleteFloatingIp(String region, String osProjectId, String osFloatingIpId) {
+    return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(region, osProjectId);
-      client.networking().floatingip().delete(osFloatingIpId);
-    } catch (Exception e) {
-      log.error("Failed to delete floatip: " + osFloatingIpId, e);
-    }
+      NetFloatingIP floatingIp = getProjectFloatingIp(client, osProjectId, osFloatingIpId);
+      if (floatingIp == null) return true;
+      if (StringUtils.isNotBlank(floatingIp.getPortId())) return false;
+      try {
+        if (!client.networking().floatingip().portForwarding().list(osFloatingIpId).isEmpty()) return false;
+      } catch (ResponseException error) {
+        if (error.getStatus() == 404 && getProjectFloatingIp(client, osProjectId, osFloatingIpId) == null) return true;
+        throw error;
+      }
+      try {
+        ActionResponse response = client.networking().floatingip().delete(osFloatingIpId);
+        if (response != null && response.getCode() == 409) return false;
+        requireDeleteResponse(response);
+        return true;
+      } catch (ResponseException error) {
+        if (error.getStatus() == 404) return true;
+        if (error.getStatus() == 409) return false;
+        throw error;
+      }
+    }, NETWORK_EXECUTOR);
   }
 
   public void deletePort(String region, String osProjectId, String osPortId) {

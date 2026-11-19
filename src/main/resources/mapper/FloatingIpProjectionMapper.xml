@@ -3,18 +3,12 @@
 <mapper namespace="cn.veryai.arcreactor.actor.fip.projection.mybatis.FloatingIpProjectionMapper">
     <update id="updateState">
         UPDATE floating_ip
-        SET enabled = #{enabled,jdbcType=BOOLEAN},
-            port_mask = #{portMask,jdbcType=LONGVARCHAR},
+        SET status = #{status,jdbcType=VARCHAR},
+            port_mask = COALESCE(#{portMask,jdbcType=LONGVARCHAR}, port_mask),
             resource_version = #{version,jdbcType=BIGINT}
         WHERE id = #{identity.floatingIpId,jdbcType=VARCHAR}
           AND resource_version &lt; #{version,jdbcType=BIGINT}
     </update>
-
-    <select id="findResourceVersion" resultType="java.lang.Long">
-        SELECT resource_version
-        FROM floating_ip
-        WHERE id = #{identity.floatingIpId,jdbcType=VARCHAR}
-    </select>
 
     <sql id="newerForwarding">
         WHERE floating_ip_id = #{event.identity.floatingIpId,jdbcType=VARCHAR}

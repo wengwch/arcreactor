@@ -1,16 +1,21 @@
 # 新库先执行 sql/floating-ips.sql；已按旧结构建表的库执行 sql/migrations/add-floating-ip-port-mask.sql。
 # 已有 floating_ip 表还需执行 sql/migrations/add-floating-ip-projection-version.sql，增加投影版本列。
-# 缺少 enabled 字段时执行 sql/migrations/add-floating-ip-enabled.sql；已有记录默认未启用，不回填历史状态。
+# 旧布尔表执行 sql/migrations/migrate-floating-ip-status.sql，将 enabled/destroyed 合并为 status 并删除旧列。
+# 该迁移需要旧表已有 enabled、destroyed；缺少时先执行对应的 add-floating-ip-enabled.sql / add-floating-ip-destroyed.sql。
+# 新库或已迁移至 status 的库不要再增加旧布尔列；DESTROYED 记录保留投影版本，并从业务查询中排除。
 # 缺少 domain 字段时执行 sql/migrations/add-floating-ip-domain.sql，已有记录的域名为空。
 # 先执行 http/sys-network-router.http 中的公网网络请求，保存 csvPublicNetworkId，
 # 或把 extNetId 直接改为已存在的公网网络业务 ID；不能使用 OpenStack 网络 ID。
 # Test-SH-01 所属集群的 osAdminDefaultProjectId 应为 31205d8c26f4471cbed5f8c5a689a585。
 # 创建参数不再接收 portMask；新建地址使用空占用，登记已有地址时由服务端查询 OpenStack 的现有转发规则。
 # domain 为可选域名，最多 255 字符；省略、null、空字符串或仅空白均表示无域名，保存为 NULL。
-# 新建和登记都会通过 EnableFloatingIp 启用对应 Actor，等待 FloatingIpEnabled 持久化启用状态、身份和初始位图后返回。
-# 响应 enabled=true 表示 Actor 已确认启用，数据库 enabled 在投影完成后更新。
+# 新建和登记都会先提交 status=DISABLED 的登记记录，再通过 EnableFloatingIp 启用对应 Actor。
+# 等待 FloatingIpEnabled 持久化启用状态、身份和初始位图后返回；登记插入或提交失败时不发送启用命令。
+# 启用失败或超时保留已提交的登记记录，可按登记业务 ID 调用 enable 重试；超时不表示 Actor 未启用，已持久化事件仍会更新读模型。
+# 成功响应包含 "status": "ENABLED"，表示 Actor 已确认启用；数据库 status 在投影完成后更新。
+# status 可取 DISABLED、ENABLED、DESTROYING、DESTROYED，由服务端维护，请求体不接收该字段。
 # 未启用的 Actor 会立即拒绝创建转发；重启后从事件和快照恢复启用状态，无需重新启用。
-# 实例创建会从同一区域已登记且 enabled=true 的地址中自动选择候选，为 22 和 8888 分别分配公网端口。
+# 实例创建会从同一区域已登记且 status=ENABLED 的地址中自动选择候选，为 22 和 8888 分别分配公网端口。
 @baseUrl = http://localhost:8080
 @regionId = Test-SH-01
 @extNetId = 2e2d09dd-7f09-4d69-866d-4d4b06062383
@@ -32,7 +37,7 @@ Content-Type: application/json
 # 源 _id：2a899f59-4d64-4be3-a023-2a3ec4c9b818；新业务 id 由服务生成。
 # name 根据 IP 地址命名；osProjectId 由区域所属集群配置填充。
 # fromIdx、createTime、_class 不属于当前接口参数。
-# initOpenstack=false 时自动查询现有规则的 ID 和公网端口，传给 Actor 初始化占用；查询失败则登记失败。
+# initOpenstack=false 时自动查询现有转发的公网端口，传给 Actor 初始化占用；查询失败则登记失败。
 POST {{baseUrl}}/api/v1/floating-ips
 Content-Type: application/json
 
@@ -46,31 +51,32 @@ Content-Type: application/json
 }
 
 ### 禁用浮动 IP：停止接受新 claim，已有创建和清理继续，返回 HTTP 202
+# 投影将 status 更新为 DISABLED，并保留端口位图。
 PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/disable
 
-### 启用并保留现有位图；已启用时重复调用成功，返回 HTTP 202
+### 启用浮动 IP：服务端查询现有转发后启用，返回 HTTP 202
+# 无请求体。服务端从 OpenStack 查询公网端口；查询失败不发送启用命令。
+# 同步前先禁用并确认没有在途创建、删除或恢复请求；Actor 不自动等待在途请求。
+# 禁用时将查询结果与现有位图做 OR 合并，只记录 10000–40000 内的占用，空结果也不清位。
+# Actor 已启用时幂等返回成功，保留当前位图。
 PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
 
-### 禁用后，使用当前完整转发列表更新位图并启用
-# 人工确认浮动 IP 已禁用且没有在途创建、删除或恢复请求后，再查询 OpenStack 完整规则列表进行同步。
-# 已启用时携带列表会被拒绝。osForwardingId 为 OpenStack 转发规则 ID。
-# externalPort 也接受 external_port；协议等其他 OpenStack 字段可以一并传入。
-# 非 null 列表生成的位图与当前 usedPorts 做 OR 合并，只记录 10000–40000 内的占用，既有占用全部保留。
-# 省略 forwardings、传 null 或 [] 均不清位；Actor 不自动等待在途请求。
-PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
-Content-Type: application/json
+### 销毁前先禁用浮动 IP，返回 HTTP 202
+PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/disable
 
-{
-  "forwardings": [
-    {"osForwardingId": "existing-tcp-rule-id", "externalPort": 12022},
-    {"osForwardingId": "existing-udp-rule-id", "externalPort": 12022},
-    {"osForwardingId": "another-rule-id", "externalPort": 18888}
-  ]
-}
+### 销毁无端口占用的浮动 IP，受理后立即返回 HTTP 202
+# 无请求体。处于启用、销毁中状态或 Actor 位图非空时返回业务错误 11808，被拒绝的请求不调用 OpenStack。
+# 持久化销毁意图后立即确认受理，status=DESTROYING；通过下方状态接口查询结果，不等待 OpenStack 删除完成。
+# OpenStack 存在转发规则（包含登记前已有规则）或端口绑定时会异步拒绝，状态恢复为 DISABLED；不会自动清理端口和转发。
+# 销毁中拒绝重复请求，也不能重新启用；OpenStack 异常时记录日志并恢复 DISABLED，可再次调用销毁接口。
+# Actor 重启时若仍处于 DESTROYING 则继续删除；已持久化失败并恢复为 DISABLED 的销毁等待调用方重试。
+# 等待 Actor 受理确认失败或超时返回 11809，此时应查询状态；该错误不代表 OpenStack 删除结果。
+# 已销毁时重复调用成功，OpenStack 404 也按已删除处理；完成后 Actor 进入 DESTROYED，数据库登记记录由投影异步更新。
+DELETE {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}
 
-### 禁用后，传空列表并保留当前总位图启用
-# 人工确认无在途请求；[] 不新增占用，也不会清除既有占用。已启用时携带空列表仍会被拒绝。
-PUT {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/enable
-Content-Type: application/json
-
-{"forwardings": []}
+### 查询浮动 IP 当前状态，返回 HTTP 200
+# 直接查询 Actor，成功响应的 result 为 DISABLED、ENABLED、DESTROYING 或 DESTROYED，例如 "result": "DESTROYING"。
+# 销毁后轮询：DESTROYED 表示已确认删除；DESTROYING 表示当前销毁仍在处理；恢复为 DISABLED 表示本次未成功，可再次调用销毁接口。
+# 已登记但 Actor 尚未启用时返回 DISABLED；Actor 未初始化且无登记记录时返回业务错误 11804，查询失败返回 11810。
+GET {{baseUrl}}/api/v1/floating-ips/{{floatingIpId}}/status
+Accept: application/json

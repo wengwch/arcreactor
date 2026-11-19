@@ -1,7 +1,7 @@
 package cn.veryai.arcreactor.actor.instance;
 
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
-import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
+import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingResources;
 import cn.veryai.arcreactor.util.SSHValidator;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -21,7 +21,7 @@ final class InstanceSshChecker {
   }
 
   CompletionStage<Boolean> check(InstanceWorkflowState state) {
-    PreparedForwarding forwarding = state.preparedForwardings().get(22);
+    InstanceForwardingResources forwarding = state.forwardingResourcesByInternalPort(22);
     if (forwarding == null) throw new IllegalStateException("Missing prepared SSH forwarding for internal port 22");
     if (forwarding.floatingIp() == null || forwarding.floatingIp().isBlank()
         || forwarding.externalPort() < 1 || forwarding.externalPort() > 65535

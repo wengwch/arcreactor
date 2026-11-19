@@ -2,7 +2,6 @@ package cn.veryai.arcreactor.vo;
 
 import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
-import cn.veryai.arcreactor.actor.instance.model.PreparedForwarding;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import java.io.Serializable;
 import java.util.List;
@@ -23,7 +22,7 @@ public record InstanceView(
         String userId,
         String shareId,
         String osShareId,
-        List<PreparedForwarding> forwardings,
+        List<InstanceForwardingView> forwardings,
         PreparedNetwork network,
         String osSecurityGroupId,
         String osProjectId,
@@ -37,7 +36,7 @@ public record InstanceView(
                 state.userId(),
                 state.shareId(),
                 state.preparedShare() == null ? null : state.preparedShare().osShareId(),
-                state.visibleForwardings(),
+                state.visibleForwardings().stream().map(InstanceForwardingView::from).toList(),
                 state.networkPreparation() == null ? null : state.networkPreparation().resources(),
                 state.osSecurityGroupId(), state.osProjectId(),
                 state.qosUpdate());

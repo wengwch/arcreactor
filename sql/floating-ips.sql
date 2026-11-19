@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS floating_ip (
   os_floating_ip_id VARCHAR(255) NOT NULL,
   floating_ip VARCHAR(255) NOT NULL,
   domain VARCHAR(255) NULL,
-  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  status VARCHAR(16) NOT NULL DEFAULT 'DISABLED',
   port_mask TEXT NOT NULL,
   resource_version BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
