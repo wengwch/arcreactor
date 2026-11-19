@@ -14,7 +14,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Supplier;
 
-/** Cloud calls only; the instance actor owns durable intents, results and retry scheduling. */
+/** Cloud calls only; InstanceForwardingWorkflow handles persistence effects and retry scheduling. */
 final class InstanceForwardingOperations {
   static final class InvalidForwardingResult extends IllegalStateException {
     InvalidForwardingResult() {

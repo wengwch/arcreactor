@@ -8,7 +8,7 @@ import java.util.Objects;
 /** Lifecycle state and confirmed resources of one claim; resources are absent until creation succeeds. */
 public record InstanceForwardingState(int internalPort, ForwardingKind kind, String claimId,
     List<String> floatingIpIds, int candidateIndex, Phase phase, String failure,
-    long generation, InstanceForwardingResources resources) implements Serializable {
+    long generation, InstanceForwardingResources resources, String failureCode) implements Serializable {
   public enum Phase { CREATING, READY, FAILED, DELETING, DELETE_FAILED, DELETED }
 
   public InstanceForwardingState {
@@ -26,7 +26,7 @@ public record InstanceForwardingState(int internalPort, ForwardingKind kind, Str
   public static InstanceForwardingState creating(int internalPort, ForwardingKind kind, String claimId,
       List<String> floatingIpIds) {
     return new InstanceForwardingState(internalPort, kind, claimId,
-        floatingIpIds, 0, Phase.CREATING, null, 1, null);
+        floatingIpIds, 0, Phase.CREATING, null, 1, null, null);
   }
 
   public String floatingIpId() {
@@ -39,17 +39,22 @@ public record InstanceForwardingState(int internalPort, ForwardingKind kind, Str
 
   public InstanceForwardingState nextCandidate() {
     return new InstanceForwardingState(internalPort, kind, claimId,
-        floatingIpIds, candidateIndex + 1, Phase.CREATING, null, generation + 1, null);
+        floatingIpIds, candidateIndex + 1, Phase.CREATING, null, generation + 1, null, null);
   }
 
   public InstanceForwardingState ready(InstanceForwardingResources resources) {
     return new InstanceForwardingState(internalPort, kind, claimId,
-        floatingIpIds, candidateIndex, Phase.READY, null, generation + 1, resources);
+        floatingIpIds, candidateIndex, Phase.READY, null, generation + 1, resources, null);
   }
 
   public InstanceForwardingState transition(Phase next, String failure) {
     return new InstanceForwardingState(internalPort, kind, claimId,
-        floatingIpIds, candidateIndex, next, failure, generation + 1, resources);
+        floatingIpIds, candidateIndex, next, failure, generation + 1, resources, null);
+  }
+
+  public InstanceForwardingState failed(String code, String detail) {
+    return new InstanceForwardingState(internalPort, kind, claimId,
+        floatingIpIds, candidateIndex, Phase.FAILED, detail, generation + 1, resources, code);
   }
 
   public boolean inProgress() {

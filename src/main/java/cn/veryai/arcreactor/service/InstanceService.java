@@ -154,11 +154,11 @@ public class InstanceService {
     }
 
     public CompletionStage<InstanceMutationResult> createForwarding(String instanceId, CreateUserForwardingParam param) {
-        return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), List.of(), false, 0, replyTo));
+        return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), List.of(), replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> deleteForwarding(String instanceId, String claimId) {
-        return submitMutation(instanceId, replyTo -> DeleteInstanceForwarding.user(claimId, replyTo));
+        return submitMutation(instanceId, replyTo -> new DeleteInstanceForwarding(claimId, replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> updateQos(String instanceId, UpdateInstanceQosParam param) {

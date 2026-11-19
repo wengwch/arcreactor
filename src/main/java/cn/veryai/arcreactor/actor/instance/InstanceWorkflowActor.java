@@ -11,19 +11,16 @@ import cn.veryai.arcreactor.actor.instance.command.RebuildInstance;
 import cn.veryai.arcreactor.actor.instance.command.CheckServerOperation;
 import cn.veryai.arcreactor.actor.instance.command.ServerOperationSubmitted;
 import cn.veryai.arcreactor.actor.instance.command.ServerOperationChecked;
-import cn.veryai.arcreactor.actor.instance.command.ForwardingScope;
+import cn.veryai.arcreactor.actor.instance.command.PrepareInstanceForwardings;
+import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwardings;
+import cn.veryai.arcreactor.actor.instance.command.InstanceForwardingsChanged;
 import cn.veryai.arcreactor.actor.instance.command.QosUpdateCompleted;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState.Phase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
-import cn.veryai.arcreactor.actor.instance.model.InstanceServerOperation;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationRequested;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCreated;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationFailed;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingDeletionRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingEvent;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingDeleted;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingDeletionFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
@@ -32,7 +29,6 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationSubmitte
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationCompleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationFailed;
 import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
-import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.instance.command.CheckDeletion;
 import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
@@ -66,7 +62,6 @@ import cn.veryai.arcreactor.actor.instance.command.SecurityGroupPreparationCompl
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.DependenciesPrepared;
 import cn.veryai.arcreactor.actor.instance.event.DependencyPreparationStarted;
-import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingPreparationStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorReservationStarted;
@@ -95,7 +90,6 @@ import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
-import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingResources;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
 import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
@@ -116,7 +110,6 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
-import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -143,7 +136,6 @@ public final class InstanceWorkflowActor
   private static final String RESERVATION_TIMER = "resource-reservation";
   private static final String DELETION_TIMER = "instance-deletion";
   private static final String RECOVERY_TIMER = "instance-recovery";
-  private static final String SERVER_OPERATION_TIMER = "instance-server-operation";
   private static final Executor CLOUD_INIT_EXECUTOR =
       task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
 
@@ -157,10 +149,9 @@ public final class InstanceWorkflowActor
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceRecovery recovery;
-  private final InstanceForwardingOperations forwardingOperations;
-  private final Map<String, String> forwardingRequests = new java.util.HashMap<>();
+  private final InstanceForwardingWorkflow forwardings;
+  private final InstanceServerOperationWorkflow serverOperations;
   private String qosUpdateRequestToken;
-  private String serverOperationRequestToken;
   private final InstanceSshChecker sshChecker = new InstanceSshChecker(new SSHValidator());
   private final InstanceMetrics metrics = InstanceMetrics.NOOP;
   private String dependencyRequestToken;
@@ -230,7 +221,10 @@ public final class InstanceWorkflowActor
     this.dependencyPreparer = Objects.requireNonNull(dependencyPreparer);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
-    this.forwardingOperations = new InstanceForwardingOperations(openStackClient, floatingIpForwardings);
+    this.forwardings = new InstanceForwardingWorkflow(instanceId, context, timers,
+        new InstanceForwardingOperations(openStackClient, floatingIpForwardings), settings, Effect());
+    this.serverOperations = new InstanceServerOperationWorkflow(instanceId, context, timers,
+        openStackClient, sshChecker, settings, clock, Effect());
     this.recovery = new InstanceRecovery(placement, openStackClient,
         dependencyPreparer, sshChecker, clock);
   }
@@ -247,15 +241,18 @@ public final class InstanceWorkflowActor
         .forAnyState()
         .onCommand(CreateInstance.class, this::onCreate)
         .onCommand(DeleteInstance.class, this::onDelete)
-        .onCommand(CreateInstanceForwarding.class, this::onCreateForwarding)
-        .onCommand(DeleteInstanceForwarding.class, this::onDeleteForwarding)
+        .onCommand(CreateInstanceForwarding.class, forwardings::onCreate)
+        .onCommand(DeleteInstanceForwarding.class, forwardings::onDelete)
+        .onCommand(PrepareInstanceForwardings.class, this::onPrepareInstanceForwardings)
+        .onCommand(DeleteInstanceForwardings.class, this::onDeleteInstanceForwardings)
+        .onCommand(InstanceForwardingsChanged.class, this::onInstanceForwardingsChanged)
         .onCommand(UpdateInstanceQos.class, this::onUpdateInstanceQos)
         .onCommand(QosUpdateCompleted.class, this::onQosUpdateCompleted)
-        .onCommand(RebootInstance.class, this::onReboot)
-        .onCommand(RebuildInstance.class, this::onRebuild)
-        .onCommand(ServerOperationSubmitted.class, this::onServerOperationSubmitted)
-        .onCommand(CheckServerOperation.class, this::onCheckServerOperation)
-        .onCommand(ServerOperationChecked.class, this::onServerOperationChecked)
+        .onCommand(RebootInstance.class, serverOperations::onReboot)
+        .onCommand(RebuildInstance.class, serverOperations::onRebuild)
+        .onCommand(ServerOperationSubmitted.class, serverOperations::onSubmitted)
+        .onCommand(CheckServerOperation.class, serverOperations::onCheck)
+        .onCommand(ServerOperationChecked.class, serverOperations::onChecked)
         .onCommand(DependenciesReady.class, this::onDependenciesReady)
         .onCommand(DependenciesFailed.class, this::onDependenciesFailed)
         .onCommand(GetInstanceState.class, this::onGetState)
@@ -264,8 +261,8 @@ public final class InstanceWorkflowActor
         .onCommand(CheckProvisioning.class, this::onCheckProvisioning)
         .onCommand(NovaCreationCompleted.class, this::onNovaCreationCompleted)
         .onCommand(ProvisioningChecked.class, this::onProvisioningChecked)
-        .onCommand(CheckForwardingStatus.class, this::onCheckForwardingStatus)
-        .onCommand(ForwardingStatusCompleted.class, this::onForwardingStatusCompleted)
+        .onCommand(CheckForwardingStatus.class, forwardings::onCheck)
+        .onCommand(ForwardingStatusCompleted.class, forwardings::onCompleted)
         .onCommand(SchedulingSucceeded.class, this::onSchedulingSucceeded)
         .onCommand(SchedulingFailed.class, this::onSchedulingFailed)
         .onCommand(ResourceReservationCompleted.class, this::onResourceReservationCompleted)
@@ -290,8 +287,7 @@ public final class InstanceWorkflowActor
           && !(command instanceof RetryRecovery || command instanceof RecoveryStepCompleted
               || command instanceof GetInstanceState
               || command instanceof CreateInstance || command instanceof DeleteInstance
-              || (command instanceof CreateInstanceForwarding create && !create.instanceInitialization())
-              || (command instanceof DeleteInstanceForwarding delete && delete.scope() == ForwardingScope.USER)
+              || command instanceof CreateInstanceForwarding || command instanceof DeleteInstanceForwarding
               || command instanceof UpdateInstanceQos
               || command instanceof RebootInstance || command instanceof RebuildInstance)) {
         return Effect().none();
@@ -339,231 +335,54 @@ public final class InstanceWorkflowActor
             });
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCreateForwarding(
-      InstanceWorkflowState state, CreateInstanceForwarding command) {
-    InstanceForwardingState forwarding;
-    int port = command.internalPort();
-    List<String> floatingIpIds = command.floatingIpIds().isEmpty() ? state.spec().forwarding().floatingIpIds() : command.floatingIpIds();
-    if (command.instanceInitialization()) {
-      if (state.phase() != InstancePhase.PREPARING_FORWARDING || state.pollingGeneration() != command.generation()
-          || state.currentForwardingPort() != port) return Effect().none();
-      if (state.forwardingByInternalPort(port) != null) return Effect().none();
-      forwarding = InstanceForwardingState.creating(port, ForwardingKind.SYSTEM, UUID.randomUUID().toString(),
-          floatingIpIds);
-    } else {
-      if (state.phase() != InstancePhase.ACTIVE || state.hasPendingOperation()) {
-        command.replyTo().tell(InstanceMutationReply.rejected("Instance must be ACTIVE with no pending management operation"));
-        return Effect().none();
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onPrepareInstanceForwardings(
+      InstanceWorkflowState state, PrepareInstanceForwardings command) {
+    if (state.phase() != InstancePhase.PREPARING_FORWARDING
+        || state.pollingGeneration() != command.generation()) return Effect().none();
+    return prepareInstanceForwardings(state);
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> prepareInstanceForwardings(InstanceWorkflowState state) {
+    for (int port : state.spec().forwarding().internalPorts()) {
+      InstanceForwardingState forwarding = state.forwardingByInternalPort(port);
+      if (forwarding == null) {
+        return forwardings.create(InstanceForwardingState.creating(port, ForwardingKind.SYSTEM,
+            UUID.randomUUID().toString(), state.spec().forwarding().floatingIpIds()));
       }
-      if (state.spec().forwarding().internalPorts().contains(port) || state.forwardingByInternalPort(port) != null) {
-        command.replyTo().tell(InstanceMutationReply.rejected("The internal port already has a system or user forwarding"));
-        return Effect().none();
+      if (forwarding.phase() == Phase.FAILED) {
+        return failCreation(Objects.requireNonNullElse(forwarding.failureCode(), "FORWARDING_PREPARATION_FAILED"),
+            forwarding.failure());
       }
-      forwarding = InstanceForwardingState.creating(port, ForwardingKind.USER, UUID.randomUUID().toString(),
-          floatingIpIds);
+      if (forwarding.phase() != Phase.READY) return Effect().none();
     }
-    return Effect().persist(new ForwardingCreationRequested(instanceId, forwarding)).thenRun(next -> {
-      if (command.replyTo() != null) command.replyTo().tell(InstanceMutationReply.accepted(forwarding.claimId()));
-      requestForwarding(next, forwarding, 1, true);
-    });
+    return Effect().persist(novaCreationStarted(state, clock.instant())).thenRun(this::requestNovaCreation);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeleteForwarding(
-      InstanceWorkflowState state, DeleteInstanceForwarding command) {
-    if (command.scope() == ForwardingScope.INSTANCE) {
-      if (state.phase() != InstancePhase.DELETING_FORWARDINGS
-          || state.pollingGeneration() != command.generation()) return Effect().none();
-      if (state.forwardingStates().isEmpty()) {
-        return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
-            .thenRun(this::startDeletionStage);
-      }
-      return deleteForwardings(state.forwardingStates().values().stream()
-          .filter(forwarding -> forwarding.phase() != Phase.DELETING)
-          .sorted(java.util.Comparator.comparing(InstanceForwardingState::claimId)).toList(), null);
-    }
-    if (state.phase() != InstancePhase.ACTIVE) {
-      command.replyTo().tell(InstanceMutationReply.rejected("Only ACTIVE instances allow user forwarding management"));
-      return Effect().none();
-    }
-    InstanceForwardingState forwarding = state.forwardingByClaimId(command.claimId());
-    if (forwarding == null) {
-      // Completed deletions are removed from state; an absent claim is already at the requested outcome.
-      command.replyTo().tell(InstanceMutationReply.accepted(command.claimId()));
-      return Effect().none();
-    }
-    if (forwarding.kind() == ForwardingKind.SYSTEM) {
-      command.replyTo().tell(InstanceMutationReply.rejected("System forwardings cannot be deleted individually"));
-      return Effect().none();
-    }
-    if (forwarding.phase() == Phase.DELETING) {
-      command.replyTo().tell(InstanceMutationReply.accepted(command.claimId()));
-      return Effect().none();
-    }
-    if (state.hasPendingOperation()) {
-      command.replyTo().tell(InstanceMutationReply.rejected("Wait for the pending forwarding or QoS operation"));
-      return Effect().none();
-    }
-    return deleteForwardings(List.of(forwarding), command.replyTo());
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeleteInstanceForwardings(
+      InstanceWorkflowState state, DeleteInstanceForwardings command) {
+    if (state.phase() != InstancePhase.DELETING_FORWARDINGS
+        || state.pollingGeneration() != command.generation()) return Effect().none();
+    if (state.forwardingStates().isEmpty()) return completeForwardingCleanup();
+    return forwardings.delete(state.forwardingStates().values().stream()
+        .sorted(java.util.Comparator.comparing(InstanceForwardingState::claimId)).toList());
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> deleteForwardings(
-      List<InstanceForwardingState> forwardings, ActorRef<InstanceMutationReply> replyTo) {
-    if (forwardings.isEmpty()) return Effect().none();
-    List<InstanceWorkflowEvent> events = new ArrayList<>();
-    List<InstanceForwardingState> deletions = new ArrayList<>();
-    for (InstanceForwardingState forwarding : forwardings) {
-      InstanceForwardingState deleting = forwarding.transition(Phase.DELETING, null);
-      events.add(new ForwardingDeletionRequested(instanceId, deleting));
-      deletions.add(deleting);
-    }
-    return Effect().persist(events).thenRun(next -> {
-      if (replyTo != null) replyTo.tell(InstanceMutationReply.accepted(deletions.getFirst().claimId()));
-      for (InstanceForwardingState deleting : deletions) requestForwarding(next, deleting, 1, true);
-    });
-  }
-
-  private void requestForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding,
-      int attempt, boolean submit) {
-    pipeForwarding(forwarding, attempt, submit, () -> forwarding.phase() == Phase.CREATING
-        ? forwardingOperations.requestCreation(state, forwarding, submit)
-        : forwardingOperations.requestDeletion(state, forwarding, submit));
-  }
-
-  private void recoverForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding) {
-    pipeForwarding(forwarding, 1, true, () -> forwarding.phase() == Phase.CREATING
-        ? forwardingOperations.recoverForwardingCreation(state, forwarding)
-        : forwardingOperations.requestDeletion(state, forwarding, false));
-  }
-
-  private void pipeForwarding(InstanceForwardingState forwarding, int attempt, boolean submission,
-      java.util.function.Supplier<CompletionStage<ForwardingReply>> operation) {
-    String token = UUID.randomUUID().toString();
-    if (forwardingRequests.putIfAbsent(forwarding.claimId(), token) != null) return;
-    CompletionStage<ForwardingReply> request;
-    try { request = operation.get(); }
-    catch (RuntimeException error) { request = CompletableFuture.failedFuture(error); }
-    context.pipeToSelf(request, (reply, error) -> {
-      Throwable cause = error == null ? null : rootCause(error);
-      String failureCode = null;
-      if (cause instanceof InstanceForwardingOperations.InvalidForwardingResult) {
-        failureCode = "FORWARDING_RESULT_INVALID";
-      } else if (definitiveOperationFailure(cause)) {
-        failureCode = forwarding.phase() == Phase.CREATING ? "SECURITY_GROUP_RULE_FAILED" : "FORWARDING_DELETE_FAILED";
-      }
-      return new ForwardingStatusCompleted(forwarding.claimId(), forwarding.generation(), token, attempt, submission,
-          reply, failureCode, cause == null ? null : cause.toString());
-    });
-  }
-
-  private static boolean definitiveOperationFailure(Throwable error) {
-    if (error instanceof OpenStackOperationException || error instanceof IllegalArgumentException
-        || error instanceof IllegalStateException) return true;
-    return error instanceof org.openstack4j.api.exceptions.ResponseException response
-        && response.getStatus() >= 400 && response.getStatus() < 500
-        && response.getStatus() != 408 && response.getStatus() != 429;
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckForwardingStatus(
-      InstanceWorkflowState state, CheckForwardingStatus command) {
-    InstanceForwardingState forwarding = state.forwardingByClaimId(command.claimId());
-    if (matchesForwarding(state, forwarding, command.generation())) {
-      requestForwarding(state, forwarding, command.attempt(), false);
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onInstanceForwardingsChanged(
+      InstanceWorkflowState state, InstanceForwardingsChanged command) {
+    if (state.pollingGeneration() != command.generation()) return Effect().none();
+    if (state.phase() == InstancePhase.PREPARING_FORWARDING) return prepareInstanceForwardings(state);
+    if (state.phase() == InstancePhase.DELETING_FORWARDINGS) {
+      if (state.forwardingStates().isEmpty()) return completeForwardingCleanup();
+      state.forwardingStates().values().stream()
+          .filter(forwarding -> forwarding.phase() == Phase.DELETE_FAILED).findFirst()
+          .ifPresent(forwarding -> scheduleDeletionRetry(state, forwarding.failure()));
     }
     return Effect().none();
   }
 
-  private boolean matchesForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding, long generation) {
-    if (forwarding == null || !forwarding.inProgress() || forwarding.generation() != generation) return false;
-    if (forwarding.phase() == Phase.DELETING) {
-      return state.phase() == InstancePhase.ACTIVE || state.phase() == InstancePhase.DELETING_FORWARDINGS;
-    }
-    return state.phase() == (forwarding.phase() == Phase.CREATING && forwarding.kind() == ForwardingKind.SYSTEM
-        ? InstancePhase.PREPARING_FORWARDING : InstancePhase.ACTIVE);
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onForwardingStatusCompleted(
-      InstanceWorkflowState state, ForwardingStatusCompleted command) {
-    InstanceForwardingState forwarding = state.forwardingByClaimId(command.claimId());
-    if (!matchesForwarding(state, forwarding, command.generation())
-        || !forwardingRequests.remove(command.claimId(), command.requestToken())) return Effect().none();
-
-    if (command.failureCode() != null) {
-      if (forwarding.phase() == Phase.DELETING) return failForwardingDeletion(forwarding, command.failure());
-      return failForwardingCreation(forwarding, command.failureCode(), command.failure());
-    }
-    ForwardingReply reply = command.reply();
-    if (reply == null) return pollForwarding(forwarding, command.attempt() + 1);
-    if (forwarding.phase() == Phase.DELETING) {
-      return switch (reply.status()) {
-        case DELETED -> forwardingDeleted(state, forwarding);
-        case DELETE_FAILED, REJECTED -> failForwardingDeletion(forwarding, forwardingFailure(reply));
-        default -> pollForwarding(forwarding, command.attempt() + 1);
-      };
-    }
-    return switch (reply.status()) {
-      case READY -> forwardingReady(state, forwarding, InstanceForwardingResources.from(reply.claim()));
-      case NOT_FOUND -> {
-        if (command.submission()) yield pollForwarding(forwarding, command.attempt() + 1);
-        requestForwarding(state, forwarding, command.attempt(), true);
-        yield Effect().none();
-      }
-      case IN_PROGRESS -> pollForwarding(forwarding, command.attempt() + 1);
-      case FAILED, DELETE_FAILED, REJECTED, DELETED -> {
-        if ((reply.claim() == null || !reply.claim().ownsPort()) && forwarding.hasNextCandidate()) {
-          InstanceForwardingState nextCandidate = forwarding.nextCandidate();
-          yield Effect().persist(new ForwardingCandidateSelected(instanceId, nextCandidate))
-              .thenRun(next -> requestForwarding(next, nextCandidate, 1, true));
-        }
-        yield failForwardingCreation(forwarding, "FORWARDING_PREPARATION_FAILED", forwardingFailure(reply));
-      }
-    };
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> forwardingReady(InstanceWorkflowState state,
-      InstanceForwardingState forwarding, InstanceForwardingResources resources) {
-    var created = new ForwardingCreated(instanceId, forwarding.ready(resources));
-    if (forwarding.kind() == ForwardingKind.USER) return Effect().persist(created);
-    if (state.onlyCurrentInitializationPortPending()) {
-      return Effect().persist(List.of(created, novaCreationStarted(state, clock.instant()))).thenRun(this::requestNovaCreation);
-    }
-    return Effect().persist(created).thenRun(this::startForwardingPreparation);
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> pollForwarding(InstanceForwardingState forwarding, int attempt) {
-    Duration delay = forwarding.phase() == Phase.DELETING ? settings.pollInitialDelay() : settings.pollDelay(attempt);
-    timers.startSingleTimer("forwarding:" + forwarding.claimId(),
-        new CheckForwardingStatus(forwarding.claimId(), forwarding.generation(), attempt), delay);
-    return Effect().none();
-  }
-
-  private static String forwardingFailure(ForwardingReply reply) {
-    return reply.detail() == null ? reply.status().name() : reply.detail();
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingCreation(
-      InstanceForwardingState forwarding, String code, String detail) {
-    var failed = new ForwardingCreationFailed(instanceId, forwarding.transition(Phase.FAILED, detail));
-    if (forwarding.kind() == ForwardingKind.USER) return Effect().persist(failed);
-    return Effect().persist(List.of(failed, new InstanceProvisioningFailed(instanceId, code, detail, clock.instant())))
-        .thenRun(next -> creationFailed());
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> forwardingDeleted(
-      InstanceWorkflowState state, InstanceForwardingState forwarding) {
-    var deleted = new ForwardingDeleted(instanceId, forwarding.transition(Phase.DELETED, null));
-    if (state.phase() == InstancePhase.DELETING_FORWARDINGS && state.forwardingStates().size() == 1) {
-      return Effect().persist(List.of(deleted, new InstanceForwardingsDeleted(instanceId, clock.instant())))
-          .thenRun(this::startDeletionStage);
-    }
-    return Effect().persist(deleted);
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingDeletion(
-      InstanceForwardingState forwarding, String detail) {
-    return Effect().persist(new ForwardingDeletionFailed(instanceId, forwarding.transition(Phase.DELETE_FAILED, detail)))
-        .thenRun(next -> {
-          if (next.phase() == InstancePhase.DELETING_FORWARDINGS) scheduleDeletionRetry(next, detail);
-        });
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> completeForwardingCleanup() {
+    return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
+        .thenRun(this::startDeletionStage);
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUpdateInstanceQos(
@@ -620,210 +439,13 @@ public final class InstanceWorkflowActor
   }
 
   private void recoverManagement(InstanceWorkflowState state) {
-    for (InstanceForwardingState forwarding : state.forwardingStates().values()) {
-      if (forwarding.inProgress()) recoverForwarding(state, forwarding);
-    }
+    forwardings.recover(state);
     InstanceQosUpdate update = state.qosUpdate();
     if (update != null && update.phase() == InstanceQosUpdate.Phase.UPDATING) {
       // Reapply only the saved intent; the client reads actual rules before repairing a partial update.
       pipeQosUpdate(update, () -> openStackClient.updateInstanceQos(target(state), networkOperationId(state),
           state.networkPreparation().resources(), update.parentPort(), update.subPort()));
     }
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onReboot(
-      InstanceWorkflowState state, RebootInstance command) {
-    return onServerOperation(state, InstanceServerOperation.Type.REBOOT, null, command.replyTo());
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onRebuild(
-      InstanceWorkflowState state, RebuildInstance command) {
-    return onServerOperation(state, InstanceServerOperation.Type.REBUILD, command.osImageId(), command.replyTo());
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onServerOperation(
-      InstanceWorkflowState state, InstanceServerOperation.Type type, String osImageId,
-      ActorRef<InstanceMutationReply> replyTo) {
-    InstanceServerOperation previous = state.serverOperation();
-    if (previous != null && matchesServerOperation(state, previous.operationId())
-        && previous.type() == type && Objects.equals(previous.osImageId(), osImageId)) {
-      replyTo.tell(InstanceMutationReply.accepted(previous.operationId()));
-      return Effect().none();
-    }
-    boolean retrying = state.phase() == InstancePhase.FAILED && previous != null
-        && previous.phase() == InstanceServerOperation.Phase.FAILED;
-    if ((state.phase() != InstancePhase.ACTIVE && !retrying) || state.hasPendingOperation()) {
-      replyTo.tell(InstanceMutationReply.rejected(
-          "Instance must be ACTIVE or have a failed server operation, with no pending management operation"));
-      return Effect().none();
-    }
-    if (state.osNovaServerId() == null || state.osNovaServerId().isBlank()) {
-      replyTo.tell(InstanceMutationReply.rejected("Instance has no recorded Nova server"));
-      return Effect().none();
-    }
-    InstanceServerOperation operation = new InstanceServerOperation(UUID.randomUUID().toString(), type,
-        InstanceServerOperation.Phase.SUBMITTING, osImageId, clock.instant(), null);
-    return Effect().persist(new InstanceServerOperationRequested(instanceId, operation)).thenRun(next -> {
-      replyTo.tell(InstanceMutationReply.accepted(operation.operationId()));
-      requestServerOperation(next);
-    });
-  }
-
-  private void requestServerOperation(InstanceWorkflowState state) {
-    InstanceServerOperation operation = state.serverOperation();
-    String token = UUID.randomUUID().toString();
-    serverOperationRequestToken = token;
-    CompletionStage<Void> request;
-    try {
-      request = operation.type() == InstanceServerOperation.Type.REBOOT
-          ? openStackClient.rebootServer(target(state), state.osNovaServerId())
-          : openStackClient.rebuildServer(target(state), state.osNovaServerId(), operation.osImageId());
-    } catch (RuntimeException error) {
-      request = CompletableFuture.failedFuture(error);
-    }
-    context.pipeToSelf(request, (ignored, error) -> {
-      Throwable cause = error == null ? null : rootCause(error);
-      return new ServerOperationSubmitted(operation.operationId(), token,
-          definitiveOperationFailure(cause), cause == null ? null : cause.toString());
-    });
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onServerOperationSubmitted(
-      InstanceWorkflowState state, ServerOperationSubmitted command) {
-    if (!matchesServerOperation(state, command.operationId()) || serverOperationRequestToken == null
-        || !serverOperationRequestToken.equals(command.requestToken())) return Effect().none();
-    serverOperationRequestToken = null;
-    InstanceServerOperation operation = state.serverOperation();
-    if (operation.phase() != InstanceServerOperation.Phase.SUBMITTING) return Effect().none();
-    if (command.rejected()) return failServerOperation(state, "REJECTED", command.failure(), null);
-    if (command.failure() != null) {
-      // A timeout is not permission to repeat a destructive action; reconcile using read-only checks.
-      context.getLog().warn("Nova server operation acceptance uncertain: instanceId={} operationId={} reason={}",
-          instanceId, operation.operationId(), command.failure());
-      scheduleServerOperationCheck(state, 1);
-      return Effect().none();
-    }
-    return Effect().persist(new InstanceServerOperationSubmitted(instanceId, operation.running()))
-        .thenRun(next -> scheduleServerOperationCheck(next, 1));
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckServerOperation(
-      InstanceWorkflowState state, CheckServerOperation command) {
-    if (matchesServerOperation(state, command.operationId()) && serverOperationRequestToken == null) {
-      requestServerOperationCheck(state, command.attempt());
-    }
-    return Effect().none();
-  }
-
-  private void requestServerOperationCheck(InstanceWorkflowState state, int attempt) {
-    InstanceServerOperation operation = state.serverOperation();
-    String token = UUID.randomUUID().toString();
-    serverOperationRequestToken = token;
-    CompletionStage<OpenStackClient.NovaServer> request;
-    try {
-      request = openStackClient.getServer(target(state), state.osNovaServerId());
-    } catch (RuntimeException error) {
-      request = CompletableFuture.failedFuture(error);
-    }
-    var check = request.thenCompose(server -> {
-      if (operation.phase() != InstanceServerOperation.Phase.RUNNING || !serverOperationReady(operation, server)
-          || !state.osNovaServerId().equals(server.osServerId())) {
-        return CompletableFuture.completedFuture(new ServerOperationChecked(operation.operationId(), token,
-            attempt, server, false, false, null));
-      }
-      return sshChecker.check(state).thenApply(connected -> new ServerOperationChecked(operation.operationId(),
-          token, attempt, server, Boolean.TRUE.equals(connected), false, null));
-    });
-    context.pipeToSelf(check, (result, error) -> {
-      if (error == null) return result;
-      Throwable cause = rootCause(error);
-      return new ServerOperationChecked(operation.operationId(), token, attempt, null, false,
-          definitiveOperationFailure(cause), cause.toString());
-    });
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onServerOperationChecked(
-      InstanceWorkflowState state, ServerOperationChecked command) {
-    if (!matchesServerOperation(state, command.operationId()) || serverOperationRequestToken == null
-        || !serverOperationRequestToken.equals(command.requestToken())) return Effect().none();
-    serverOperationRequestToken = null;
-    if (command.failure() != null) {
-      if (command.rejected()) return failServerOperation(state, "CHECK_FAILED", command.failure(), null);
-      scheduleServerOperationCheck(state, command.attempt() + 1);
-      return Effect().none();
-    }
-    OpenStackClient.NovaServer server = command.server();
-    if (server == null) {
-      return failServerOperation(state, "SERVER_MISSING", "The recorded Nova server no longer exists", null);
-    }
-    if (!state.osNovaServerId().equals(server.osServerId())) {
-      return failServerOperation(state, "RESULT_INVALID", "Nova returned a different server", null);
-    }
-    if (server.status() == OpenStackClient.NovaServer.Status.ERROR && serverIdle(server)) {
-      return failServerOperation(state, "NOVA_ERROR",
-          server.fault() == null ? "Nova server entered ERROR" : server.fault(), server.status());
-    }
-    InstanceServerOperation operation = state.serverOperation();
-    if (operation.phase() == InstanceServerOperation.Phase.SUBMITTING) {
-      // Recovery may observe an accepted action whose response was never persisted.
-      boolean imageChanged = operation.type() == InstanceServerOperation.Type.REBUILD
-          && operation.osImageId().equals(server.osImageId())
-          && !operation.osImageId().equals(state.osImageId());
-      if (serverOperationObserved(operation, server) || imageChanged) {
-        return Effect().persist(new InstanceServerOperationSubmitted(instanceId, operation.running()))
-            .thenRun(next -> scheduleServerOperationCheck(next, 1));
-      }
-      return failServerOperation(state, "UNCONFIRMED",
-          "Nova acceptance could not be confirmed; the server action was not resubmitted", server.status());
-    }
-    if (server.status() == OpenStackClient.NovaServer.Status.ACTIVE && serverIdle(server)
-        && operation.type() == InstanceServerOperation.Type.REBUILD
-        && !operation.osImageId().equals(server.osImageId())) {
-      return failServerOperation(state, "IMAGE_MISMATCH", "Nova server is not using the requested image", server.status());
-    }
-    if (serverOperationReady(operation, server) && command.sshConnected()) {
-      return Effect().persist(new InstanceServerOperationCompleted(instanceId, operation.succeeded(), server.osImageId()))
-          .thenRun(next -> timers.cancel(SERVER_OPERATION_TIMER));
-    }
-    scheduleServerOperationCheck(state, command.attempt() + 1);
-    return Effect().none();
-  }
-
-  private boolean matchesServerOperation(InstanceWorkflowState state, String operationId) {
-    InstanceServerOperation operation = state.serverOperation();
-    return operation != null && operation.inProgress() && operation.operationId().equals(operationId)
-        && state.phase() == operation.type().instancePhase();
-  }
-
-  private static boolean serverIdle(OpenStackClient.NovaServer server) {
-    return server.taskState() == null || server.taskState().isBlank();
-  }
-
-  private static boolean serverOperationReady(InstanceServerOperation operation, OpenStackClient.NovaServer server) {
-    return server != null && server.status() == OpenStackClient.NovaServer.Status.ACTIVE && serverIdle(server)
-        && (operation.type() == InstanceServerOperation.Type.REBOOT || operation.osImageId().equals(server.osImageId()));
-  }
-
-  private static boolean serverOperationObserved(InstanceServerOperation operation, OpenStackClient.NovaServer server) {
-    String task = server.taskState();
-    return operation.type() == InstanceServerOperation.Type.REBOOT
-        ? server.status() == OpenStackClient.NovaServer.Status.REBOOT
-            || server.status() == OpenStackClient.NovaServer.Status.HARD_REBOOT
-            || (task != null && task.startsWith("reboot"))
-        : server.status() == OpenStackClient.NovaServer.Status.REBUILD
-            || (task != null && task.startsWith("rebuild"));
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failServerOperation(InstanceWorkflowState state,
-      String code, String detail, OpenStackClient.NovaServer.Status status) {
-    return Effect().persist(new InstanceServerOperationFailed(instanceId, state.serverOperation().failed(detail),
-        status, "NOVA_" + state.serverOperation().type().name() + "_" + code))
-        .thenRun(next -> timers.cancel(SERVER_OPERATION_TIMER));
-  }
-
-  private void scheduleServerOperationCheck(InstanceWorkflowState state, int attempt) {
-    timers.startSingleTimer(SERVER_OPERATION_TIMER,
-        new CheckServerOperation(state.serverOperation().operationId(), attempt), settings.pollDelay(attempt));
   }
 
   private void requestDependencies(InstanceWorkflowState state) {
@@ -945,8 +567,7 @@ public final class InstanceWorkflowActor
   }
 
   private void startForwardingPreparation(InstanceWorkflowState state) {
-    context.getSelf().tell(new CreateInstanceForwarding(state.currentForwardingPort(), state.spec().forwarding().floatingIpIds(),
-        true, state.pollingGeneration(), null));
+    context.getSelf().tell(new PrepareInstanceForwardings(state.pollingGeneration()));
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSchedulingSucceeded(
@@ -1306,7 +927,7 @@ public final class InstanceWorkflowActor
     networkPreparationRequestToken = null;
     novaCreationRequestToken = null;
     provisioningCheckRequestToken = null;
-    forwardingRequests.clear();
+    forwardings.reset();
     metrics.workflowFailed();
   }
 
@@ -1405,7 +1026,7 @@ public final class InstanceWorkflowActor
           requestNovaDeletionStatus(state);
         }
       }
-      case DELETING_FORWARDINGS -> context.getSelf().tell(DeleteInstanceForwarding.all(state.pollingGeneration()));
+      case DELETING_FORWARDINGS -> context.getSelf().tell(new DeleteInstanceForwardings(state.pollingGeneration()));
       case DELETING_NETWORK -> requestInstanceNetworkDeletion(state);
       case DELETING_SECURITY_GROUP -> requestInstanceSecurityGroupDeletion(state);
       case CANCELLING_RESERVATION -> requestReservationCancellation(state);
@@ -1416,7 +1037,7 @@ public final class InstanceWorkflowActor
 
   private boolean deletionInFlight() {
     return novaDeletionRequestToken != null || novaDeletionStatusRequestToken != null
-        || !forwardingRequests.isEmpty()
+        || forwardings.inFlight()
         || networkDeletionRequestToken != null || securityGroupDeletionRequestToken != null
         || reservationCancellationRequestToken != null || allocationReleaseRequestToken != null;
   }
@@ -1545,12 +1166,8 @@ public final class InstanceWorkflowActor
         .onEvent(
             InstanceCreationRequested.class,
             (state, event) -> state.created(event.requestId(), event.spec()))
-        .onEvent(ForwardingCreationRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(ForwardingCreated.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(ForwardingCreationFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(ForwardingDeletionRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(ForwardingDeleted.class, (state, event) -> state.forwardingDeleted(event.forwarding()))
-        .onEvent(ForwardingDeletionFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
+        .onEvent(InstanceForwardingEvent.class, (state, event) -> event instanceof ForwardingDeleted
+            ? state.forwardingDeleted(event.forwarding()) : state.forwardingChanged(event.forwarding()))
         .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.qosUpdateChanged(event.update()))
         .onEvent(InstanceQosUpdated.class, (state, event) -> state.qosUpdated(event.update(), event.resources()))
         .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.qosUpdateChanged(event.update()))
@@ -1570,7 +1187,6 @@ public final class InstanceWorkflowActor
         .onEvent(NetworkPreparationStarted.class, (state, event) -> state.preparingNetwork())
         .onEvent(NetworkPrepared.class, (state, event) -> state.networkPrepared(event.resources()))
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding())
-        .onEvent(ForwardingCandidateSelected.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(SchedulingStarted.class, (state, event) -> state.scheduling())
         .onEvent(HypervisorReservationStarted.class, (state, event) -> state.reservingResources(
             event.hypervisorId(), event.reservationId(), event.remainingHypervisorIds()))
@@ -1622,9 +1238,9 @@ public final class InstanceWorkflowActor
 
   private void recoverState(InstanceWorkflowState state) {
     timers.cancelAll();
-    forwardingRequests.clear();
+    forwardings.reset();
+    serverOperations.reset();
     qosUpdateRequestToken = null;
-    serverOperationRequestToken = null;
     dependencyRequestToken = null;
     resourceReservationRequestToken = null;
     securityGroupRequestToken = null;
@@ -1654,13 +1270,10 @@ public final class InstanceWorkflowActor
       default -> null;
     };
     if (recoveringPhase == null) {
+      serverOperations.recover(state);
       if (state.phase() == InstancePhase.PREPARING_FORWARDING) {
-        InstanceForwardingState pending = state.forwardingByInternalPort(state.currentForwardingPort());
-        if (pending == null) startForwardingPreparation(state);
-        else recoverForwarding(state, pending);
-      } else if (state.phase() == InstancePhase.REBOOTING || state.phase() == InstancePhase.REBUILDING) {
-        // Reboot/rebuild are not idempotent. Recovery only observes the saved operation.
-        scheduleServerOperationCheck(state, 1);
+        forwardings.recover(state);
+        startForwardingPreparation(state);
       } else if (state.phase() == InstancePhase.ACTIVE) {
         recoverManagement(state);
       }
@@ -1733,9 +1346,7 @@ public final class InstanceWorkflowActor
 
   private void recoverForwardingsDeletion(InstanceWorkflowState state) {
     finishRecovery();
-    for (InstanceForwardingState forwarding : state.forwardingStates().values()) {
-      if (forwarding.phase() == Phase.DELETING) recoverForwarding(state, forwarding);
-    }
+    forwardings.recover(state);
     startDeletionStage(state);
   }
 

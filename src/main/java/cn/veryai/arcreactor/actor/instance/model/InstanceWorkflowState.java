@@ -9,7 +9,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
 
 public record InstanceWorkflowState(
         String instanceId,
@@ -190,19 +189,6 @@ public record InstanceWorkflowState(
         return copy(requestId, InstancePhase.PREPARING_FORWARDING, spec, hypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage);
-    }
-
-    public int currentForwardingPort() {
-        return pendingInitializationPorts().findFirst().orElseThrow(() -> new IllegalStateException("All forwarding ports are prepared"));
-    }
-
-    private Stream<Integer> pendingInitializationPorts() {
-        return spec.forwarding().internalPorts().stream()
-                .filter(port -> forwardingResourcesByInternalPort(port) == null);
-    }
-
-    public boolean onlyCurrentInitializationPortPending() {
-        return pendingInitializationPorts().limit(2).count() == 1;
     }
 
     public InstanceWorkflowState preparingNetwork() {

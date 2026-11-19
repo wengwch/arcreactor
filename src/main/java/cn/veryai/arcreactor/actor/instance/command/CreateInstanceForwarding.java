@@ -5,9 +5,9 @@ import java.util.List;
 import java.util.Objects;
 import org.apache.pekko.actor.typed.ActorRef;
 
-/** Ordered floating IP candidates; an empty list uses the instance's default selection. */
-public record CreateInstanceForwarding(int internalPort, List<String> floatingIpIds, boolean instanceInitialization,
-    long generation, ActorRef<InstanceMutationReply> replyTo) implements WorkflowCommand {
+/** Creates a user forwarding. Empty candidates use the instance's default selection. */
+public record CreateInstanceForwarding(int internalPort, List<String> floatingIpIds,
+    ActorRef<InstanceMutationReply> replyTo) implements WorkflowCommand {
   public CreateInstanceForwarding {
     if (internalPort < 1 || internalPort > 65535) throw new IllegalArgumentException("invalid internal port");
     floatingIpIds = floatingIpIds == null ? List.of() : List.copyOf(floatingIpIds);
@@ -15,6 +15,6 @@ public record CreateInstanceForwarding(int internalPort, List<String> floatingIp
         || floatingIpIds.stream().distinct().count() != floatingIpIds.size()) {
       throw new IllegalArgumentException("ordered, distinct floating IP IDs must not be blank");
     }
-    if (!instanceInitialization) Objects.requireNonNull(replyTo, "replyTo");
+    Objects.requireNonNull(replyTo, "replyTo");
   }
 }

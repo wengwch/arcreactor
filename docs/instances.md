@@ -378,16 +378,23 @@ FAILED → 人工发送 DeleteInstance → DELETING_NOVA → DELETING_FORWARDING
 ```
 
 HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 22、8888 两个内部端口的映射。
-每个内部端口使用独立 claim ID（包含实例 ID、请求 ID、内部端口），分配一个 `10000–40000`
+每个内部端口使用独立的 UUID claim ID，分配一个 `10000–40000`
 范围内的公网端口，同时创建 TCP/UDP 转发，目标为实例父端口的 IPv4 地址。
 每个端口分别按候选顺序尝试浮动 IP；分配前确认地址无效或端口耗尽时可切换到下一个候选。
 候选列表 `floatingIpIds` 保存 `floating_ip.id`，实例创建、查询、删除和恢复均通过此内部 ID 定位 FIP Actor。
-`CreateInstanceForwarding` 可携带有序、不重复且 ID 非空白的 `floatingIpIds`，受理后保存到转发状态中供候选切换和恢复使用。
-未指定或传空列表时，初始化使用实例配置中的候选列表，用户转发使用系统 SSH 映射的浮动 IP；HTTP 用户转发接口沿用此默认选择。
+用户管理命令 `CreateInstanceForwarding` 可携带有序、不重复且 ID 非空白的 `floatingIpIds`，受理后保存到转发状态中供候选切换和恢复使用。
+未指定或传空列表时使用实例配置中的候选列表，HTTP 用户转发接口沿用此默认选择；系统初始化直接使用实例配置。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
-实例初始化和管理 API 都先持久化 `ForwardingCreationRequested`，再按 claim ID 提交创建和查询。
-FIP 返回有效的 `READY` 后，工作流补建该内部端口缺失的 TCP、UDP 入站规则，再持久化 `ForwardingCreated`。创建最终失败时持久化 `ForwardingCreationFailed`。
-实例初始化发起的转发成功后继续下一个配置端口，最后一个端口就绪时持久化 `NovaCreationStarted` 并进入 `PROVISIONING`。管理 API 发起的创建在该转发就绪后完成。
+`InstanceForwardingWorkflow` 独立处理转发创建、删除、候选切换、轮询和恢复，在实例 Actor 的同一邮箱中执行，事件仍写入原实例日志。
+用户管理使用 `CreateInstanceForwarding`、`DeleteInstanceForwarding`，不再携带 `instanceInitialization`、`scope` 或实例阶段的 generation。
+实例创建通过内部 `PrepareInstanceForwardings` 逐个准备系统端口，实例删除通过 `DeleteInstanceForwardings` 清理全部转发。
+两类入口只共用转发执行逻辑，用户操作的受理、拒绝和回复不参与实例创建、删除编排。
+创建先持久化 `ForwardingCreationRequested`，再按 claim ID 提交创建和查询。
+FIP 返回有效的 `READY` 后，处理器补建该内部端口缺失的 TCP、UDP 入站规则，再持久化 `ForwardingCreated`。
+失败则持久化 `ForwardingCreationFailed`，转发状态同时保存失败代码和原因。
+转发结果持久化后发送 `InstanceForwardingsChanged`，由实例主流程重新检查当前阶段。
+系统端口全部 `READY` 后才持久化 `NovaCreationStarted` 并进入 `PROVISIONING`；系统端口失败由主流程记录实例创建失败。
+用户端口创建完成或失败只更新转发状态。
 实例状态只保存以 `claimId` 为键的 `forwardingStates`，每个 `InstanceForwardingState` 同时保存生命周期和可空的 `InstanceForwardingResources resources`。
 `InstanceForwardingResources` 仅保存 `osFloatingIpId`、浮动 IP 地址、域名、公网端口以及 TCP/UDP 规则 ID。
 `claimId`、`internalPort`、`kind` 由 `InstanceForwardingState` 保存，内部 `floatingIpId` 由候选列表与当前索引确定；FIP 返回结果的标识和规格在接收时校验。
@@ -401,6 +408,7 @@ FIP 返回有效的 `READY` 后，工作流补建该内部端口缺失的 TCP、
 转发阶段不设置整体等待超时，保留轮询以等待异步创建完成。
 重启后沿用已持久化的候选、内部端口和已完成映射，查询当前未完成的 claim；
 只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
+转发结果与实例阶段分别持久化；恢复时重新检查已保存的转发状态，即使进程在结果写入后、阶段推进前中断，也能继续进入下一阶段或记录原失败。
 
 FloatingIpActor 的实体 key 为 `floating_ip.id`，通过 `PekkoRuntime.floatingIpActor(floatingIpId)` 获取。
 `FloatingIpIdentity` 持久化内部 `floatingIpId`，以及 OpenStack 调用所需的区域、项目和 `osFloatingIpId`。
@@ -652,10 +660,12 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
 服务器仍存在或查询失败时保持当前阶段；确认不存在（404）后记录 `NovaServerDeleted`，才开始删除端口转发。
 
-`DELETING_FORWARDINGS` 通过 `deleteForwardings()` 处理全部系统及用户转发，与单个删除共用逐条删除流程。
+`DELETING_FORWARDINGS` 通过内部 `DeleteInstanceForwardings` 委托 `InstanceForwardingWorkflow.delete()` 处理全部系统及用户转发。
+用户的单条删除命令独立校验和回复，批量清理入口只处理尚未进入 `DELETING` 的记录。
 每条转发先持久化 `ForwardingDeletionRequested`，再通过 `requestDeletion()` 提交删除或查询状态。
 删除返回 `DELETED` 后清理该内部端口的专属安全组规则，两步完成才记录 `ForwardingDeleted`；
-`IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态。全部转发完成后记录 `InstanceForwardingsDeleted`，才推进到网络清理。
+`IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态。结果通知到达后，实例主流程确认转发集合为空，
+再记录 `InstanceForwardingsDeleted` 并推进到网络清理；存在 `DELETE_FAILED` 时由主流程安排阶段重试。
 查询仍在删除中的 claim 不重复发送删除命令，查到需要删除或重试的 claim 时只对这些记录再次提交。
 查询异常或未确认的结果保持当前阶段，不能作为删除成功处理。
 
@@ -669,7 +679,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 
 端口转发按 `cloud.instance.poll.initial-delay` 查询进行中的删除；删除失败和其他删除阶段按 `cloud.instance.poll.max-delay` 检查、重试当前阶段，不设置删除等待超时。
 普通进度查询不产生事件；端口转发逐条持久化删除意图和结果，阶段完成后记录相应完成事件，Nova 删除受理另由 `NovaDeletionAccepted` 记录。
-已受理的删除在重启后继续，端口转发由 `InstanceWorkflowActor` 恢复并复用逐条删除流程；
+已受理的删除在重启后继续，端口转发由独立处理器恢复逐条删除，实例主流程重新检查阶段是否完成；
 其他阶段由 `InstanceRecovery` 按当前持久化阶段独立查询、删除和重试。
 恢复 Nova 阶段时，已有 `NovaDeletionAccepted` 就只查询；尚未记录受理则先查询，存在才提交删除。
 恢复端口转发阶段时先查询各 claim 状态，再决定等待或提交删除；其他阶段只重做该阶段尚未确认完成的幂等操作。
@@ -814,6 +824,10 @@ JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab
 
 ## 实例重启与重建
 
+重启、重建由独立的 `InstanceServerOperationWorkflow` 处理器负责受理校验、Nova 提交、
+状态轮询、SSH 检查及恢复。处理器与 `InstanceWorkflowActor` 共用实例邮箱和事件日志，
+Actor 仅分发相关命令、回放事件，并委托处理器重置请求状态和恢复轮询。
+
 | 接口 | 请求内容 | 操作 |
 | --- | --- | --- |
 | `POST /api/v1/instances/{instanceId}/reboot` | 无请求体 | 对已有 Nova 实例执行 `HARD` 重启 |
@@ -857,7 +871,7 @@ Actor 恢复后只查询，不重新提交重启或重建。已记录 Nova 受�
 | `DELETE /api/v1/instances/{instanceId}/forwardings/{claimId}` | 无请求体，仅允许 `USER` | 被删除用户转发的 `claimId` |
 | `PUT /api/v1/instances/{instanceId}/qos` | 可选的 `parentPort`、`subPort`，至少指定一个 | 本次 QoS 操作的独立 ID |
 
-用户转发复用该实例系统 SSH 映射的浮动 IP，由 FloatingIpActor 在位图空闲范围内按随机起点分配公网端口，
+用户转发沿用该实例配置的浮动 IP 候选列表，由 FloatingIpActor 在位图空闲范围内按随机起点分配公网端口，
 同时建立 TCP、UDP 映射；请求不接收类型、浮动 IP 或公网端口。内部端口已被系统转发或尚未删除的
 用户转发占用时拒绝创建。FIP claim 就绪后，工作流校验转发结果，补齐该内部端口的 TCP/UDP IPv4 入站规则，再将用户转发标记为 `READY`。
 通过 `GET /api/v1/instances/{instanceId}/forwardings` 按 `claimId` 查找转发记录，
