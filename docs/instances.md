@@ -422,11 +422,12 @@ FIP Actor 统一使用 `DeletePortForwarding` 按 `claimId` 删除，不区分�
 删除通过独立的命令和事件执行。`CREATING` 状态拒绝删除并返回 `REJECTED`，
 不写事件、不记录删除意图，也不改变创建状态；调用方需在创建进入 `READY` 或 `FAILED` 后重新发送删除命令。
 因此不再保存删除意图字段；重启后仍按 `CREATING` 恢复创建。
-实例删除和删除恢复通过 `forwardingsForDeletion()` 汇总系统与用户转发，
+实例删除和删除恢复均从 `forwardingStates` 取得系统与用户转发，复用逐条删除流程，
 使用每条记录的内部 `floatingIpId` 和 `claimId` 调用 `delete` 和 `get`。
-删除直接返回 `DELETED` 可确认完成；返回 `IN_PROGRESS` 后通过 `get` 继续查询，
-查询仍为 `IN_PROGRESS` 只等待，`READY`、`FAILED`、`DELETE_FAILED`、`NOT_FOUND` 时重新提交删除并确认结果。
-列表为空时直接完成该步骤；全部记录确认 `DELETED` 才持久化 `InstanceForwardingsDeleted` 并进入 `DELETING_NETWORK`。
+删除返回 `DELETED` 后还需完成该内部端口的专属安全组规则清理；返回 `IN_PROGRESS` 后通过 `get` 继续查询，
+查询仍为 `IN_PROGRESS` 只等待，`READY`、`FAILED`、`NOT_FOUND` 时重新提交删除并确认结果。
+`DELETE_FAILED` 持久化为单条删除失败，实例清理仅重试未完成的记录。
+列表为空时直接完成该步骤；全部转发及其专属规则清理完成后才持久化 `InstanceForwardingsDeleted` 并进入 `DELETING_NETWORK`。
 系统转发清理已就绪的映射和当前已开始创建的 claim。用户转发清理 `forwardingStates` 中登记的全部用户转发。
 因此用户创建失败或未保存远端资源 ID 时，仍能按已持久化的转发标识清理可能存在的 claim。
 创建结果尚未返回的系统或用户转发也保留内部 `floatingIpId`，删除和恢复无需重新查询数据库确定 Actor。
@@ -595,9 +596,10 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
 服务器仍存在或查询失败时保持当前阶段；确认不存在（404）后记录 `NovaServerDeleted`，才开始删除端口转发。
 
-`DELETING_FORWARDINGS` 通过 `requestDeletion()` 处理 `forwardingsForDeletion()` 汇总的全部系统及用户转发。
-删除返回 `DELETED` 可直接确认，`IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态；
-全部记录确认 `DELETED` 后才推进到网络清理。
+`DELETING_FORWARDINGS` 通过 `deleteForwardings()` 处理全部系统及用户转发，与单个删除共用逐条删除流程。
+每条转发先持久化 `ForwardingDeletionRequested`，再通过 `requestDeletion()` 提交删除或查询状态。
+删除返回 `DELETED` 后清理该内部端口的专属安全组规则，两步完成才记录 `ForwardingDeleted`；
+`IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态。全部转发完成后记录 `InstanceForwardingsDeleted`，才推进到网络清理。
 查询仍在删除中的 claim 不重复发送删除命令，查到需要删除或重试的 claim 时只对这些记录再次提交。
 查询异常或未确认的结果保持当前阶段，不能作为删除成功处理。
 
@@ -609,9 +611,10 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 网络清理完成后持久化 `InstanceNetworkDeleted`，再在 `DELETING_SECURITY_GROUP` 按项目和操作标识清理专属安全组及规则，
 包括创建成功但响应未持久化的安全组。
 
-任一删除阶段未完成或调用失败时，按 `cloud.instance.poll.max-delay` 仅检查、重试当前阶段，不设置删除等待超时。
-单次状态查询不产生事件，阶段完成才持久化相应事件；Nova 删除受理另由 `NovaDeletionAccepted` 记录。
-已受理的删除在重启后继续，`InstanceRecovery` 按当前持久化阶段独立查询、删除和重试，不调用普通删除的编排方法。
+端口转发按 `cloud.instance.poll.initial-delay` 查询进行中的删除；删除失败和其他删除阶段按 `cloud.instance.poll.max-delay` 检查、重试当前阶段，不设置删除等待超时。
+普通进度查询不产生事件；端口转发逐条持久化删除意图和结果，阶段完成后记录相应完成事件，Nova 删除受理另由 `NovaDeletionAccepted` 记录。
+已受理的删除在重启后继续，端口转发由 `InstanceWorkflowActor` 恢复并复用逐条删除流程；
+其他阶段由 `InstanceRecovery` 按当前持久化阶段独立查询、删除和重试。
 恢复 Nova 阶段时，已有 `NovaDeletionAccepted` 就只查询；尚未记录受理则先查询，存在才提交删除。
 恢复端口转发阶段时先查询各 claim 状态，再决定等待或提交删除；其他阶段只重做该阶段尚未确认完成的幂等操作。
 每个恢复阶段的完成事件持久化后，恢复流程进入下一删除阶段，不回到已经完成的阶段。
@@ -776,7 +779,7 @@ JupyterLab 使用内部端口为 8888 的映射：`http://203.0.113.10:10001/lab
 实例查询在顶层返回 `qosUpdate`；转发操作的内部状态和删除历史仍由实例 Actor 保存，用于恢复和幂等处理。
 
 用户转发删除先等待 FIP claim 返回 `DELETED`，再删除实例安全组中该端口的专属规则，
-两步完成后记录 `UserForwardingDeleted`。重复删除同一 `DELETING` 或 `DELETED` 记录幂等返回。
+两步完成后记录 `ForwardingDeleted`。重复删除同一 `DELETING` 或 `DELETED` 记录幂等返回。
 创建失败、删除失败均保留实例 `ACTIVE` 和操作记录，不自动补偿；失败的用户转发可通过删除接口清理，
 `DELETE_FAILED` 可再次调用删除接口重试。删除整个实例仍统一清理全部 `SYSTEM`、`USER` 转发和专属安全组。
 
@@ -797,7 +800,7 @@ QoS 修改示例：
 成功后 `network.parentQos`、`network.subQos` 更新实际规则 ID 及 `bandwidthLimit`。
 失败不回滚已经修改的远端规则，实例仍为 `ACTIVE`；需使用与失败操作相同的参数重试，完成后才能提交其他限速值。
 
-管理意图分别使用 `ForwardingCreationRequested`、`UserForwardingDeletionRequested`、
+管理意图分别使用 `ForwardingCreationRequested`、`ForwardingDeletionRequested`、
 `InstanceQosUpdateRequested` 持久化，成功和失败使用各自明确的结果事件。
 重启后独立恢复已持久化的创建、删除和 QoS 修改意图：用户转发先查询原 claim 再补充未完成步骤，
 QoS 按保存的目标参数检查并修复部分修改，不重新分配操作标识；已经失败的管理操作等待外部处理。

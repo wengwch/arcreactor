@@ -15,9 +15,9 @@ import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationRequested;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreated;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreationFailed;
-import cn.veryai.arcreactor.actor.instance.event.UserForwardingDeletionRequested;
-import cn.veryai.arcreactor.actor.instance.event.UserForwardingDeleted;
-import cn.veryai.arcreactor.actor.instance.event.UserForwardingDeletionFailed;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingDeletionRequested;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingDeleted;
+import cn.veryai.arcreactor.actor.instance.event.ForwardingDeletionFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
@@ -33,7 +33,6 @@ import cn.veryai.arcreactor.actor.instance.command.ConfirmUnknown;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstance;
 import cn.veryai.arcreactor.actor.instance.command.AllocationReleaseCompleted;
-import cn.veryai.arcreactor.actor.instance.command.ForwardingsDeletionCompleted;
 import cn.veryai.arcreactor.actor.instance.command.InstanceNetworkDeletionCompleted;
 import cn.veryai.arcreactor.actor.instance.command.InstanceSecurityGroupDeletionCompleted;
 import cn.veryai.arcreactor.actor.instance.command.ReservationCancellationCompleted;
@@ -83,7 +82,6 @@ import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPreparationStarted
 import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
 import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
-import cn.veryai.arcreactor.actor.instance.model.ForwardingDeletionTarget;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedDependencies;
@@ -108,6 +106,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -160,7 +159,6 @@ public final class InstanceWorkflowActor
   private String provisioningCheckRequestToken;
   private String novaDeletionRequestToken;
   private String novaDeletionStatusRequestToken;
-  private String forwardingDeletionRequestToken;
   private String networkDeletionRequestToken;
   private String securityGroupDeletionRequestToken;
   private String reservationCancellationRequestToken;
@@ -221,7 +219,7 @@ public final class InstanceWorkflowActor
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
     this.forwardingOperations = new InstanceForwardingOperations(openStackClient, floatingIpForwardings);
-    this.recovery = new InstanceRecovery(placement, openStackClient, floatingIpForwardings,
+    this.recovery = new InstanceRecovery(placement, openStackClient,
         dependencyPreparer, sshChecker, clock);
   }
 
@@ -261,7 +259,6 @@ public final class InstanceWorkflowActor
         .onCommand(RetryConfirm.class, this::onRetryConfirm)
         .onCommand(NovaDeletionChecked.class, this::onNovaDeletionChecked)
         .onCommand(NovaDeletionSubmitted.class, this::onNovaDeletionSubmitted)
-        .onCommand(ForwardingsDeletionCompleted.class, this::onForwardingsDeletionCompleted)
         .onCommand(InstanceNetworkDeletionCompleted.class, this::onInstanceNetworkDeletionCompleted)
         .onCommand(InstanceSecurityGroupDeletionCompleted.class, this::onInstanceSecurityGroupDeletionCompleted)
         .onCommand(ReservationCancellationCompleted.class, this::onReservationCancellationCompleted)
@@ -356,53 +353,69 @@ public final class InstanceWorkflowActor
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeleteForwarding(
       InstanceWorkflowState state, DeleteInstanceForwarding command) {
     if (command.scope() == ForwardingScope.INSTANCE) {
-      if (state.phase() == InstancePhase.DELETING_FORWARDINGS && state.pollingGeneration() == command.generation()) {
-        requestForwardingsDeletion(state, true);
+      if (state.phase() != InstancePhase.DELETING_FORWARDINGS
+          || state.pollingGeneration() != command.generation()) return Effect().none();
+      if (state.forwardingStates().isEmpty()) {
+        return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
+            .thenRun(this::startDeletionStage);
       }
-      return Effect().none();
+      return deleteForwardings(state.forwardingStates().values().stream()
+          .filter(forwarding -> forwarding.phase() != Phase.DELETING)
+          .sorted(java.util.Comparator.comparing(InstanceForwardingState::claimId)).toList(), null);
     }
     if (state.phase() != InstancePhase.ACTIVE) {
       command.replyTo().tell(InstanceMutationReply.rejected("Only ACTIVE instances allow user forwarding management"));
       return Effect().none();
     }
     if (state.preparedForwardings().values().stream().anyMatch(item ->
-        item.kind() == ForwardingKind.SYSTEM && item.claimId().equals(command.forwardingId()))) {
+        item.kind() == ForwardingKind.SYSTEM && item.claimId().equals(command.claimId()))) {
       command.replyTo().tell(InstanceMutationReply.rejected("System forwardings cannot be deleted individually"));
       return Effect().none();
     }
-    InstanceForwardingState forwarding = state.userForwarding(command.forwardingId());
+    InstanceForwardingState forwarding = state.userForwarding(command.claimId());
     if (forwarding == null) {
       command.replyTo().tell(InstanceMutationReply.rejected("User forwarding was not found"));
       return Effect().none();
     }
     Phase phase = forwarding.phase();
     if (phase == Phase.DELETED || phase == Phase.DELETING) {
-      command.replyTo().tell(InstanceMutationReply.accepted(command.forwardingId()));
+      command.replyTo().tell(InstanceMutationReply.accepted(command.claimId()));
       return Effect().none();
     }
     if (state.hasPendingOperation()) {
       command.replyTo().tell(InstanceMutationReply.rejected("Wait for the pending forwarding or QoS operation"));
       return Effect().none();
     }
-    InstanceForwardingState deleting = forwarding.transition(Phase.DELETING, null);
-    return Effect().persist(new UserForwardingDeletionRequested(instanceId, deleting))
-        .thenRun(next -> {
-          command.replyTo().tell(InstanceMutationReply.accepted(command.forwardingId()));
-          requestForwarding(next, deleting, 1, true);
-        });
+    return deleteForwardings(List.of(forwarding), command.replyTo());
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> deleteForwardings(
+      List<InstanceForwardingState> forwardings, ActorRef<InstanceMutationReply> replyTo) {
+    if (forwardings.isEmpty()) return Effect().none();
+    List<InstanceWorkflowEvent> events = new ArrayList<>();
+    List<InstanceForwardingState> deletions = new ArrayList<>();
+    for (InstanceForwardingState forwarding : forwardings) {
+      InstanceForwardingState deleting = forwarding.transition(Phase.DELETING, null);
+      events.add(new ForwardingDeletionRequested(instanceId, deleting));
+      deletions.add(deleting);
+    }
+    return Effect().persist(events).thenRun(next -> {
+      if (replyTo != null) replyTo.tell(InstanceMutationReply.accepted(deletions.getFirst().claimId()));
+      for (InstanceForwardingState deleting : deletions) requestForwarding(next, deleting, 1, true);
+    });
   }
 
   private void requestForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding,
       int attempt, boolean submit) {
     pipeForwarding(forwarding, attempt, submit, () -> forwarding.phase() == Phase.CREATING
         ? forwardingOperations.requestCreation(state, forwarding, submit)
-        : forwardingOperations.requestDeletion(state, forwarding.deletionTarget(), submit));
+        : forwardingOperations.requestDeletion(state, forwarding, submit));
   }
 
   private void recoverForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding) {
     pipeForwarding(forwarding, 1, true, () -> forwarding.phase() == Phase.CREATING
         ? forwardingOperations.recoverForwardingCreation(state, forwarding)
-        : forwardingOperations.recoverForwardingDeletion(state, forwarding.deletionTarget()));
+        : forwardingOperations.requestDeletion(state, forwarding, false));
   }
 
   private void pipeForwarding(InstanceForwardingState forwarding, int attempt, boolean submission,
@@ -444,6 +457,9 @@ public final class InstanceWorkflowActor
 
   private boolean matchesForwarding(InstanceWorkflowState state, InstanceForwardingState forwarding, long generation) {
     if (forwarding == null || !forwarding.inProgress() || forwarding.generation() != generation) return false;
+    if (forwarding.phase() == Phase.DELETING) {
+      return state.phase() == InstancePhase.ACTIVE || state.phase() == InstancePhase.DELETING_FORWARDINGS;
+    }
     return state.phase() == (forwarding.phase() == Phase.CREATING && forwarding.kind() == ForwardingKind.SYSTEM
         ? InstancePhase.PREPARING_FORWARDING : InstancePhase.ACTIVE);
   }
@@ -462,7 +478,7 @@ public final class InstanceWorkflowActor
     if (reply == null) return pollForwarding(forwarding, command.attempt() + 1);
     if (forwarding.phase() == Phase.DELETING) {
       return switch (reply.status()) {
-        case DELETED -> Effect().persist(new UserForwardingDeleted(instanceId, forwarding.transition(Phase.DELETED, null)));
+        case DELETED -> forwardingDeleted(state, forwarding);
         case DELETE_FAILED, REJECTED -> failForwardingDeletion(forwarding, forwardingFailure(reply));
         default -> pollForwarding(forwarding, command.attempt() + 1);
       };
@@ -515,8 +531,22 @@ public final class InstanceWorkflowActor
         .thenRun(next -> creationFailed());
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingDeletion(InstanceForwardingState forwarding, String detail) {
-    return Effect().persist(new UserForwardingDeletionFailed(instanceId, forwarding.transition(Phase.DELETE_FAILED, detail)));
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> forwardingDeleted(
+      InstanceWorkflowState state, InstanceForwardingState forwarding) {
+    var deleted = new ForwardingDeleted(instanceId, forwarding.transition(Phase.DELETED, null));
+    if (state.phase() == InstancePhase.DELETING_FORWARDINGS && state.forwardingStates().size() == 1) {
+      return Effect().persist(List.of(deleted, new InstanceForwardingsDeleted(instanceId, clock.instant())))
+          .thenRun(this::startDeletionStage);
+    }
+    return Effect().persist(deleted);
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> failForwardingDeletion(
+      InstanceForwardingState forwarding, String detail) {
+    return Effect().persist(new ForwardingDeletionFailed(instanceId, forwarding.transition(Phase.DELETE_FAILED, detail)))
+        .thenRun(next -> {
+          if (next.phase() == InstancePhase.DELETING_FORWARDINGS) scheduleDeletionRetry(next, detail);
+        });
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUpdateInstanceQos(
@@ -975,21 +1005,6 @@ public final class InstanceWorkflowActor
         .thenRun(this::scheduleDeletionCheck);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onForwardingsDeletionCompleted(
-      InstanceWorkflowState state, ForwardingsDeletionCompleted command) {
-    if (!matchesDeletion(state, InstancePhase.DELETING_FORWARDINGS, command.generation(),
-        forwardingDeletionRequestToken, command.requestToken())) return Effect().none();
-    forwardingDeletionRequestToken = null;
-    if (command.failure() != null) return retryDeletionStage(state, command.failure());
-    if (command.deleted()) {
-      return Effect().persist(InstanceForwardingsDeleted.completionEvents(state, clock.instant()))
-          .thenRun(this::startDeletionStage);
-    }
-    // A delete reply may only acknowledge acceptance; the next request queries the persisted claim state.
-    scheduleDeletionCheck(state);
-    return Effect().none();
-  }
-
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onInstanceNetworkDeletionCompleted(
       InstanceWorkflowState state, InstanceNetworkDeletionCompleted command) {
     if (!matchesDeletion(state, InstancePhase.DELETING_NETWORK, command.generation(),
@@ -1044,9 +1059,13 @@ public final class InstanceWorkflowActor
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> retryDeletionStage(
       InstanceWorkflowState state, String reason) {
+    scheduleDeletionRetry(state, reason);
+    return Effect().none();
+  }
+
+  private void scheduleDeletionRetry(InstanceWorkflowState state, String reason) {
     context.getLog().warn("Instance deletion incomplete: instanceId={} phase={} reason={}", instanceId, state.phase(), reason);
     scheduleDeletionCheck(state);
-    return Effect().none();
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheckDeletion(
@@ -1054,7 +1073,6 @@ public final class InstanceWorkflowActor
     if (!state.phase().isDeleting() || state.pollingGeneration() != command.generation()) return Effect().none();
     switch (state.phase()) {
       case DELETING_NOVA -> requestNovaDeletionStatus(state);
-      case DELETING_FORWARDINGS -> requestForwardingsDeletion(state, false);
       default -> startDeletionStage(state);
     }
     return Effect().none();
@@ -1186,7 +1204,7 @@ public final class InstanceWorkflowActor
 
   private boolean deletionInFlight() {
     return novaDeletionRequestToken != null || novaDeletionStatusRequestToken != null
-        || forwardingDeletionRequestToken != null
+        || !forwardingRequests.isEmpty()
         || networkDeletionRequestToken != null || securityGroupDeletionRequestToken != null
         || reservationCancellationRequestToken != null || allocationReleaseRequestToken != null;
   }
@@ -1225,27 +1243,6 @@ public final class InstanceWorkflowActor
     }
     context.pipeToSelf(request, (ignored, error) -> new NovaDeletionSubmitted(
         state.pollingGeneration(), token, osServerId, error == null ? null : rootCause(error).toString()));
-  }
-
-  private void requestForwardingsDeletion(InstanceWorkflowState state, boolean submit) {
-    if (state.phase() != InstancePhase.DELETING_FORWARDINGS || deletionInFlight()) return;
-    String token = UUID.randomUUID().toString();
-    forwardingDeletionRequestToken = token;
-    CompletionStage<Boolean> request;
-    try {
-      List<CompletableFuture<ForwardingReply>> deletions = new ArrayList<>();
-      for (ForwardingDeletionTarget forwarding : state.forwardingsForDeletion()) {
-        deletions.add(forwardingOperations.requestDeletion(state, forwarding, submit)
-            .toCompletableFuture());
-      }
-      request = CompletableFuture.allOf(deletions.toArray(CompletableFuture[]::new))
-          .thenApply(ignored -> deletions.stream().map(CompletableFuture::join)
-              .allMatch(reply -> reply != null && reply.status() == ForwardingReply.Status.DELETED));
-    } catch (RuntimeException error) {
-      request = CompletableFuture.failedFuture(error);
-    }
-    context.pipeToSelf(request, (deleted, error) -> new ForwardingsDeletionCompleted(
-        state.pollingGeneration(), token, Boolean.TRUE.equals(deleted), error == null ? null : rootCause(error).toString()));
   }
 
   private void requestInstanceNetworkDeletion(InstanceWorkflowState state) {
@@ -1339,9 +1336,9 @@ public final class InstanceWorkflowActor
         .onEvent(ForwardingCreationRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(ForwardingCreated.class, (state, event) -> state.forwardingCreated(event.forwarding(), event.resources()))
         .onEvent(ForwardingCreationFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(UserForwardingDeletionRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
-        .onEvent(UserForwardingDeleted.class, (state, event) -> state.userForwardingDeleted(event.forwarding()))
-        .onEvent(UserForwardingDeletionFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
+        .onEvent(ForwardingDeletionRequested.class, (state, event) -> state.forwardingChanged(event.forwarding()))
+        .onEvent(ForwardingDeleted.class, (state, event) -> state.forwardingDeleted(event.forwarding()))
+        .onEvent(ForwardingDeletionFailed.class, (state, event) -> state.forwardingChanged(event.forwarding()))
         .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.qosUpdateChanged(event.update()))
         .onEvent(InstanceQosUpdated.class, (state, event) -> state.qosUpdated(event.update(), event.resources()))
         .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.qosUpdateChanged(event.update()))
@@ -1414,7 +1411,6 @@ public final class InstanceWorkflowActor
     provisioningCheckRequestToken = null;
     novaDeletionRequestToken = null;
     novaDeletionStatusRequestToken = null;
-    forwardingDeletionRequestToken = null;
     networkDeletionRequestToken = null;
     securityGroupDeletionRequestToken = null;
     reservationCancellationRequestToken = null;
@@ -1425,6 +1421,10 @@ public final class InstanceWorkflowActor
             + "workflowVersion={} hypervisorId={} reservationId={} novaOperationId={} osNovaServerId={}",
         instanceId, state.requestId(), state.phase(), state.version(), state.hypervisorId(),
         state.reservationId(), state.novaOperationId(), state.osNovaServerId());
+    if (state.phase() == InstancePhase.DELETING_FORWARDINGS) {
+      recoverForwardingsDeletion(state);
+      return;
+    }
     recoveringPhase = state.phase().isDeleting() ? state.phase() : switch (state.phase()) {
       case SCHEDULING, RESERVING_RESOURCES, PREPARING_DEPENDENCIES, PREPARING_SECURITY_GROUP,
           PREPARING_NETWORK,
@@ -1486,8 +1486,12 @@ public final class InstanceWorkflowActor
           continueCreationAfterRecovery(next);
         }
         case CONTINUE_DELETION -> {
-          recoveringPhase = next.phase();
-          requestRecovery(next, 1);
+          if (next.phase() == InstancePhase.DELETING_FORWARDINGS) {
+            recoverForwardingsDeletion(next);
+          } else {
+            recoveringPhase = next.phase();
+            requestRecovery(next, 1);
+          }
         }
         case STOP -> {
           finishRecovery();
@@ -1500,6 +1504,14 @@ public final class InstanceWorkflowActor
 
   private boolean matchesRecovery(InstanceWorkflowState state, InstancePhase phase, long generation) {
     return recoveringPhase == phase && state.phase() == phase && state.pollingGeneration() == generation;
+  }
+
+  private void recoverForwardingsDeletion(InstanceWorkflowState state) {
+    finishRecovery();
+    for (InstanceForwardingState forwarding : state.forwardingStates().values()) {
+      if (forwarding.phase() == Phase.DELETING) recoverForwarding(state, forwarding);
+    }
+    startDeletionStage(state);
   }
 
   private void scheduleRecovery(InstanceWorkflowState state, int attempt) {

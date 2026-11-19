@@ -7,7 +7,6 @@ import cn.veryai.arcreactor.actor.fip.FloatingIpSettings;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
 import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
-import cn.veryai.arcreactor.actor.instance.model.ForwardingDeletionTarget;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
@@ -38,13 +37,8 @@ final class InstanceForwardingOperations {
         .thenCompose(reply -> ensureAccessAfterCreation(state, forwarding, spec, reply));
   }
 
-  CompletionStage<ForwardingReply> requestDeletion(InstanceWorkflowState state, ForwardingDeletionTarget forwarding,
+  CompletionStage<ForwardingReply> requestDeletion(InstanceWorkflowState state, InstanceForwardingState forwarding,
       boolean submit) {
-    boolean singleDeletion = switch (state.phase()) {
-      case ACTIVE -> true;
-      case DELETING_FORWARDINGS -> false;
-      default -> throw new IllegalStateException("Cannot delete a forwarding in phase " + state.phase());
-    };
     String floatingIpId = forwarding.floatingIpId();
     String claimId = forwarding.claimId();
     CompletionStage<ForwardingReply> request;
@@ -55,15 +49,12 @@ final class InstanceForwardingOperations {
         if (reply == null) return CompletableFuture.completedFuture(null);
         boolean retryDelete = switch (reply.status()) {
           case READY, FAILED, NOT_FOUND -> true;
-          case DELETE_FAILED -> !singleDeletion;
-          case DELETED, IN_PROGRESS, REJECTED -> false;
+          case DELETED, IN_PROGRESS, REJECTED, DELETE_FAILED -> false;
         };
         return retryDelete ? forwardings.delete(floatingIpId, claimId) : CompletableFuture.completedFuture(reply);
       });
     }
-    return singleDeletion
-        ? request.thenCompose(reply -> cleanAccessAfterDeletion(state, forwarding.internalPort(), reply))
-        : request;
+    return request.thenCompose(reply -> cleanAccessAfterDeletion(state, forwarding.internalPort(), reply));
   }
 
   /** Query first on recovery; only an absent claim allows submitting its durable creation intent again. */
@@ -76,21 +67,6 @@ final class InstanceForwardingOperations {
           }
           return forwardings.create(forwarding.floatingIpId(), forwarding.claimId(), spec);
         })).thenCompose(reply -> ensureAccessAfterCreation(state, forwarding, spec, reply));
-  }
-
-  /** A persisted deletion is resumed independently of normal submission. */
-  CompletionStage<ForwardingReply> recoverForwardingDeletion(InstanceWorkflowState state, ForwardingDeletionTarget forwarding) {
-    return forwardings.get(forwarding.floatingIpId(), forwarding.claimId())
-        .thenCompose(reply -> {
-          if (reply == null || reply.status() == ForwardingReply.Status.IN_PROGRESS) {
-            return CompletableFuture.completedFuture(reply);
-          }
-          if (reply.status() == ForwardingReply.Status.DELETED) {
-            return cleanAccessAfterDeletion(state, forwarding.internalPort(), reply);
-          }
-          return forwardings.delete(forwarding.floatingIpId(), forwarding.claimId())
-              .thenCompose(deleted -> cleanAccessAfterDeletion(state, forwarding.internalPort(), deleted));
-        });
   }
 
   private static ForwardingSpec targetSpec(InstanceWorkflowState state, InstanceForwardingState forwarding) {

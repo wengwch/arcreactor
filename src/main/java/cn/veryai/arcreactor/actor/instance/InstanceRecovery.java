@@ -2,11 +2,8 @@ package cn.veryai.arcreactor.actor.instance;
 
 import static cn.veryai.arcreactor.actor.instance.InstanceOperationIds.*;
 
-import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
-import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.hypervisor.HypervisorPlacement;
 import cn.veryai.arcreactor.actor.instance.event.*;
-import cn.veryai.arcreactor.actor.instance.model.ForwardingDeletionTarget;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
@@ -43,16 +40,14 @@ public final class InstanceRecovery {
 
   private final HypervisorPlacement placement;
   private final OpenStackClient client;
-  private final FloatingIpForwardings forwardings;
   private final InstanceDependencyPreparer dependencies;
   private final InstanceSshChecker sshChecker;
   private final Clock clock;
 
-  InstanceRecovery(HypervisorPlacement placement, OpenStackClient client, FloatingIpForwardings forwardings,
+  InstanceRecovery(HypervisorPlacement placement, OpenStackClient client,
       InstanceDependencyPreparer dependencies, InstanceSshChecker sshChecker, Clock clock) {
     this.placement = placement;
     this.client = client;
-    this.forwardings = forwardings;
     this.dependencies = dependencies;
     this.sshChecker = sshChecker;
     this.clock = clock;
@@ -69,7 +64,6 @@ public final class InstanceRecovery {
         case PROVISIONING -> recoverProvisioning(state);
         case CONFIRMING -> recoverConfirmation(state);
         case DELETING_NOVA -> recoverNovaDeletion(state);
-        case DELETING_FORWARDINGS -> recoverForwardingDeletion(state);
         case DELETING_NETWORK -> recoverNetworkDeletion(state);
         case DELETING_SECURITY_GROUP -> recoverSecurityGroupDeletion(state);
         case CANCELLING_RESERVATION -> recoverReservationCancellation(state);
@@ -239,28 +233,6 @@ public final class InstanceRecovery {
   private CompletionStage<Outcome> recoverNovaDeletion(InstanceWorkflowState state, String osServerId) {
     return client.deleteServer(target(state), osServerId).thenApply(ignored -> new Outcome(
         List.of(new NovaDeletionAccepted(state.instanceId(), osServerId, clock.instant())), Action.RETRY));
-  }
-
-  private CompletionStage<Outcome> recoverForwardingDeletion(InstanceWorkflowState state) {
-    List<CompletableFuture<Boolean>> requests = new ArrayList<>();
-    for (ForwardingDeletionTarget forwarding : state.forwardingsForDeletion()) {
-      String floatingIpId = forwarding.floatingIpId();
-      String claimId = forwarding.claimId();
-      requests.add(forwardings.get(floatingIpId, claimId).thenCompose(reply -> {
-        if (reply == null) return CompletableFuture.completedFuture(false);
-        return switch (reply.status()) {
-          case DELETED -> CompletableFuture.completedFuture(true);
-          case IN_PROGRESS, REJECTED -> CompletableFuture.completedFuture(false);
-          case READY, FAILED, DELETE_FAILED, NOT_FOUND ->
-              forwardings.delete(floatingIpId, claimId).thenApply(deleted ->
-                  deleted != null && deleted.status() == ForwardingReply.Status.DELETED);
-        };
-      }).toCompletableFuture());
-    }
-    return CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new))
-        .thenApply(ignored -> requests.stream().allMatch(CompletableFuture::join)
-            ? new Outcome(InstanceForwardingsDeleted.completionEvents(state, clock.instant()), Action.CONTINUE_DELETION)
-            : retry());
   }
 
   private CompletionStage<Outcome> recoverNetworkDeletion(InstanceWorkflowState state) {

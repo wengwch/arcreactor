@@ -59,14 +59,17 @@ public record InstanceWorkflowState(
         return withForwarding(forwarding, nextPrepared);
     }
 
-    public InstanceWorkflowState userForwardingDeleted(InstanceForwardingState forwarding) {
+    public InstanceWorkflowState forwardingDeleted(InstanceForwardingState forwarding) {
         String claimId = forwarding.claimId();
         if (deletedUserForwardings.containsKey(claimId)) return touch();
         int port = forwarding.internalPort();
         PreparedForwarding resources = preparedForwardings.get(port);
         if (resources != null && !claimId.equals(resources.claimId())) resources = null;
-        Map<String, DeletedForwarding> deleted = new HashMap<>(deletedUserForwardings);
-        deleted.put(claimId, new DeletedForwarding(forwarding, resources));
+        Map<String, DeletedForwarding> deleted = deletedUserForwardings;
+        if (forwarding.kind() == ForwardingKind.USER) {
+            deleted = new HashMap<>(deletedUserForwardings);
+            deleted.put(claimId, new DeletedForwarding(forwarding, resources));
+        }
         InstanceForwardingState current = forwardingStates.get(port);
         if (current == null || !claimId.equals(current.claimId())) {
             return withUpdatedResources(forwardingStates, preparedForwardings, deleted, networkPreparation, qosUpdate);
@@ -145,14 +148,6 @@ public record InstanceWorkflowState(
                 || forwardingStates.values().stream().anyMatch(forwarding ->
                         forwarding.phase() == InstanceForwardingState.Phase.DELETING
                         || (forwarding.phase() == InstanceForwardingState.Phase.CREATING && forwarding.kind() == ForwardingKind.USER));
-    }
-
-    /** Every accepted claim can own resources even before the instance receives its ready event. */
-    public List<ForwardingDeletionTarget> forwardingsForDeletion() {
-        return forwardingStates.values().stream().map(forwarding -> {
-            PreparedForwarding resources = preparedForwardings.get(forwarding.internalPort());
-            return resources == null ? forwarding.deletionTarget() : ForwardingDeletionTarget.from(resources);
-        }).sorted(Comparator.comparing(ForwardingDeletionTarget::claimId)).toList();
     }
 
     public String osProjectId() { return dependencies == null ? null : dependencies.osProjectId(); }

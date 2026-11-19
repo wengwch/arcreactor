@@ -49,8 +49,4 @@ public record InstanceForwardingState(int internalPort, ForwardingKind kind, Str
   public boolean inProgress() {
     return phase == Phase.CREATING || phase == Phase.DELETING;
   }
-
-  public ForwardingDeletionTarget deletionTarget() {
-    return new ForwardingDeletionTarget(claimId, floatingIpId(), internalPort);
-  }
 }
