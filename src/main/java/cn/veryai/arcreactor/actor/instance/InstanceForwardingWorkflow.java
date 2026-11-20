@@ -12,7 +12,7 @@ import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.ForwardingStatusCompleted;
-import cn.veryai.arcreactor.actor.instance.command.InstanceForwardingsChanged;
+import cn.veryai.arcreactor.actor.instance.command.ReconcileInstanceForwardings;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCandidateSelected;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingCreated;
@@ -115,7 +115,7 @@ final class InstanceForwardingWorkflow {
       return effects.reply(command.replyTo(), InstanceMutationReply.rejected(
           "Wait for the pending instance management operation"));
     }
-    return delete(List.of(forwarding))
+    return delete(forwarding)
         .thenReply(command.replyTo(), next -> InstanceMutationReply.accepted(command.claimId()));
   }
 
@@ -124,16 +124,11 @@ final class InstanceForwardingWorkflow {
         .thenRun(next -> request(next, forwarding, 1, true));
   }
 
-  EffectBuilder<InstanceWorkflowEvent, InstanceWorkflowState> delete(List<InstanceForwardingState> forwardings) {
-    List<InstanceForwardingState> deletions = forwardings.stream()
-        .filter(forwarding -> forwarding.phase() != Phase.DELETING)
-        .map(forwarding -> forwarding.transition(Phase.DELETING, null)).toList();
-    if (deletions.isEmpty()) return effects.none();
-    List<InstanceWorkflowEvent> events = deletions.stream()
-        .<InstanceWorkflowEvent>map(forwarding -> new ForwardingDeletionRequested(instanceId, forwarding)).toList();
-    return effects.persist(events).thenRun(next -> {
-      for (InstanceForwardingState deleting : deletions) request(next, deleting, 1, true);
-    });
+  EffectBuilder<InstanceWorkflowEvent, InstanceWorkflowState> delete(InstanceForwardingState forwarding) {
+    if (forwarding.phase() == Phase.DELETING) return effects.none();
+    InstanceForwardingState deleting = forwarding.transition(Phase.DELETING, null);
+    return effects.persist(new ForwardingDeletionRequested(instanceId, deleting))
+        .thenRun(next -> request(next, deleting, 1, true));
   }
 
   Effect<InstanceWorkflowEvent, InstanceWorkflowState> onCheck(
@@ -322,7 +317,7 @@ final class InstanceForwardingWorkflow {
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> completed(InstanceForwardingEvent event) {
     return effects.persist(event).thenRun(next -> {
       timers.cancel(timerKey(event.forwarding()));
-      context.getSelf().tell(new InstanceForwardingsChanged(next.pollingGeneration()));
+      context.getSelf().tell(new ReconcileInstanceForwardings(next.pollingGeneration()));
     });
   }
 

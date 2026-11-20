@@ -398,12 +398,13 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 `InstanceForwardingWorkflow` 统一处理转发创建、删除、候选切换、轮询、恢复和安全组规则维护，直接依赖 `FloatingIpForwardings` 和 `OpenStackClient`。
 命令和结果在实例 Actor 的同一邮箱中处理，事件仍写入原实例日志。
 用户管理使用 `CreateInstanceForwarding`、`DeleteInstanceForwarding`，不再携带 `instanceInitialization`、`scope` 或实例阶段的 generation。
-实例创建通过内部 `PrepareInstanceForwardings` 逐个准备系统端口，实例删除通过 `DeleteInstanceForwardings` 清理全部转发。
+系统转发初始化、实例转发清理及对应阶段恢复统一通过内部 `ReconcileInstanceForwardings` 检查并推进当前阶段：
+初始化时逐个准备系统端口，清理时按 claim ID 顺序逐条删除转发并检查是否全部完成；删除失败由 `CheckDeletion` 定时重试。
 两类入口只共用转发执行逻辑，用户操作的受理、拒绝和回复不参与实例创建、删除编排。
 创建先持久化 `ForwardingCreationRequested`，再按 claim ID 提交创建和查询。
 FIP 返回有效的 `READY` 后，处理器补建该内部端口缺失的 TCP、UDP 入站规则，再持久化 `ForwardingCreated`。
 失败则持久化 `ForwardingCreationFailed`，转发状态同时保存失败代码和原因。
-转发结果持久化后发送 `InstanceForwardingsChanged`，由实例主流程重新检查当前阶段。
+转发结果持久化后同样发送 `ReconcileInstanceForwardings`，由实例主流程校验 generation 后重新检查并推进当前阶段。
 系统端口全部 `READY` 后才持久化 `NovaCreationStarted` 并进入 `PROVISIONING`；系统端口失败由主流程记录实例创建失败。
 用户端口创建完成或失败只更新转发状态。
 实例状态只保存以 `claimId` 为键的 `forwardingStates`，每个 `InstanceForwardingState` 同时保存生命周期和可空的 `InstanceForwardingResources resources`。
@@ -702,13 +703,17 @@ Nova 删除提交与查询、网络删除、安全组删除、取消预留和释
 此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
 服务器仍存在或查询失败时在检查次数上限内保持当前阶段；确认不存在（404）后记录 `NovaServerDeleted`，才开始删除端口转发。
 
-`DELETING_FORWARDINGS` 通过内部 `DeleteInstanceForwardings` 委托 `InstanceForwardingWorkflow.delete()` 处理全部系统及用户转发。
-用户的单条删除命令独立校验和回复，批量清理入口只处理尚未进入 `DELETING` 的记录。
+`DELETING_FORWARDINGS` 通过内部 `ReconcileInstanceForwardings` 调用 `deleteInstanceForwardings()`，与准备转发一样逐条推进。
+删除方法统一处理等待、失败重试和阶段完成，按 claim ID 顺序选择一条剩余记录，委托 `InstanceForwardingWorkflow.delete()` 删除。
+存在 `DELETING` 记录时先等待其完成，结果持久化并移除记录后再处理下一条；恢复出的多条在途删除也先等待完成，不继续启动其他记录。
+当前记录为 `DELETE_FAILED` 时等待定时重试；用户的单条删除命令仍独立校验和回复。
+`CheckDeletion` 校验 generation、检查次数及上限后调用同一清理方法，允许重试 `DELETE_FAILED`；
+对于失败记录，转发结果通知只安排定时重试；已有检查定时器不会因结果通知而延期。
 每条转发先持久化 `ForwardingDeletionRequested`，再通过 `requestDeletion()` 提交删除或查询状态。
 删除返回 `DELETED` 后清理该内部端口的专属安全组规则，两步完成才记录 `ForwardingDeleted`；
 `IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态。结果通知到达后，实例主流程确认转发集合为空，
 再记录 `InstanceForwardingsDeleted` 并推进到网络清理；存在 `DELETE_FAILED` 时由主流程安排阶段重试。
-进入 `DELETING_FORWARDINGS` 即启动主流程的 `CheckDeletion`，检查剩余转发记录；各 claim 的独立查询继续进行，子请求在途也计入主流程检查次数。
+进入 `DELETING_FORWARDINGS` 即启动主流程的 `CheckDeletion`，检查剩余转发记录；各 claim 的独立查询继续进行，子请求在途也计入主流程检查次数，切换到下一条转发不重置次数。
 达到上限时，同批将仍处于 `DELETING` 的转发通过 `ForwardingDeletionFailed` 置为 `DELETE_FAILED`，避免在途操作标记阻止外部重新删除实例。
 查询仍在删除中的 claim 不重复发送删除命令，查到需要删除或重试的 claim 时只对这些记录再次提交。
 查询异常或未确认的结果保持当前阶段，不能作为删除成功处理。

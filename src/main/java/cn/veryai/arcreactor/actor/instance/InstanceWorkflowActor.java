@@ -11,9 +11,7 @@ import cn.veryai.arcreactor.actor.instance.command.RebuildInstance;
 import cn.veryai.arcreactor.actor.instance.command.CheckServerOperation;
 import cn.veryai.arcreactor.actor.instance.command.ServerOperationSubmitted;
 import cn.veryai.arcreactor.actor.instance.command.ServerOperationChecked;
-import cn.veryai.arcreactor.actor.instance.command.PrepareInstanceForwardings;
-import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwardings;
-import cn.veryai.arcreactor.actor.instance.command.InstanceForwardingsChanged;
+import cn.veryai.arcreactor.actor.instance.command.ReconcileInstanceForwardings;
 import cn.veryai.arcreactor.actor.instance.command.QosUpdateCompleted;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState.Phase;
@@ -229,9 +227,7 @@ public final class InstanceWorkflowActor
         .onCommand(DeleteInstance.class, this::onDelete)
         .onCommand(CreateInstanceForwarding.class, forwardings::onCreate)
         .onCommand(DeleteInstanceForwarding.class, forwardings::onDelete)
-        .onCommand(PrepareInstanceForwardings.class, this::onPrepareInstanceForwardings)
-        .onCommand(DeleteInstanceForwardings.class, this::onDeleteInstanceForwardings)
-        .onCommand(InstanceForwardingsChanged.class, this::onInstanceForwardingsChanged)
+        .onCommand(ReconcileInstanceForwardings.class, this::onReconcileInstanceForwardings)
         .onCommand(UpdateInstanceQos.class, this::onUpdateInstanceQos)
         .onCommand(QosUpdateCompleted.class, this::onQosUpdateCompleted)
         .onCommand(RebootInstance.class, serverOperations::onReboot)
@@ -301,13 +297,6 @@ public final class InstanceWorkflowActor
             });
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onPrepareInstanceForwardings(
-      InstanceWorkflowState state, PrepareInstanceForwardings command) {
-    if (state.phase() != InstancePhase.PREPARING_FORWARDING
-        || state.pollingGeneration() != command.generation()) return Effect().none();
-    return prepareInstanceForwardings(state);
-  }
-
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> prepareInstanceForwardings(InstanceWorkflowState state) {
     for (int port : state.spec().forwarding().internalPorts()) {
       InstanceForwardingState forwarding = state.forwardingByInternalPort(port);
@@ -324,31 +313,31 @@ public final class InstanceWorkflowActor
     return Effect().persist(novaCreationStarted(state, clock.instant())).thenRun(this::requestNovaCreation);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeleteInstanceForwardings(
-      InstanceWorkflowState state, DeleteInstanceForwardings command) {
-    if (state.phase() != InstancePhase.DELETING_FORWARDINGS
-        || state.pollingGeneration() != command.generation()) return Effect().none();
-    if (state.forwardingStates().isEmpty()) return completeForwardingCleanup();
-    return forwardings.delete(state.forwardingStates().values().stream()
-        .sorted(java.util.Comparator.comparing(InstanceForwardingState::claimId)).toList());
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onInstanceForwardingsChanged(
-      InstanceWorkflowState state, InstanceForwardingsChanged command) {
-    if (state.pollingGeneration() != command.generation()) return Effect().none();
-    if (state.phase() == InstancePhase.PREPARING_FORWARDING) return prepareInstanceForwardings(state);
-    if (state.phase() == InstancePhase.DELETING_FORWARDINGS) {
-      if (state.forwardingStates().isEmpty()) return completeForwardingCleanup();
-      state.forwardingStates().values().stream()
-          .filter(forwarding -> forwarding.phase() == Phase.DELETE_FAILED).findFirst()
-          .ifPresent(forwarding -> scheduleDeletionRetry(state, forwarding.failure()));
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> deleteInstanceForwardings(
+      InstanceWorkflowState state, boolean retryFailed) {
+    var remaining = state.forwardingStates().values();
+    // Recovery can restore several deletions already in progress; finish them before starting another.
+    if (remaining.stream().anyMatch(forwarding -> forwarding.phase() == Phase.DELETING)) {
+      return Effect().none();
     }
-    return Effect().none();
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> completeForwardingCleanup() {
+    InstanceForwardingState forwarding = remaining.stream()
+        .min(java.util.Comparator.comparing(InstanceForwardingState::claimId)).orElse(null);
+    if (forwarding != null) {
+      if (forwarding.phase() == Phase.DELETE_FAILED && !retryFailed) {
+        return retryDeletionStage(state, forwarding.failure());
+      }
+      return forwardings.delete(forwarding);
+    }
     return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
         .thenRun(this::startDeletionStage);
+  }
+
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onReconcileInstanceForwardings(
+      InstanceWorkflowState state, ReconcileInstanceForwardings command) {
+    if (state.pollingGeneration() != command.generation()) return Effect().none();
+    if (state.phase() == InstancePhase.PREPARING_FORWARDING) return prepareInstanceForwardings(state);
+    if (state.phase() == InstancePhase.DELETING_FORWARDINGS) return deleteInstanceForwardings(state, false);
+    return Effect().none();
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUpdateInstanceQos(
@@ -499,11 +488,11 @@ public final class InstanceWorkflowActor
           command.failure() == null ? "Missing instance network preparation result" : command.failure());
     }
     return Effect().persist(List.of(new NetworkPrepared(instanceId, command.resources()),
-        new ForwardingPreparationStarted(instanceId))).thenRun(this::startForwardingPreparation);
+        new ForwardingPreparationStarted(instanceId))).thenRun(this::reconcileInstanceForwardings);
   }
 
-  private void startForwardingPreparation(InstanceWorkflowState state) {
-    context.getSelf().tell(new PrepareInstanceForwardings(state.pollingGeneration()));
+  private void reconcileInstanceForwardings(InstanceWorkflowState state) {
+    context.getSelf().tell(new ReconcileInstanceForwardings(state.pollingGeneration()));
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSchedulingCompleted(
@@ -850,7 +839,7 @@ public final class InstanceWorkflowActor
       return Effect().none();
     }
     boolean deletingForwardings = state.phase() == InstancePhase.DELETING_FORWARDINGS;
-    if (deletingForwardings && state.forwardingStates().isEmpty()) return completeForwardingCleanup();
+    if (deletingForwardings && state.forwardingStates().isEmpty()) return deleteInstanceForwardings(state, false);
     if (command.attempt() > settings.maxDeletionPollAttempts()
         || (deletingForwardings && command.attempt() == settings.maxDeletionPollAttempts())) {
       return failDeletion(state);
@@ -858,6 +847,10 @@ public final class InstanceWorkflowActor
     deletionPollAttempt = command.attempt();
     switch (state.phase()) {
       case DELETING_NOVA -> requestNovaDeletionStatus(state);
+      case DELETING_FORWARDINGS -> {
+        scheduleDeletionCheck(state);
+        return deleteInstanceForwardings(state, true);
+      }
       default -> startDeletionStage(state, command.attempt());
     }
     return Effect().none();
@@ -999,7 +992,7 @@ public final class InstanceWorkflowActor
         }
       }
       case DELETING_FORWARDINGS -> {
-        context.getSelf().tell(new DeleteInstanceForwardings(state.pollingGeneration()));
+        reconcileInstanceForwardings(state);
         scheduleDeletionCheck(state);
       }
       case DELETING_NETWORK -> requestInstanceNetworkDeletion(state);
@@ -1215,7 +1208,7 @@ public final class InstanceWorkflowActor
       case PREPARING_NETWORK -> requestNetwork(state);
       case PREPARING_FORWARDING -> {
         forwardings.recover(state);
-        startForwardingPreparation(state);
+        reconcileInstanceForwardings(state);
       }
       case PROVISIONING -> requestProvisioningCheck(state, 1);
       case CONFIRMING -> scheduleConfirmRetry(state, 0);
