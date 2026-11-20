@@ -38,11 +38,17 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateScheduling(
+            @Param("instanceId") String instanceId,
+            @Param("phase") InstancePhase phase,
+            @Param("reservationId") String reservationId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updateHypervisor(
             @Param("instanceId") String instanceId,
             @Param("phase") InstancePhase phase,
             @Param("hypervisorId") String hypervisorId,
-            @Param("reservationId") String reservationId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

@@ -70,7 +70,9 @@ public final class PekkoRuntime {
       InstanceWorkflowSettings instanceSettings =
           new InstanceWorkflowSettings(
               Duration.ofMillis(config.getInstancePollInitialDelay().toMillis()),
-              Duration.ofMillis(config.getInstancePollMaxDelay().toMillis()));
+              Duration.ofMillis(config.getInstancePollMaxDelay().toMillis()),
+              config.getInstanceReservationMaxRetries(), config.getInstanceConfirmMaxRetries(),
+              config.getInstanceProvisioningMaxPollAttempts(), config.getInstanceDeletionMaxPollAttempts());
       UserShareSettings userSettings =
           new UserShareSettings(config.getUserSharePollInterval());
       FloatingIpSettings floatingIpSettings = new FloatingIpSettings(
@@ -178,6 +180,22 @@ public final class PekkoRuntime {
 
     public Duration getInstancePollMaxDelay() {
       return source.getDuration("cloud.instance.poll.max-delay");
+    }
+
+    public int getInstanceReservationMaxRetries() {
+      return source.getInt("cloud.instance.reservation.max-retries");
+    }
+
+    public int getInstanceConfirmMaxRetries() {
+      return source.getInt("cloud.instance.confirm.max-retries");
+    }
+
+    public int getInstanceProvisioningMaxPollAttempts() {
+      return source.getInt("cloud.instance.provisioning.max-poll-attempts");
+    }
+
+    public int getInstanceDeletionMaxPollAttempts() {
+      return source.getInt("cloud.instance.deletion.max-poll-attempts");
     }
 
     public Duration getUserSharePollInterval() {

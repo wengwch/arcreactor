@@ -218,16 +218,16 @@ public record InstanceWorkflowState(
                 novaDeletionAccepted, remainingHypervisorIds, qosUpdate, nextSpec.osImageId(), serverOperation);
     }
 
-    public InstanceWorkflowState scheduling() {
-        return copy(requestId, InstancePhase.SCHEDULING, spec, hypervisorId, reservationId,
+    public InstanceWorkflowState scheduling(String nextReservationId) {
+        return copy(requestId, InstancePhase.SCHEDULING, spec, hypervisorId, nextReservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, failureCode, failureMessage);
     }
 
-    public InstanceWorkflowState reservingResources(String nextHypervisorId, String nextReservationId,
+    public InstanceWorkflowState reservingResources(String nextHypervisorId,
             List<String> nextRemainingHypervisorIds) {
         return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.RESERVING_RESOURCES, spec,
-                nextHypervisorId, nextReservationId,
+                nextHypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, failureCode, failureMessage, version + 1,
                 forwardingStates, networkPreparation,
@@ -235,9 +235,9 @@ public record InstanceWorkflowState(
                 qosUpdate, osImageId, serverOperation);
     }
 
-    public InstanceWorkflowState hypervisorSelected(String nextHypervisorId, String nextReservationId) {
+    public InstanceWorkflowState hypervisorSelected(String nextHypervisorId) {
         return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.RESERVING_RESOURCES, spec,
-                nextHypervisorId, nextReservationId,
+                nextHypervisorId, reservationId,
                 novaOperationId, osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration, failureCode, failureMessage, version + 1,
                 forwardingStates, networkPreparation,

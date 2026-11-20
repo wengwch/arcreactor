@@ -145,11 +145,11 @@ Actor 直接按区域和浮动 IP ID 启动并恢复日志，不使用 `withStas
 包括默认的 `22`、`8888`；实例创建完成后通过管理 API 新增的转发为 `USER`。
 系统转发不支持单独删除，只能随整个实例删除；用户转发可以单独创建和删除。
 
-实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先创建
-QoS 和限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
+实例的父端口和子端口各自绑定一个专用 QoS policy。OpenStack 端口创建方法内部先查询或创建
+QoS policy，按需补建限速规则，再通过端口创建请求的 `qos_policy_id` 完成绑定，Actor 无需单独编排 QoS 创建和绑定。
 创建和恢复查询结果通过 `PreparedNetwork.parentQos`、`subQos` 保存各端口的 `osPolicyId`、
-`osIngressRuleId`、`osEgressRuleId` 和当前 `bandwidthLimit`，随 `NetworkPrepared` 一次持久化，并写入 `instance_view`。
-不限速时仍保存 policy ID，两个 rule ID 为 NULL；后续子端口和 Trunk 创建保留前序 QoS 记录。
+`osIngressRuleId`、`osEgressRuleId` 和请求目标 `bandwidthLimit`，随 `NetworkPrepared` 一次持久化，并写入 `instance_view`；目标限速不代表重新读取到的实际规则参数。
+准备时不限速则不新建规则，已有规则仍保留并记录 ID；没有对应规则时 ID 为 NULL，policy ID 始终保留，后续子端口和 Trunk 创建沿用前序 QoS 记录。
 创建 Command 的 `spec.network.parentPortBandwidthLimit` 和 `spec.network.subPortBandwidthLimit`
 分别携带父、子端口限速，随实例创建事件持久化；恢复时沿用提交时的值。
 服务层从以上配置组装这两个参数，直接发送 `CreateInstance` 命令的调用方可以逐实例传入不同限速：
@@ -161,14 +161,14 @@ NetworkRequirement network = new NetworkRequirement(segmentationId, userNetworkS
 // 将 network 传入 InstanceSpec，再通过 CreateInstance 命令提交。
 ```
 
-每个端口的同一组参数分别创建 ingress 和 egress 两条规则。`maxKbps` 单位为 kbit/s，
+有限速时，每个端口按同一组参数补建缺失的 ingress、egress 规则。`maxKbps` 单位为 kbit/s，
 `maxBurstKbits` 单位为 kbit（对应 Neutron 的 `max_burst_kbps` 字段）。
 单位和方向遵循 [OpenStack 带宽限速规则 API](https://docs.openstack.org/api-ref/network/v2/index.html#create-bandwidth-limit-rule)。
 两个值均不得为负；`maxKbps = 0` 表示不创建限速规则，此时 `maxBurstKbits` 也必须为 0。
 YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，排查空 policy 时先检查是否被配置为 `0 / 0`。
 调整默认配置仅影响之后提交的实例；创建中的工作流继续使用创建事件中持久化的限速值。
 运行中实例的限速通过下文 QoS 管理 API 修改，修改意图和结果独立持久化，重启不从当前默认配置取值。
-已存在的规则会校验方向、带宽和突发值，避免重复创建或复用不匹配的限速配置。
+准备时按方向直接复用已有规则，即使带宽或突发值与请求不同也不修改；需要调整已有速率时使用 QoS 管理 API。
 工作流按操作标记查找资源；人工触发实例删除后，先删除端口，再清理对应 QoS，包括未绑定端口的残留 policy。
 
 ## 创建流程与恢复
@@ -188,11 +188,19 @@ YAML 中的默认值与 Java 配置类保持一致；环境变量仍可覆盖，
 查询同样向 Actor 发送 `GetInstanceState`，将返回状态转换成 `InstanceView`；
 创建和查询均使用 `cloud.ask-timeout`。
 InstanceActor 持久化 `InstanceCreationRequested` 和 `SchedulingStarted`，进入 `SCHEDULING` 并立即回复受理；
+`SchedulingStarted` 保存 `reservationId`，其值继续使用 `instanceId`，调度、预留及恢复直接读取状态中的同一 ID。
 此阶段仅根据区域、宿主机类型和 CPU、内存、磁盘、GPU 规格查询、排序候选宿主机，不发送资源预留命令。
-选定候选后先持久化 `HypervisorReservationStarted`，记录当前宿主机、预留 ID 和剩余候选，
+调度结果统一通过 `SchedulingCompleted` 返回，携带 generation、请求 token、候选结果和失败信息。
+结果处理先校验 `SCHEDULING` 阶段、generation 和 token，再清除在途请求标识，忽略不匹配的迟到或重复回调。
+调度异常或缺少结果以 `SCHEDULING_FAILED` 失败，缺少结果时详情为 `Missing scheduling result`；候选为空时以 `NO_VALID_HOST` 失败。
+选定候选后先持久化 `HypervisorReservationStarted`，记录当前宿主机和剩余候选，沿用状态中的预留 ID，
 进入 `RESERVING_RESOURCES` 后才向该宿主机发送预留命令。
 收到明确的 `UNAVAILABLE` 才选择下一候选，仍须先持久化新的预留目标再发送命令；
 `UNKNOWN` 表示预留结果未确认，保留同一宿主机和预留 ID 重试，不切换宿主机，避免同时占用多台宿主机的资源。
+首次请求之外的最大重试次数由 `src/main/resources/application.conf` 中的 `cloud.instance.reservation.max-retries` 配置，默认 `3`，间隔为 `cloud.instance.poll.initial-delay`；异常或缺少结果也按 `UNKNOWN` 处理。
+Runtime 的 `Config` 读取该配置并传入 `InstanceWorkflowSettings.maxResourceReservationRetries`，负数在 `InstanceWorkflowSettings` 初始化时被拒绝。
+达到配置上限后结果仍为 `UNKNOWN` 时记录 `RESERVATION_RETRY_EXHAUSTED` 并进入 `FAILED`，停止重试，保留宿主机和预留 ID，等待显式删除；配置为 `0` 时，首次请求结果为 `UNKNOWN` 即按此流程失败，不再重试。
+重试次数由 `RetryResourceReservation` 和 `ResourceReservationCompleted` 传递，不持久化；切换候选宿主机或 Actor 恢复时从 0 重新计数。
 宿主机不可用或资源不足时，HypervisorActor 先持久化 `ReservationRejected` 再回复拒绝；
 拒绝记录保留期间，同一预留 ID 的后续请求返回 `RESERVATION_UNAVAILABLE`，不再分配资源。
 因此先前结果未知的迟到预留请求不会在实例已切换到另一候选后又占用原宿主机。
@@ -208,16 +216,18 @@ ask 超时表示回复尚未确认，继续查询；查询确认 `NOT_FOUND` 时
 包括多层 `CompletionException`、`ExecutionException` 包装，普通准备和重启恢复采用同样的处理。
 准备器向 UserActor 发送的创建和查询 ask 均使用 `cloud.ask-timeout`（默认 3 秒），不占用 Actor 等待远端资源就绪。
 依赖准备不设置整体截止时间，持续查询至资源就绪或明确失败。
-结果通过 `DependenciesReady` 或 `DependenciesFailed` 命令回到 InstanceActor。
+结果统一通过 `DependencyPreparationCompleted` 命令回到 InstanceActor，携带 generation、请求 token、依赖结果和失败信息。
+结果处理先校验 `PREPARING_DEPENDENCIES` 阶段、generation 和 token，再清除在途请求标识；不匹配的迟到或重复回调直接忽略。
+失败保留原业务失败码，错误详情仅包含失败码和异常类型；未返回依赖结果也按准备失败处理。
 成功后持久化 `DependenciesPrepared`，保存项目 ID、Share 回复中的真实逻辑 `shareId`、访问数据和父子网络/子网 ID，
 再创建专属安全组，随后进入网络准备阶段，依次创建父端口、子端口和 Trunk。
 原始请求规格保持不变，重复请求仍按原始规格判断幂等。
 准备失败直接持久化实例 `FAILED` 及失败码，用户级依赖资源继续保留。
-若 Actor 恢复时仍处于 `SCHEDULING`，使用原请求重新查询、排序候选，此阶段尚未发送预留命令。
-若处于 `RESERVING_RESOURCES`，使用已持久化的宿主机和预留 ID 独立恢复预留，
-已受理的相同预留幂等返回，结果仍不明确时继续等待同一宿主机；只有明确不可用才按已保存的候选顺序推进。
+若 Actor 恢复时仍处于 `SCHEDULING`，通过 `startScheduling()` 使用原请求重新查询、排序候选，此阶段尚未发送预留命令。
+若处于 `RESERVING_RESOURCES`，通过 `requestResourceReservation()` 使用已持久化的宿主机和预留 ID 重新提交预留，
+已受理的相同预留幂等返回，结果仍不明确时在同一宿主机上按 `cloud.instance.reservation.max-retries` 配置上限重试，耗尽后失败；只有明确不可用才按已保存的候选顺序推进。
 这样即使预留成功后回复丢失或应用重启，也不会因重新调度而遗留另一台宿主机的预留；进入后续阶段后不再调度。
-若仍处于 `PREPARING_DEPENDENCIES`，保留选定的宿主机和资源预留，使用原始规格重新执行准备器：
+若仍处于 `PREPARING_DEPENDENCIES`，保留选定的宿主机和资源预留，通过 `requestDependencies()` 使用原始规格重新执行准备器：
 同规格创建命令直接复用已有 `READY` 资源，未完成资源继续查询。
 项目、网络或 Share 已失败时，新的同规格创建命令会重新发起对应资源的创建。
 当前 `pekko.cluster.sharding.remember-entities = off`，应用启动不会主动唤醒所有历史实例。
@@ -385,7 +395,8 @@ HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 
 用户管理命令 `CreateInstanceForwarding` 可携带有序、不重复且 ID 非空白的 `floatingIpIds`，受理后保存到转发状态中供候选切换和恢复使用。
 未指定或传空列表时使用实例配置中的候选列表，HTTP 用户转发接口沿用此默认选择；系统初始化直接使用实例配置。
 两个端口可能落在不同浮动 IP 上，调用方应分别使用查询结果中的地址和公网端口。
-`InstanceForwardingWorkflow` 独立处理转发创建、删除、候选切换、轮询和恢复，在实例 Actor 的同一邮箱中执行，事件仍写入原实例日志。
+`InstanceForwardingWorkflow` 统一处理转发创建、删除、候选切换、轮询、恢复和安全组规则维护，直接依赖 `FloatingIpForwardings` 和 `OpenStackClient`。
+命令和结果在实例 Actor 的同一邮箱中处理，事件仍写入原实例日志。
 用户管理使用 `CreateInstanceForwarding`、`DeleteInstanceForwarding`，不再携带 `instanceInitialization`、`scope` 或实例阶段的 generation。
 实例创建通过内部 `PrepareInstanceForwardings` 逐个准备系统端口，实例删除通过 `DeleteInstanceForwardings` 清理全部转发。
 两类入口只共用转发执行逻辑，用户操作的受理、拒绝和回复不参与实例创建、删除编排。
@@ -406,8 +417,8 @@ FIP 返回有效的 `READY` 后，处理器补建该内部端口缺失的 TCP、
 创建受理前校验 `forwarding` 必须存在且包含内部端口 `22`，不满足时直接拒绝，不记录创建事件。
 正常创建和恢复在网络准备完成后均进入 `PREPARING_FORWARDING`；各阶段使用第一步已选定的宿主机。
 转发阶段不设置整体等待超时，保留轮询以等待异步创建完成。
-重启后沿用已持久化的候选、内部端口和已完成映射，查询当前未完成的 claim；
-只有确认 claim 不存在时才重新提交该 claim，已完成端口不会重建。
+重启后沿用已持久化的候选、claim ID、内部端口和已完成映射，对仍处于 `CREATING` 的转发直接调用 `requestCreation(..., true)` 提交创建。
+`FloatingIpActor.onCreate` 对相同 claim ID 和规格返回已有 claim 或保留结果；没有记录时才按正常校验受理创建，已完成端口不会重建。
 转发结果与实例阶段分别持久化；恢复时重新检查已保存的转发状态，即使进程在结果写入后、阶段推进前中断，也能继续进入下一阶段或记录原失败。
 
 FloatingIpActor 的实体 key 为 `floating_ip.id`，通过 `PekkoRuntime.floatingIpActor(floatingIpId)` 获取。
@@ -541,7 +552,8 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 按项目 ID 和名称查询实例专属安全组。查到唯一同名组且描述匹配时复用其 ID，未找到时创建，
 同名组有多个或描述不匹配时失败。安全组就绪后持久化 `SecurityGroupPrepared`，记录安全组 ID，再开始创建端口。失败使用
 `InstanceProvisioningFailed` 记录失败原因并进入 `FAILED`，不重新提交失败的安全组创建流程。
-安全组名称和描述统一为 `veryai:sg:{instanceId}`。重启恢复调用 `recoverInstanceSecurityGroup()`，按相同条件查找并复用安全组。
+安全组名称和描述统一为 `veryai:sg:{instanceId}`。重启处于 `PREPARING_SECURITY_GROUP` 时直接调用 `startSecurityGroupPreparation()`，
+复用正常创建的 `prepareInstanceSecurityGroup()` 请求和 `SecurityGroupPreparationCompleted` 结果处理，按相同条件查找并复用安全组，缺失时创建。
 准备阶段直接等待异步调用结果，不设置业务截止时间。
 恢复中的查找与创建并非原子操作，旧请求在远端继续执行时仍可能出现重复创建窗口。
 
@@ -549,38 +561,43 @@ Cloud-init 显式指定 JupyterLab 的 `ServerApp.port=8888`、`ServerApp.port_r
 
 | 阶段 | 创建意图事件 | 就绪事件 | OpenStack 调用 |
 | --- | --- | --- | --- |
-| `PREPARING_NETWORK` | `NetworkPreparationStarted` | `NetworkPrepared` | 调用 `prepareInstanceNetwork()`，依次创建父子端口、QoS、子端口专属浮动 IP 和 Trunk |
+| `PREPARING_NETWORK` | `NetworkPreparationStarted` | `NetworkPrepared` | 调用 `prepareInstanceNetwork()`，依次查询并补齐父子端口、QoS、子端口专属浮动 IP 和 Trunk |
 
 Actor 通过 `requestNetwork()` 调用 `OpenStackClient.prepareInstanceNetwork()`，
 由客户端顺序编排父端口 → 子端口 → Trunk；中间资源在链内传递，全部成功后才发送 `NetworkPreparationCompleted`。
 整个网络准备使用一个请求标识，阶段、执行代次及请求标识共同过滤迟到结果。
 Actor 重启或停止后，先前启动的网络创建或恢复仍可能继续执行后续 OpenStack 调用。
 成功后一起持久化 `NetworkPrepared` 和 `ForwardingPreparationStarted`，再启动端口转发创建。
-恢复流程通过独立的 `recoverNetwork()` 编排，不调用正常创建流程。
+重启处于 `PREPARING_NETWORK` 时直接调用 `requestNetwork()`，复用正常创建的 `NetworkPreparationCompleted` 结果处理并持久化。
 
 OpenStackClient 的 `prepareInstanceNetwork()` 依次调用 `prepareInstanceParentPort()`、
 `prepareInstanceSubPort()` 和 `prepareInstanceTrunk()`。
-三个方法分别直接创建对应资源，
+三个方法均按项目和原操作标识查询并复用已有资源，只补齐缺失部分。
 父端口负责端口及 QoS，子端口负责端口、QoS 和专属浮动 IP，Trunk 负责父子端口的 VLAN 组合。
-查询分别使用 `findInstanceParentPort()`、`findInstanceSubPort()`、`findInstanceTrunk()`，
-校验资源归属、网络、安全组、QoS、浮动 IP 绑定和 VLAN；端口、Trunk 或子端口浮动 IP
-未找到时返回空结果，查询不创建缺失资源，也不补建 QoS 规则。
-创建、只读查询和恢复使用独立方法，不通过 `allowCreate` 参数切换。正常创建调用创建方法，
-成功返回有效资源就执行下一步；调用异常或缺少结果时持久化 `FAILED`，保留资源等待人工删除。
-正常创建不安排网络阶段的 Check 轮询。重启恢复由 `InstanceRecovery` 分别调用
-`recoverInstanceParentPort()`、`recoverInstanceSubPort()`、`recoverInstanceTrunk()`，
-按项目和操作标识发现并复用资源，依次补齐整组网络资源中尚未完成的部分。
-恢复可复用尚未绑定端口的 QoS policy、补齐缺失方向的带宽规则，并为已有子端口补建缺失的浮动 IP；
-操作标识重复、资源归属或规格不匹配时明确失败，不任意选取一个资源继续。
+相同操作标识和规格的重复调用沿用已有资源 ID；整组资源已经就绪时不重新创建。
+父子端口均先按项目和名称查询或创建 QoS policy，有限速时补齐缺失方向的带宽规则，再按项目和端口名称查询端口，存在直接复用，缺失才创建。
+按项目和名称查询或创建的 policy 不再重复校验项目和名称，仍检查创建结果非空及策略 ID。
+QoS 准备按方向复用已有规则，有限速且缺失时才创建；创建遇到 409 时重新查找目标方向，仍缺失则抛出原异常。
+创建返回须非空，已有规则和返回规则不再重复校验内容；`PreparedPortQos` 直接记录两个方向的规则 ID 和请求目标，不额外检查完整性或在末尾重复查询。
+端口查询共用 `findInstancePort()`，使用 `project_id` 和 `name` 过滤；复用端口时不再核对网络、MAC、安全组或 QoS 绑定。
+父子端口均从目标子网取固定 IP，缺少可用 IP 时失败；子端口随后以 `project_id` 和 `port_id` 查询专属浮动 IP，存在直接复用，缺失才创建。
+浮动 IP 创建遇到 409 时按相同项目和子端口 ID 重查，查到即复用；创建返回须非空，查询和创建结果均须有 ID 和地址，不再按描述过滤或核对返回内容的项目、外部网络和端口绑定。
+已有 Trunk 按项目和名称查询后直接复用其 ID，名称使用原操作标记；缺失时才一次创建携带父端口、子端口及 VLAN 的 Trunk，创建返回须非空。
+Trunk 创建遇到 409 时重新查询，存在即复用；准备流程不检查已有 Trunk 的绑定，也不补挂子端口。
+私有 `findInstanceTrunk()` 仅供准备流程使用，以 `project_id` 和 `name`（原操作标记）过滤并直接使用查询结果，返回唯一结果或 `null`，匹配多个时失败。
+正常创建和恢复共用准备方法，成功后执行下一步；调用异常或缺少结果时持久化 `FAILED`，保留资源等待人工删除。
+安全组和网络准备均不安排阶段轮询；重启恢复由 Actor 重新调用正常请求，生成新 token，使用原阶段和 generation 校验回调，忽略旧请求的迟到结果。
+网络恢复通过 `prepareInstanceNetwork()` 复用同一条父端口 → 子端口 → Trunk 准备链，不再提供单独的网络资源恢复方法。
+端口、浮动 IP 或 Trunk 查询匹配多个资源时明确失败。
 
 `NetworkPreparationStarted` 先持久化空的网络资源记录，确保网络准备中途失败后仍能进入网络清理。
 `NetworkPrepared` 一次保存父端口 ID、MAC、固定 IP、父子端口 QoS policy/规则 ID，
 子端口 ID、固定 IP、浮动 IP ID 和地址，以及 Trunk ID。
 状态查询和数据库投影在整组网络资源就绪后一次更新，准备过程中保持 `PREPARING_NETWORK`。
-中途失败或重启时，尚未持久化的资源通过同一实例操作标识查询；人工删除也按该标识发现并清理部分资源。
+中途失败或重启时，父子端口、QoS 和 Trunk 通过同一实例操作标识查询，未持久化的子端口浮动 IP 通过已发现子端口的项目和 ID 查询；人工删除沿用这些查找方式清理部分资源。
 子端口浮动 IP 从用户路由出口对应的 `LOCAL` 网络分配，依赖准备时将该网络 ID 保存到
 `NetworkRequirement.osSubFloatingNetworkId`，重启后继续使用同一网络。
-分配时指定子端口 ID 和固定 IP，并写入实例操作标识；浮动 IP 绑定确认后才继续创建 Trunk，
+分配时指定子端口 ID 和固定 IP，在描述中写入实例操作标识供追踪，后续查询不依赖描述；取得浮动 IP 的 ID 和地址后继续准备 Trunk，
 整条网络创建链成功后持久化 `NetworkPrepared`。
 `InstanceView.network` 返回 `osSubFloatingIpId`、`subFloatingIpAddress`，`instance_view` 同步保存
 `os_sub_floating_network_id`、`os_sub_floating_ip_id`、`sub_floating_ip_address`。
@@ -589,44 +606,61 @@ OpenStackClient 的 `prepareInstanceNetwork()` 依次调用 `prepareInstancePare
 实例在 `PROVISIONING` 阶段提交 Nova 创建请求，随后轮询 VM 状态和 SSH 连通性。
 `NovaServerCreated` 记录已观察到的实例 ID 和 Nova 状态。轮询时只有资源 ID、Nova 状态或工作流阶段发生变化才持久化事件。
 创建请求异常或未返回实例时，直接持久化 `InstanceProvisioningFailed` 并进入 `FAILED`，保留资源等待人工删除。
-正常状态查询缺少已保存的实例 ID 时，转入 `InstanceRecovery.recoverProvisioning()` 独立恢复，
-按已知实例 ID 或操作标识找回实例；恢复期间只查询，不重新提交 Nova 创建。
+`requestProvisioningCheck()` 在已有实例 ID 时按 ID 查询，缺少实例 ID 时使用原操作标识查找实例，
+正常轮询和重启恢复共用这条查询链，不重新提交 Nova 创建。
+`cloud.instance.provisioning.max-poll-attempts` 限制 `PROVISIONING` 的检查总次数，默认 `60`，包含首次检查，必须大于 0；其他阶段的轮询不受此配置影响。
+`PekkoRuntime.Config.getInstanceProvisioningMaxPollAttempts()` 读取该配置并传入 `InstanceWorkflowSettings.maxProvisioningPollAttempts`，非正数在 settings 初始化时被拒绝。
+`CheckProvisioning` 和 `ProvisioningChecked` 传递从 1 开始的 attempt，计数不写入领域事件或持久化状态；每次实际 Nova 查询计一次，`ACTIVE` 后同轮 SSH 检查不额外计数。
+暂时查询错误和尚未就绪的结果均消耗次数；等待在途请求时重新安排同一次检查，不递增 attempt。
+最后一次检查成功仍正常推进；达到上限仍未就绪时记录 `PROVISIONING_POLL_EXHAUSTED` 并进入 `FAILED`，保存该轮已观察到的 Nova 状态和资源，取消创建定时器，保留资源等待显式删除。
 
-每轮先查询 Nova 状态，返回 `ACTIVE` 后在同一轮探测 SSH。如果 SSH 暂未连通，投影会记录 Nova 状态为 `ACTIVE`，实例阶段仍为 `PROVISIONING`。
+每轮先查询 Nova 状态，返回 `ACTIVE` 后在同一轮探测 SSH。如果 SSH 暂未连通且检查次数尚未耗尽，投影会记录 Nova 状态为 `ACTIVE`，实例阶段仍为 `PROVISIONING`。
 `InstanceSshChecker` 通过 `forwardingResourcesByInternalPort(22)` 读取对应转发状态中的 `resources`，
 使用对应的 `floatingIp:externalPort` 和创建规格中的 SSH 用户名调用 `SSHValidator`，
 不连接浮动 IP 的固定 `22` 端口，也不使用子端口独立分配的浮动 IP。
 探测在虚拟线程中执行，连接和读取超时各设为 5 秒，不阻塞 Actor。
 SSH 握手后的认证拒绝也视为连通，不使用实例密码登录；这一步不验证账号凭据或 cloud-init 是否全部完成。
-连接暂时不通时保持 `PROVISIONING`，下一轮重新查询 VM 状态。此时实例仍在创建中，删除请求会被拒绝。
-缺少内部端口 `22` 的转发、公网地址或 TCP 规则 ID 时，记录 `SSH_CHECK_FAILED`，
+连接暂时不通且未达到检查次数上限时保持 `PROVISIONING`，下一轮重新查询 VM 状态。此时实例仍在创建中，删除请求会被拒绝。
+缺少内部端口 `22` 的转发、公网地址、TCP 规则 ID，或 SSH 探测抛出异常时，记录 `SSH_CHECK_FAILED`，
 保留资源等待人工删除。检查成功后持久化独立的 `SshConnectivityVerified`，
 进入 `CONFIRMING`，资源预留确认成功后才进入 `ACTIVE`；投影同步这些阶段。
-重启处于 `PROVISIONING` 时，`InstanceRecovery.recoverProvisioning()` 先查询 VM 状态，再按相同条件探测已保存的 SSH 转发目标。
+确认结果统一通过 `ConfirmCompleted` 返回，携带 generation、请求 token、retryCount 和 `ReservationResult`；异常或空结果归为 `UNKNOWN`。
+结果处理先校验 `CONFIRMING` 阶段、generation 和 token，再清除在途请求标识，忽略不匹配的迟到或重复回调。
+`SUCCEEDED` 持久化 `ReservationConfirmedForInstance` 和 `InstanceActivated`；`REJECTED` 以 `RESERVATION_CONFIRM_REJECTED` 失败。
+`UNKNOWN` 通过 `RetryConfirm` 定时器按 `cloud.instance.poll.initial-delay` 重试，正常创建和恢复共用 `startConfirm()` 及结果处理。
+确认的最大重试次数由 `cloud.instance.confirm.max-retries` 独立配置，默认 `3`，表示首次确认之外最多重试 3 次；配置为 `0` 时不重试。
+`PekkoRuntime.Config.getInstanceConfirmMaxRetries()` 读取该配置并传入 `InstanceWorkflowSettings.maxConfirmationRetries`，负数在 settings 初始化时被拒绝。
+达到上限后结果仍为 `UNKNOWN` 时记录 `RESERVATION_CONFIRM_RETRY_EXHAUSTED` 并进入 `FAILED`，保留已创建资源和预留信息，等待显式删除。
+`RetryConfirm` 和 `ConfirmCompleted` 传递重试次数，首次为 0，不持久化；Actor 恢复时从 0 重新计数。
+重启处于 `PROVISIONING` 时，直接调用 `requestProvisioningCheck()`，attempt 从 1 重新计数；先查询 VM 状态，再按相同条件探测已保存的 SSH 转发目标，结果通过 `ProvisioningChecked` 处理。
 
 实例端口/QoS/Trunk 和 Nova 的创建意图先持久化，再调用 OpenStack。
-Actor 恢复时仍处于 `PREPARING_NETWORK`，独立恢复链依次按操作标识查询父端口、子端口和 Trunk，
-复用已存在的资源并创建或补齐缺失部分；整组就绪后持久化 `NetworkPrepared` 并进入端口转发准备。
-子端口恢复同时按项目和操作标识查询浮动 IP，并校验外部网络、子端口和固定 IP；
-地址缺失时补建，多个匹配地址或绑定不一致时失败。
-恢复中遇到暂时连接故障、OpenStack 5xx 或限流时保留当前阶段重试；确定的资源结构或规格异常记录失败。
+Actor 恢复时仍处于 `PREPARING_NETWORK`，通过 `requestNetwork()` 调用 `prepareInstanceNetwork()`，沿用先准备 QoS、再按项目和名称复用或创建父子端口的顺序，随后准备子端口浮动 IP 和 Trunk；
+恢复时已有 Trunk 直接复用，缺失才按父子端口及 VLAN 创建；整组就绪后持久化 `NetworkPrepared` 并进入端口转发准备。
+子端口恢复同样以 `project_id` 和 `port_id` 查询浮动 IP，存在即复用，缺失才创建；
+多个匹配结果或返回结果缺少 ID、地址时失败。
+安全组和网络恢复沿用正常创建的失败处理，暂时连接故障、OpenStack 5xx、限流或资源校验失败都会记录准备失败，不再由独立恢复流程安排重试。
 查找与创建并非原子操作，旧请求在远端继续执行时仍可能产生重复资源，不能保证远端恰好创建一次。
 重复资源会被明确拒绝并保留，供人工核对。
 Nova 恢复仍只查询，不重新发送创建请求。尚未保存服务器 ID 且按项目和操作标识未查到实例时，
 记录 `NOVA_CREATION_UNCONFIRMED` 并进入 `FAILED`；已保存服务器 ID 但查询返回 404 时，
 记录 `NOVA_SERVER_MISSING`。两种情况都保留资源与预留，等待人工核对后触发删除。
-已找到且尚未就绪的 Nova 实例继续查询，明确返回 `ERROR` 时进入 `FAILED`；
-暂时无法完成查询时继续重试，不提前释放资源。
+已找到且尚未就绪的 Nova 实例在检查次数上限内继续查询，明确返回 `ERROR` 时进入 `FAILED`；
+暂时无法完成查询时在相同上限内重试，不提前释放资源。
+查询被明确拒绝、操作标识匹配多个实例或查询结果结构异常时记录 `NOVA_QUERY_FAILED` 并进入 `FAILED`；`408`、`429`、`5xx` 等暂时查询错误按上述检查次数上限继续轮询。
 
-`RecoveryCompleted` 只进入独立的 `InstanceRecovery` 恢复编排，不直接调用创建或删除入口。
-恢复使用专用的 `RetryRecovery`、`RecoveryStepCompleted` 命令和轮询定时器，
-独立处理当前持久化阶段的查询、结果判断和重试；阶段、轮询代次与请求标识共同校验异步结果，
-恢复期间忽略旧创建、删除流程的迟到回调，状态查询和重复受理仍正常响应。
+`RecoveryCompleted` 清除在途标识和定时器后，按持久化阶段重新进入正常请求或查询入口，复用原有结果处理、事件持久化和阶段推进。
+调度、预留、依赖准备、安全组和网络准备直接复用对应请求；`PROVISIONING` 只恢复 Nova/SSH 检查，`CONFIRMING` 通过 `RetryConfirm` 单次定时器重新开始确认资源预留，重试次数从 0 计数。
+端口转发和重启/重建操作委托各自工作流恢复，删除阶段复用正常删除流程；不再使用独立的恢复类、恢复命令或恢复定时器。
+恢复重新生成请求 token，调度和确认结果也携带 generation 与 token；各结果处理器按阶段及请求标识过滤迟到回调，状态查询和重复受理仍正常响应。
+恢复与正常流程使用相同的失败策略：调度、依赖准备及 SSH 探测异常记录失败；资源预留和确认结果未知时分别按 `cloud.instance.reservation.max-retries`、`cloud.instance.confirm.max-retries` 配置上限重试，耗尽后失败；Nova 暂时查询错误也计入 `cloud.instance.provisioning.max-poll-attempts` 上限。
 恢复当前阶段时沿用原有资源操作标识，不额外设置恢复超时。
-端口转发恢复先查询已有 claim，缺失时使用相同 claim ID 提交创建。claim 就绪后检查安全组规则并补齐缺失协议，即使重启前只创建了一条规则也能继续。
+端口转发创建恢复直接复用 `requestCreation(..., true)`，使用原 claim ID 和规格重复提交，由 FIP Actor 返回已有状态或受理尚未创建的 claim。
+claim 就绪后检查安全组规则并补齐缺失协议，即使重启前只创建了一条规则也能继续。
+端口转发创建和删除恢复统一通过 `request(..., true)` 提交，删除分支直接复用 `requestDeletion(..., true)`，无需先查询 claim。
 网络恢复查询并补齐整组网络资源，Nova 恢复只查询已有实例。
-当前操作确认完成并持久化明确的就绪事件后，才交给创建逻辑启动下一项尚未执行的操作。
-只有资源操作标识、领域事件以及 OpenStack/Actor 客户端等基础接口共用，恢复的请求与结果处理可独立修改。
+当前操作确认完成并持久化明确的就绪事件后，通过原结果处理器启动下一项尚未执行的操作。
+Actor 通过 `invoke()` 将调用异步接口时同步抛出的异常转换为失败的 `CompletionStage`，再通过 `pipeToSelf` 返回原有结果命令；各阶段继续负责自己的失败分类和状态推进。
 
 创建失败统一持久化 `InstanceProvisioningFailed`，保留失败原因以及 Nova、专属安全组、父子端口、
 Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创建失败时也不自动删除专用 QoS。
@@ -634,7 +668,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 已提交到其他 Actor 或 OpenStack 的请求可能继续完成，实例失败不会取消用户级项目、Share 或网络准备。
 不再提供创建失败后自动清理的配置开关，也不会因为修改配置或重启应用而启动清理。
 
-运行中的实例或创建失败的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
+运行中的实例或处于 `FAILED` 的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
 该入口允许对 `ACTIVE`、`FAILED` 实例开始删除；创建中的实例会拒绝，业务错误码为 `11721`。
 用户转发创建、删除、QoS 修改、重启或重建尚在进行时也拒绝实例删除，避免管理请求与资源清理同时执行。
 `InstanceDeletionStarted` 持久化后进入 `DELETING_NOVA` 并返回 HTTP `202`，所有删除阶段及 `DELETED` 下的重复删除请求均幂等受理。
@@ -650,7 +684,15 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 | `RELEASING_ALLOCATION` | `InstanceDeleted` | `DELETED` |
 
 没有对应资源的阶段也持久化完成事件后推进。事件保留已知资源信息，阶段变化同时更新执行代次，
-配合每次请求的标识过滤迟到回调；已经完成的阶段不因后续阶段重试而再次执行。
+配合每次请求的标识过滤迟到回调；同一次删除中，已经完成的阶段不因后续阶段重试而再次执行。
+Nova 删除提交与查询、网络删除、安全组删除、取消预留和释放分配串行执行，共用一个 `deletionRequestToken`。
+结果处理先校验阶段、generation 和 token，再清除在途标识；转发仍按 claim 管理并发请求。
+`cloud.instance.deletion.max-poll-attempts` 限制每个删除阶段的有效进度检查次数，默认 `60`，必须大于 0，通过 `InstanceWorkflowSettings.maxDeletionPollAttempts` 使用。
+每阶段最初的清理动作不计数，后续 `CheckDeletion` 携带从 1 开始的 attempt；Actor 在内存中记录当前次数，不写入事件或持久化状态。
+非转发阶段等待在途请求时沿用同一次检查，不递增次数。
+进入新阶段、Actor 恢复和外部再次发起删除时从 0 重新计数；同阶段的 `NovaDeletionAccepted` 不重置次数。
+最后一次检查完成清理时照常推进；达到上限仍未完成时持久化 `InstanceDeletionFailed`，失败码为 `DELETION_POLL_EXHAUSTED`，进入 `FAILED`、停止定时器并保留剩余资源。
+删除失败后重启不会自动重试；再次发送 `DeleteInstance` 从 Nova 阶段重新按幂等语义检查整条删除链，已不存在的资源按成功处理。
 
 `onDelete` 持久化删除意图后，已有 Nova 实例 ID 时直接调用 `requestNovaDeletion()` 提交删除；
 只有操作标识时先查询实例，两者均不存在时记录 `NovaServerDeleted` 并推进。
@@ -658,7 +700,7 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 存在且尚未受理删除时，调用独立的 `requestNovaDeletion()` 提交删除，结果通过 `NovaDeletionSubmitted` 返回。
 删除请求被接受后持久化 `NovaDeletionAccepted`，保存服务器 ID，阶段仍为 `DELETING_NOVA`。
 此后按 `cloud.instance.poll.max-delay` 定时查询该 ID，不重复提交已受理的删除请求。
-服务器仍存在或查询失败时保持当前阶段；确认不存在（404）后记录 `NovaServerDeleted`，才开始删除端口转发。
+服务器仍存在或查询失败时在检查次数上限内保持当前阶段；确认不存在（404）后记录 `NovaServerDeleted`，才开始删除端口转发。
 
 `DELETING_FORWARDINGS` 通过内部 `DeleteInstanceForwardings` 委托 `InstanceForwardingWorkflow.delete()` 处理全部系统及用户转发。
 用户的单条删除命令独立校验和回复，批量清理入口只处理尚未进入 `DELETING` 的记录。
@@ -666,24 +708,30 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 删除返回 `DELETED` 后清理该内部端口的专属安全组规则，两步完成才记录 `ForwardingDeleted`；
 `IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态。结果通知到达后，实例主流程确认转发集合为空，
 再记录 `InstanceForwardingsDeleted` 并推进到网络清理；存在 `DELETE_FAILED` 时由主流程安排阶段重试。
+进入 `DELETING_FORWARDINGS` 即启动主流程的 `CheckDeletion`，检查剩余转发记录；各 claim 的独立查询继续进行，子请求在途也计入主流程检查次数。
+达到上限时，同批将仍处于 `DELETING` 的转发通过 `ForwardingDeletionFailed` 置为 `DELETE_FAILED`，避免在途操作标记阻止外部重新删除实例。
 查询仍在删除中的 claim 不重复发送删除命令，查到需要删除或重试的 claim 时只对这些记录再次提交。
 查询异常或未确认的结果保持当前阶段，不能作为删除成功处理。
 
-`DELETING_NETWORK` 按操作标识删除子端口浮动 IP，再删除 Trunk；先完成全部子端口、父端口的删除，
-再统一删除对应的 QoS，任一端口删除失败都不会进入 QoS 删除。响应丢失或已解除关联的实例浮动 IP 也能找到并释放。
+`DELETING_NETWORK` 先结合已记录 ID 与项目、名称查询找到子端口，汇总已保存的 `osSubFloatingIpId` 及各子端口按 `project_id`、`port_id` 查询到的浮动 IP，按 ID 去重后删除。
+随后删除 Trunk，再删除全部子端口、父端口，最后统一删除对应的 QoS；任一端口删除失败都不会进入 QoS 删除。
+已解除绑定的浮动 IP 可凭已保存的 ID 清理；未持久化的浮动 IP 通过已发现的子端口查找，未记录且已解除绑定的地址无法通过端口查询发现。
 端口删除同时使用已持久化的父子端口 ID 和按项目、操作标记查询的结果，按 ID 去重后删除；
 已记录端口查询返回 404 时视为不存在，其他查询错误或项目、标记不匹配时停止当前阶段。
 正常删除和重启恢复都携带已持久化的端口 ID，列表查询为空不会跳过仍能按 ID 查到的端口。
 网络清理完成后持久化 `InstanceNetworkDeleted`，再在 `DELETING_SECURITY_GROUP` 按项目和操作标识清理专属安全组及规则，
 包括创建成功但响应未持久化的安全组。
 
-端口转发按 `cloud.instance.poll.initial-delay` 查询进行中的删除；删除失败和其他删除阶段按 `cloud.instance.poll.max-delay` 检查、重试当前阶段，不设置删除等待超时。
+端口转发按 `cloud.instance.poll.initial-delay` 查询进行中的删除；主流程按 `cloud.instance.poll.max-delay` 在每阶段的检查次数上限内检查、重试，不额外设置删除截止时间。
 普通进度查询不产生事件；端口转发逐条持久化删除意图和结果，阶段完成后记录相应完成事件，Nova 删除受理另由 `NovaDeletionAccepted` 记录。
-已受理的删除在重启后继续，端口转发由独立处理器恢复逐条删除，实例主流程重新检查阶段是否完成；
-其他阶段由 `InstanceRecovery` 按当前持久化阶段独立查询、删除和重试。
-恢复 Nova 阶段时，已有 `NovaDeletionAccepted` 就只查询；尚未记录受理则先查询，存在才提交删除。
-恢复端口转发阶段时先查询各 claim 状态，再决定等待或提交删除；其他阶段只重做该阶段尚未确认完成的幂等操作。
-每个恢复阶段的完成事件持久化后，恢复流程进入下一删除阶段，不回到已经完成的阶段。
+重启时仍处于删除阶段的实例继续清理，端口转发由独立处理器恢复逐条删除，实例主流程重新检查阶段是否完成；
+各删除阶段按 `cloud.instance.poll.max-delay` 安排 `CheckDeletion`，从 0 重新计数，复用正常删除的请求、结果处理和阶段推进。
+恢复 Nova 阶段时从 `requestNovaDeletionStatus()` 进入，已有 `NovaDeletionAccepted` 就只查询；尚未记录受理则先查询，存在才提交删除。
+网络删除、安全组删除、取消预留和释放分配通过 `startDeletionStage()` 重新执行当前阶段的幂等操作。
+恢复端口转发阶段时，对实例中仍处于 `DELETING` 的转发直接使用原 claim ID 提交删除。
+FIP Actor 对执行中的删除返回当前进度，对已删除的 claim 返回完成；已有 `DELETE_FAILED` claim 则重新尝试删除。
+后续继续查询进度，确认删除后补齐安全组规则清理；其他阶段只重做该阶段尚未确认完成的幂等操作。
+每个删除阶段的完成事件持久化后，通过 `startDeletionStage()` 进入下一阶段；同一次删除不回到已经完成的阶段。
 
 宿主机资源预留不设置 TTL，也不自动过期释放。创建中、重启后及创建失败后均保留预留资源，
 成功时通过确认命令转为分配；实例删除先在 `CANCELLING_RESERVATION` 取消预留，
@@ -691,13 +739,13 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 发送 `ReleaseResources(instanceId)` 释放已确认分配。释放成功才持久化 `InstanceDeleted` 并进入 `DELETED`。
 释放根据宿主机实际保存的 allocation 处理，覆盖宿主机已确认但实例工作流未收到确认回复的情况；
 `ResourcesReleased` 使 Actor 移除分配，并由投影异步扣减数据库中的已用资源及实例数量。
-取消或释放结果未确认时保留各自阶段，后续只重试该操作；删除恢复独立执行同样顺序。
+取消或释放结果未确认时在检查次数上限内保留各自阶段，正常删除和恢复均按同一流程重试当前操作。
 预留或分配已经不存在时返回成功，重试和重启恢复不会重复扣减资源。
 已结束的预留结果（包括 `ReservationRejected` 记录的拒绝终态）仍按 `cloud.reservation.outcome-retention` 定期清理，
 该清理不影响进行中的预留和分配。拒绝记录只保存预留 ID 和终态时间，不增加资源占用；
 对应投影只推进 `resource_version`，不修改容量、预留或已用计数。
 用户级项目、Share 和网络由多个实例复用，实例删除不会删除这些资源。
-查询接口及 `instance_view` 投影展示当前具体删除阶段，保留已知资源 ID 和原创建失败原因供排查。
+查询接口及 `instance_view` 投影展示当前具体删除阶段，保留已知资源 ID 和失败原因供排查；删除次数耗尽时显示 `FAILED` 及新的删除失败信息。
 删除接口等待受理超时返回 `11719`，未能确认受理返回 `11720`；这些错误不等于删除已撤销，应先查询实例状态。
 
 ## 返回值
@@ -900,14 +948,16 @@ QoS 修改示例：
 `maxKbps` 单位为 kbit/s，`maxBurstKbits` 单位为 kbit，同一端口的 ingress 和 egress 使用相同参数。
 `0 / 0` 表示删除该端口的限速规则、保留专属 QoS policy；重新设置正速率时补齐所需规则。
 操作只修改已有实例端口绑定的专属 policy，不重建端口或替换 policy。
+QoS 修改保留初始规则查询和 409 冲突重查，按目标值更新已有规则或创建缺失规则；目标为 `0 / 0` 时删除规则，确认成功或 404 后移除本地记录。
+创建、更新须返回非空结果，直接使用返回规则生成 `PreparedPortQos`，不重复校验内容或完整性，也不在末尾重新查询。
 通过实例查询的顶层 `qosUpdate` 查看 `UPDATING`、`READY`、`FAILED`、请求参数和失败信息；
-成功后 `network.parentQos`、`network.subQos` 更新实际规则 ID 及 `bandwidthLimit`。
+成功后 `network.parentQos`、`network.subQos` 记录返回规则 ID 及请求目标 `bandwidthLimit`。
 失败不回滚已经修改的远端规则，实例仍为 `ACTIVE`；需使用与失败操作相同的参数重试，完成后才能提交其他限速值。
 
 管理意图分别使用 `ForwardingCreationRequested`、`ForwardingDeletionRequested`、
 `InstanceQosUpdateRequested` 持久化，成功和失败使用各自明确的结果事件。
-重启后独立恢复已持久化的创建、删除和 QoS 修改意图：用户转发先查询原 claim 再补充未完成步骤，
-QoS 按保存的目标参数检查并修复部分修改，不重新分配操作标识；已经失败的管理操作等待外部处理。
+重启后独立恢复已持久化的创建、删除和 QoS 修改意图：用户转发创建使用原 claim ID 和规格重复提交，再补充未完成的安全组规则；删除使用原 claim ID 直接重复提交，确认删除后清理安全组规则。
+QoS 恢复复用 `requestQosUpdate()`，按保存的目标参数检查并修复部分修改，不重新分配操作标识；已经失败的管理操作等待外部处理。
 
 ## 用户资源清理
 
@@ -1109,16 +1159,18 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 
 创建事件写入名称、描述、用户、集群、区域、资源规格、请求的逻辑 Share ID、VLAN 和
 `SCHEDULING` 状态，项目及父子网络/子网 ID 暂为空。
-`HypervisorReservationStarted` 写入待预留的宿主机和预留 ID，并更新为 `RESERVING_RESOURCES`；
-`HypervisorSelected` 确认同一目标且保持 `RESERVING_RESOURCES`，`DependencyPreparationStarted` 再更新为 `PREPARING_DEPENDENCIES`；
+`SchedulingStarted` 单独写入 `reservation_id`，值来自事件中的 `reservationId`，此时宿主机尚未选定，`hypervisor_id` 为空。
+`HypervisorReservationStarted` 和 `HypervisorSelected` 不再携带 `reservationId`，仅更新宿主机和 `RESERVING_RESOURCES` 阶段，
+保留由 `SchedulingStarted` 写入的 `reservation_id`。
+`DependencyPreparationStarted` 再更新为 `PREPARING_DEPENDENCIES`；
 `DependenciesPrepared` 补齐项目 ID、实际复用的逻辑 Share ID、父子网络和子网 ID；
 `SecurityGroupPreparationStarted` 更新安全组准备阶段，`SecurityGroupPrepared` 写入专属安全组 ID；
 `NetworkPreparationStarted` 更新为 `PREPARING_NETWORK`，`NetworkPrepared` 一次写入父子端口、QoS、
 子端口浮动 IP 和 Trunk 资源。`ForwardingPreparationStarted` 将实例投影置为 `PREPARING_FORWARDING`。
 共享转发事件只更新实例投影版本和时间；转发详情及历史统一由 FIP 事件投影到 `port_forwarding`。
-QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新实际规则 ID 和
+QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新返回规则 ID 和目标限速字段
 `parent_max_kbps`、`parent_max_burst_kbits`、`sub_max_kbps`、`sub_max_burst_kbits`。
-网络准备完成时也写入父子端口对应限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
+网络准备完成时也写入父子端口请求的目标限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
 重启、重建的请求、Nova 受理、完成和失败事件写入 `server_operation` JSON，并同步实例生命周期阶段；
 完成事件更新已确认的 `os_image_id` 和 Nova 状态，失败事件保存失败代码及原因。
 新库使用 `sql/read-model.sql`，已有 `instance_view` 可执行
@@ -1127,7 +1179,8 @@ QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新实�
 `sql/migrations/remove-instance-user-forwardings.sql` 删除旧列；新库不再创建该列。
 `InstanceDeletionStarted` 将实例投影置为 `DELETING_NOVA`；各资源清理完成事件分别推进到上表中的下一删除阶段。
 `NovaDeletionAccepted` 保存服务器 ID 并保持 `DELETING_NOVA`，只有 `InstanceDeleted` 才将投影置为 `DELETED`。
-删除阶段切换保留已有资源 ID 和原创建失败信息，便于查询进度及排查。
+删除阶段切换保留已有资源 ID 和失败信息，便于查询进度及排查。
+`InstanceDeletionFailed` 复用失败字段更新，将投影置为 `FAILED` 并写入删除失败码和详情，保留已有资源 ID。
 实例阶段更新和实例投影偏移量在同一个 JDBC 事务内提交。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。

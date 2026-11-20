@@ -6,10 +6,6 @@ import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 public final class InstanceOperationIds {
   private InstanceOperationIds() {}
 
-  static String reservationId(InstanceWorkflowState state) {
-    return state.reservationId() == null ? state.instanceId() : state.reservationId();
-  }
-
   static String operationId(InstanceWorkflowState state) {
     return state.novaOperationId() == null
         ? "nova-create:" + state.instanceId() + ":" + state.requestId()

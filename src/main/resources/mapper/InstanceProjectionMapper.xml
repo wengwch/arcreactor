@@ -95,11 +95,19 @@
         <include refid="newerWorkflow"/>
     </update>
 
+    <update id="updateScheduling">
+        UPDATE instance_view SET
+          phase = #{phase},
+          reservation_id = #{reservationId,jdbcType=VARCHAR},
+          updated_at = #{updatedAt},
+          workflow_version = #{version}
+        <include refid="newerWorkflow"/>
+    </update>
+
     <update id="updateHypervisor">
         UPDATE instance_view SET
           phase = #{phase},
           hypervisor_id = #{hypervisorId,jdbcType=VARCHAR},
-          reservation_id = #{reservationId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

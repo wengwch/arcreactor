@@ -487,17 +487,8 @@ public class OpenStackClient {
     return "veryai:pf:" + key;
   }
 
-  /** Ensures the instance's own security group exists before creating its network ports. */
+  /** Finds or creates the instance's own security group for both initial preparation and recovery. */
   public CompletionStage<String> prepareInstanceSecurityGroup(ServerTarget target, String instanceId) {
-    return findOrCreateInstanceSecurityGroup(target, instanceId);
-  }
-
-  /** Finds the instance's security group or creates it if the original request did not complete. */
-  public CompletionStage<String> recoverInstanceSecurityGroup(ServerTarget target, String instanceId) {
-    return findOrCreateInstanceSecurityGroup(target, instanceId);
-  }
-
-  private CompletionStage<String> findOrCreateInstanceSecurityGroup(ServerTarget target, String instanceId) {
     String marker = instanceSecurityGroupMarker(instanceId);
     return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
@@ -509,11 +500,6 @@ public class OpenStackClient {
           ? client.networking().securitygroup().create(Builders.securityGroup()
               .name(marker).description(marker).tenantId(target.osProjectId()).build())
           : matches.getFirst();
-      if (group == null || group.getId() == null || group.getId().isBlank()
-          || !target.osProjectId().equals(group.getTenantId()) || !marker.equals(group.getName())
-          || !marker.equals(group.getDescription())) {
-        throw new OpenStackOperationException("Missing or mismatched instance security group", null);
-      }
       return group.getId();
     }, NETWORK_EXECUTOR);
   }
@@ -1137,188 +1123,71 @@ public class OpenStackClient {
     return getOsAdminClient(regionId, osProjectId).networking().port().list(PortListOptions.create().tenantId(osProjectId).deviceId(osRouterId));
   }
 
-  /** Creates a port using the caller's network, security group and prepared QoS policy. */
-  private Port createPort(OSClient.OSClientV3 client, Port request) {
-    Port port = client.networking().port().create(request);
-    if (port == null) throw new IllegalStateException("Neutron returned no port");
-    return port;
-  }
-
-  /** Creates a dedicated QoS policy and its bandwidth rules without creating a port. */
-  private PreparedPortQos createPortQos(OSClient.OSClientV3 client, String osProjectId, String portName,
+  private PreparedPortQos preparedPortQos(String osPolicyId,
+      Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> rules,
       PortBandwidthLimit bandwidthLimit) {
-    Objects.requireNonNull(bandwidthLimit, "bandwidthLimit");
-    requireServerText(osProjectId, "osProjectId");
-    requireServerText(portName, "portName");
-    try {
-      String marker = portQosMarker(portName);
-      NeutronNetQosPolicy policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().create(
-          NeutronNetQosPolicy.builder().name(marker).description(marker)
-              .tenantId(osProjectId).shared(false).isDefault(false).build());
-      if (policy == null) throw new IllegalStateException("Neutron returned no port QoS policy");
-      requireServerText(policy.getId(), "osPolicyId");
-      return createPortBandwidthRules(client, policy.getId(), bandwidthLimit);
-    } catch (ResponseException error) {
-      int status = error.getStatus();
-      if (status >= 400 && status < 500 && status != 408 && status != 429) {
-        throw new OpenStackOperationException("Neutron rejected instance port QoS preparation", error);
-      }
-      throw error;
-    }
+    NetQosPolicyBandwidthLimitRule ingress = rules.get(NetQosPolicyBandwidthLimitRule.Direction.ingress);
+    NetQosPolicyBandwidthLimitRule egress = rules.get(NetQosPolicyBandwidthLimitRule.Direction.egress);
+    return new PreparedPortQos(osPolicyId, ingress == null ? null : ingress.getId(),
+        egress == null ? null : egress.getId(), bandwidthLimit);
   }
 
-  /** Creates each rule once and records its ID directly from the create response. */
-  private PreparedPortQos createPortBandwidthRules(OSClient.OSClientV3 client, String osPolicyId,
+  /** Reuses existing policies and rules, creating only missing bandwidth limit directions. */
+  private PreparedPortQos preparePortQos(OSClient.OSClientV3 client, String osProjectId, String portName,
       PortBandwidthLimit bandwidthLimit) {
-    if (!bandwidthLimit.limited()) return new PreparedPortQos(osPolicyId, null, null, bandwidthLimit);
-    var service = client.networking().netQosPolicyBandwidthLimitRule();
-    Map<NetQosPolicyBandwidthLimitRule.Direction, String> osRuleIds =
-        new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
-    for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
-      NetQosPolicyBandwidthLimitRule rule = service.create(osPolicyId, NeutronNetQosPolicyBandwidthLimitRule.builder()
-          .direction(direction).maxKbps(bandwidthLimit.maxKbps())
-          .maxBurstKbps(bandwidthLimit.maxBurstKbits()).build());
-      if (rule == null) throw new IllegalStateException("Neutron returned no bandwidth limit rule");
-      requireServerText(rule.getId(), "osRuleId");
-      if (!Objects.equals(rule.getMaxKbps(), bandwidthLimit.maxKbps())
-          || Objects.requireNonNullElse(rule.getMaxBurstKbps(), 0) != bandwidthLimit.maxBurstKbits()
-          || Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress) != direction) {
-        throw new OpenStackOperationException("Port bandwidth limit does not match the create command", null);
-      }
-      osRuleIds.put(direction, rule.getId());
-    }
-    return new PreparedPortQos(osPolicyId, osRuleIds.get(NetQosPolicyBandwidthLimitRule.Direction.ingress),
-        osRuleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress), bandwidthLimit);
-  }
-
-  /** Queries the port's existing QoS resources without creating or repairing them. */
-  private PreparedPortQos findPortQos(OSClient.OSClientV3 client, String osProjectId, String portName,
-      String osPolicyId, PortBandwidthLimit bandwidthLimit) {
-    Objects.requireNonNull(bandwidthLimit, "bandwidthLimit");
-    requireServerText(osPolicyId, "osPolicyId");
-    NetQosPolicy policy = client.networking().netQosPolicy().get(osPolicyId);
-    if (!isPortQosPolicy(policy, osProjectId, portName)) {
-      throw new OpenStackOperationException("Instance port has a mismatched QoS policy", null);
-    }
-    return verifyPortBandwidthRules(client, osPolicyId, bandwidthLimit);
-  }
-
-  /** Verifies existing bandwidth rules without filling in missing rules during queries. */
-  private PreparedPortQos verifyPortBandwidthRules(OSClient.OSClientV3 client, String osPolicyId,
-      PortBandwidthLimit bandwidthLimit) {
-    List<? extends NetQosPolicyBandwidthLimitRule> rules = client.networking()
-        .netQosPolicyBandwidthLimitRule().list(osPolicyId);
-    Map<NetQosPolicyBandwidthLimitRule.Direction, String> ruleIds =
-        portBandwidthRuleIds(rules, bandwidthLimit, false);
-    return new PreparedPortQos(osPolicyId, ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.ingress),
-        ruleIds.get(NetQosPolicyBandwidthLimitRule.Direction.egress), bandwidthLimit);
-  }
-
-  private Map<NetQosPolicyBandwidthLimitRule.Direction, String> portBandwidthRuleIds(
-      List<? extends NetQosPolicyBandwidthLimitRule> rules, PortBandwidthLimit bandwidthLimit,
-      boolean allowMissing) {
-    Map<NetQosPolicyBandwidthLimitRule.Direction, String> ruleIds =
-        new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
-    if (!bandwidthLimit.limited()) {
-      if (!rules.isEmpty()) {
-        throw new OpenStackOperationException("Unlimited port QoS policy contains bandwidth limit rules", null);
-      }
-      return ruleIds;
-    }
-    for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
-      List<? extends NetQosPolicyBandwidthLimitRule> matches = rules.stream()
-          .filter(rule -> Objects.requireNonNullElse(rule.getDirection(),
-              NetQosPolicyBandwidthLimitRule.Direction.egress) == direction).toList();
-      if (matches.size() > 1) {
-        throw new OpenStackOperationException("Duplicate port bandwidth limit direction", null);
-      }
-      if (matches.isEmpty()) {
-        if (allowMissing) continue;
-        throw new OpenStackOperationException("Port QoS policy is missing a bandwidth limit rule", null);
-      }
-      NetQosPolicyBandwidthLimitRule rule = matches.getFirst();
-      requireServerText(rule.getId(), "bandwidthLimitRuleId");
-      if (!Objects.equals(rule.getMaxKbps(), bandwidthLimit.maxKbps())
-          || Objects.requireNonNullElse(rule.getMaxBurstKbps(), 0) != bandwidthLimit.maxBurstKbits()
-          || Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress) != direction) {
-        throw new OpenStackOperationException("Port bandwidth limit does not match the create command", null);
-      }
-      ruleIds.put(direction, rule.getId());
-    }
-    return ruleIds;
-  }
-
-  /** Reuses orphan policies and completes only missing directions after an interrupted preparation. */
-  private PreparedPortQos recoverPortQos(OSClient.OSClientV3 client, String osProjectId, String portName,
-      String boundPolicyId, PortBandwidthLimit bandwidthLimit) {
-    Objects.requireNonNull(bandwidthLimit, "bandwidthLimit");
-    NeutronNetQosPolicy policy = uniqueResource(findPortQosPolicies(client, osProjectId, portName), "instance port QoS policy");
-    if (boundPolicyId != null) {
-      requireServerText(boundPolicyId, "osPolicyId");
-      if (policy != null && !boundPolicyId.equals(policy.getId())) {
-        throw new OpenStackOperationException("Instance port is bound to a different QoS policy", null);
-      }
-      if (policy == null) policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().get(boundPolicyId);
-      if (!isPortQosPolicy(policy, osProjectId, portName)) {
-        throw new OpenStackOperationException("Instance port has a mismatched QoS policy", null);
-      }
-    } else if (policy == null) {
+    NeutronNetQosPolicy policy = uniqueResource(findPortQosPolicies(client, osProjectId, portName),
+        "instance port QoS policy");
+    if (policy == null) {
       String marker = portQosMarker(portName);
       try {
         policy = (NeutronNetQosPolicy) client.networking().netQosPolicy().create(NeutronNetQosPolicy.builder()
             .name(marker).description(marker).tenantId(osProjectId).shared(false).isDefault(false).build());
+        if (policy == null) throw new OpenStackOperationException("Neutron returned no QoS policy", null);
       } catch (ResponseException error) {
         if (error.getStatus() != 409) throw error;
         policy = uniqueResource(findPortQosPolicies(client, osProjectId, portName), "instance port QoS policy");
         if (policy == null) throw error;
       }
     }
-    if (!isPortQosPolicy(policy, osProjectId, portName)) {
-      throw new OpenStackOperationException("Missing or mismatched instance port QoS policy", null);
-    }
     requireServerText(policy.getId(), "osPolicyId");
     String osPolicyId = policy.getId();
     var service = client.networking().netQosPolicyBandwidthLimitRule();
-    Map<NetQosPolicyBandwidthLimitRule.Direction, String> existing =
-        portBandwidthRuleIds(service.list(osPolicyId), bandwidthLimit, true);
+    Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> existing =
+        portBandwidthRulesByDirection(service.list(osPolicyId));
     if (bandwidthLimit.limited()) {
       for (NetQosPolicyBandwidthLimitRule.Direction direction : NetQosPolicyBandwidthLimitRule.Direction.values()) {
         if (existing.containsKey(direction)) continue;
+        NetQosPolicyBandwidthLimitRule rule;
         try {
-          NetQosPolicyBandwidthLimitRule created = service.create(osPolicyId,
+          rule = service.create(osPolicyId,
               NeutronNetQosPolicyBandwidthLimitRule.builder().direction(direction)
                   .maxKbps(bandwidthLimit.maxKbps()).maxBurstKbps(bandwidthLimit.maxBurstKbits()).build());
-          if (created == null) throw new OpenStackOperationException("Neutron returned no bandwidth limit rule", null);
-          Map<NetQosPolicyBandwidthLimitRule.Direction, String> createdIds =
-              portBandwidthRuleIds(List.of(created), bandwidthLimit, true);
-          if (!createdIds.containsKey(direction)) {
-            throw new OpenStackOperationException("Port bandwidth limit direction does not match the request", null);
-          }
-          existing.putAll(createdIds);
         } catch (ResponseException error) {
           if (error.getStatus() != 409) throw error;
-          existing = portBandwidthRuleIds(service.list(osPolicyId), bandwidthLimit, true);
-          if (!existing.containsKey(direction)) throw error;
+          rule = portBandwidthRulesByDirection(service.list(osPolicyId)).get(direction);
+          if (rule == null) throw error;
         }
+        if (rule == null) throw new OpenStackOperationException("Neutron returned no bandwidth limit rule", null);
+        existing.put(direction, rule);
       }
     }
-    return verifyPortBandwidthRules(client, osPolicyId, bandwidthLimit);
+    return preparedPortQos(osPolicyId, existing, bandwidthLimit);
   }
 
   private List<NeutronNetQosPolicy> findPortQosPolicies(OSClient.OSClientV3 client,
       String osProjectId, String portName) {
-    return client.networking().netQosPolicy().list(Map.of("project_id", osProjectId)).stream()
-        .filter(policy -> isPortQosPolicy(policy, osProjectId, portName))
-        .map(policy -> (NeutronNetQosPolicy) policy).toList();
+    return client.networking().netQosPolicy()
+            .list(Map.of("project_id", osProjectId, "name", portQosMarker(portName))).stream()
+            .map(policy -> (NeutronNetQosPolicy) policy).toList();
   }
 
   private static boolean isPortQosPolicy(NetQosPolicy policy, String osProjectId, String portName) {
     return policy != null && osProjectId.equals(policy.getTenantId())
-        && portQosMarker(portName).equals(policy.getDescription());
+        && portQosMarker(portName).equals(policy.getName());
   }
 
   private static String portQosMarker(String portName) {
-    return portName + "-qos";
+    return portName + "_qos";
   }
 
   /** Applies the persisted bandwidth intent without replacing either port's dedicated QoS policy. */
@@ -1375,6 +1244,7 @@ public class OpenStackClient {
         if (rule != null) {
           String osRuleId = rule.getId();
           deleteCleanupResource(() -> service.delete(osPolicyId, osRuleId), "instance bandwidth limit rule");
+          existing.remove(direction);
         }
         continue;
       }
@@ -1390,21 +1260,18 @@ public class OpenStackClient {
           if (rule == null) throw error;
         }
       }
-      if (rule == null || rule.getId() == null || rule.getId().isBlank()
-          || Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress) != direction) {
-        throw new OpenStackOperationException("Missing or mismatched instance bandwidth limit rule", null);
-      }
+      if (rule == null) throw new OpenStackOperationException("Neutron returned no bandwidth limit rule", null);
       if (!Objects.equals(rule.getMaxKbps(), bandwidthLimit.maxKbps())
           || Objects.requireNonNullElse(rule.getMaxBurstKbps(), 0) != bandwidthLimit.maxBurstKbits()) {
         NetQosPolicyBandwidthLimitRule update = NeutronNetQosPolicyBandwidthLimitRule.builder()
             .maxKbps(bandwidthLimit.maxKbps()).maxBurstKbps(bandwidthLimit.maxBurstKbits()).build();
         update.setId(rule.getId());
-        NetQosPolicyBandwidthLimitRule updated = service.update(osPolicyId, update);
-        if (updated == null) throw new OpenStackOperationException("Neutron returned no updated bandwidth limit rule", null);
+        rule = service.update(osPolicyId, update);
+        if (rule == null) throw new OpenStackOperationException("Neutron returned no updated bandwidth limit rule", null);
       }
+      existing.put(direction, rule);
     }
-    // Re-query both directions: success must reflect the requested rate and the current rule IDs.
-    return verifyPortBandwidthRules(client, osPolicyId, bandwidthLimit);
+    return preparedPortQos(osPolicyId, existing, bandwidthLimit);
   }
 
   private Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> portBandwidthRulesByDirection(
@@ -1412,28 +1279,25 @@ public class OpenStackClient {
     Map<NetQosPolicyBandwidthLimitRule.Direction, NetQosPolicyBandwidthLimitRule> result =
         new EnumMap<>(NetQosPolicyBandwidthLimitRule.Direction.class);
     for (NetQosPolicyBandwidthLimitRule rule : rules) {
-      requireServerText(rule.getId(), "osBandwidthLimitRuleId");
       var direction = Objects.requireNonNullElse(rule.getDirection(), NetQosPolicyBandwidthLimitRule.Direction.egress);
-      if (result.putIfAbsent(direction, rule) != null) {
-        throw new OpenStackOperationException("Duplicate instance bandwidth limit direction", null);
-      }
+      result.put(direction, rule);
     }
     return result;
   }
 
   private enum InstanceNetworkStep { PARENT_PORT, SUB_PORT, TRUNK }
 
-  /** Creates the parent port, subport and trunk in order. */
+  /** Ensures parent port, subport and trunk resources exist, reusing existing resources on repeated calls. */
   public CompletionStage<PreparedNetwork> prepareInstanceNetwork(ServerTarget target,
-      String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
-    return prepareInstanceParentPort(target, operationId, requirement, osSecurityGroupId)
-        .thenCompose(parent -> prepareInstanceSubPort(target, operationId, requirement, osSecurityGroupId,
+      String instanceId, NetworkRequirement requirement, String osSecurityGroupId) {
+    return prepareInstanceParentPort(target, instanceId, requirement, osSecurityGroupId)
+        .thenCompose(parent -> prepareInstanceSubPort(target, instanceId, requirement, osSecurityGroupId,
             Objects.requireNonNull(parent, "Missing parent port preparation result")))
-        .thenCompose(sub -> prepareInstanceTrunk(target, operationId, requirement,
+        .thenCompose(sub -> prepareInstanceTrunk(target, instanceId, requirement,
             Objects.requireNonNull(sub, "Missing subport preparation result")));
   }
 
-  /** Prepares QoS first, then creates the parent port using that policy. */
+  /** Prepares QoS resources before finding or creating the parent port. */
   public CompletionStage<PreparedNetwork> prepareInstanceParentPort(ServerTarget target,
       String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
     if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
@@ -1442,84 +1306,25 @@ public class OpenStackClient {
       try {
         OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
         String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.PARENT_PORT);
-        String osNetworkId = requirement.osParentNetworkId();
-        String osSubnetId = requirement.osParentSubnetId();
-        PreparedPortQos qos = createPortQos(client, target.osProjectId(), marker,
+        PreparedPortQos qos = preparePortQos(client, target.osProjectId(), marker,
             requirement.parentPortBandwidthLimit());
-        var request = Builders.port().name(marker).tenantId(target.osProjectId())
-            .networkId(osNetworkId).fixedIp(null, osSubnetId).adminState(true)
-            .portSecurityEnabled(true).securityGroup(osSecurityGroupId).qosPolicyId(qos.osPolicyId()).build();
-        Port port = createPort(client, request);
-        if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
-            || !Set.of(osSecurityGroupId).equals(new HashSet<>(port.getSecurityGroups()))) {
-          throw new OpenStackOperationException("Instance port must use its dedicated security group", null);
+        Port port = findInstancePort(client, target.osProjectId(), marker);
+        if (port == null) {
+          Port request = Builders.port().name(marker).tenantId(target.osProjectId())
+              .networkId(requirement.osParentNetworkId()).fixedIp(null, requirement.osParentSubnetId())
+              .adminState(true).portSecurityEnabled(true).securityGroup(osSecurityGroupId)
+              .qosPolicyId(qos.osPolicyId()).build();
+          port = createPort(client, target.osProjectId(), marker, request);
         }
-        if (!osNetworkId.equals(port.getNetworkId()) || port.getFixedIps() == null) {
-          throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
-        }
-        requireServerText(port.getId(), "osPortId");
-        requireServerText(port.getMacAddress(), "portMacAddress");
-        if (!qos.osPolicyId().equals(port.getQosPolicyId())) {
-          throw new OpenStackOperationException("Instance port is not bound to its prepared QoS policy", null);
-        }
-        String fixedIp = port.getFixedIps().stream().filter(ip -> osSubnetId.equals(ip.getSubnetId()))
-            .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
-            .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
+        String fixedIp = instancePortFixedIp(port, requirement.osParentSubnetId());
         return PreparedNetwork.parentPort(port.getId(), port.getMacAddress(), fixedIp, qos);
       } catch (ResponseException error) {
-        int status = error.getStatus();
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance parent_port preparation", error);
-        }
-        throw error;
+        throw networkPreparationFailure("parent port", error);
       }
     }, NETWORK_EXECUTOR);
   }
 
-  /** Queries and validates the parent port and its QoS resources without creating anything. */
-  public CompletionStage<PreparedNetwork> findInstanceParentPort(ServerTarget target,
-      String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
-    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    requireServerText(osSecurityGroupId, "osSecurityGroupId");
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.PARENT_PORT);
-        String osNetworkId = requirement.osParentNetworkId();
-        String osSubnetId = requirement.osParentSubnetId();
-        List<? extends Port> matches = client.networking().port().list(
-            Map.of("project_id", List.of(target.osProjectId()), "name", List.of(marker))).stream()
-            .filter(port -> marker.equals(port.getName()) && target.osProjectId().equals(port.getTenantId()))
-            .toList();
-        if (matches.size() > 1) throw new OpenStackOperationException("Duplicate instance port marker", null);
-        Port port = matches.isEmpty() ? null : matches.getFirst();
-        if (port == null) return null;
-        if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
-            || !Set.of(osSecurityGroupId).equals(new HashSet<>(port.getSecurityGroups()))) {
-          throw new OpenStackOperationException("Instance port must use its dedicated security group", null);
-        }
-        if (!osNetworkId.equals(port.getNetworkId()) || port.getFixedIps() == null) {
-          throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
-        }
-        requireServerText(port.getId(), "osPortId");
-        requireServerText(port.getMacAddress(), "portMacAddress");
-        PreparedPortQos qos = findPortQos(client, target.osProjectId(), marker,
-            port.getQosPolicyId(), requirement.parentPortBandwidthLimit());
-        String fixedIp = port.getFixedIps().stream().filter(ip -> osSubnetId.equals(ip.getSubnetId()))
-            .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
-            .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
-        return PreparedNetwork.parentPort(port.getId(), port.getMacAddress(), fixedIp, qos);
-      } catch (ResponseException error) {
-        int status = error.getStatus();
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance parent_port preparation", error);
-        }
-        throw error;
-      }
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Prepares QoS, creates the subport using that policy, then allocates a dedicated floating IP. */
+  /** Prepares QoS resources before finding or creating the subport and its floating IP. */
   public CompletionStage<PreparedNetwork> prepareInstanceSubPort(ServerTarget target,
       String operationId, NetworkRequirement requirement, String osSecurityGroupId, PreparedNetwork prepared) {
     if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
@@ -1532,265 +1337,37 @@ public class OpenStackClient {
       try {
         OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
         String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT);
-        String osNetworkId = requirement.osSubNetworkId();
-        String osSubnetId = requirement.osSubSubnetId();
-        PreparedPortQos qos = createPortQos(client, target.osProjectId(), marker,
+        PreparedPortQos qos = preparePortQos(client, target.osProjectId(), marker,
             requirement.subPortBandwidthLimit());
-        var request = Builders.port().name(marker).tenantId(target.osProjectId())
-            .networkId(osNetworkId).fixedIp(null, osSubnetId).adminState(true)
-            .portSecurityEnabled(true).securityGroup(osSecurityGroupId)
-            .macAddress(prepared.parentMacAddress()).qosPolicyId(qos.osPolicyId()).build();
-        Port port = createPort(client, request);
-        if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
-            || !Set.of(osSecurityGroupId).equals(new HashSet<>(port.getSecurityGroups()))) {
-          throw new OpenStackOperationException("Instance port must use its dedicated security group", null);
-        }
-        if (!osNetworkId.equals(port.getNetworkId()) || port.getFixedIps() == null
-            || !prepared.parentMacAddress().equalsIgnoreCase(port.getMacAddress())) {
-          throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
-        }
-        requireServerText(port.getId(), "osPortId");
-        requireServerText(port.getMacAddress(), "portMacAddress");
-        if (!qos.osPolicyId().equals(port.getQosPolicyId())) {
-          throw new OpenStackOperationException("Instance port is not bound to its prepared QoS policy", null);
-        }
-        String fixedIp = port.getFixedIps().stream().filter(ip -> osSubnetId.equals(ip.getSubnetId()))
-            .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
-            .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
-        NetFloatingIP floatingIp = createInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
-            requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
-        return prepared.withSubPort(port.getId(), fixedIp, floatingIp.getId(),
-            floatingIp.getFloatingIpAddress(), qos);
-      } catch (ResponseException error) {
-        int status = error.getStatus();
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance sub_port preparation", error);
-        }
-        throw error;
-      }
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Queries the subport, its QoS resources and floating IP without creating anything. */
-  public CompletionStage<PreparedNetwork> findInstanceSubPort(ServerTarget target,
-      String operationId, NetworkRequirement requirement, String osSecurityGroupId, PreparedNetwork prepared) {
-    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    Objects.requireNonNull(prepared, "prepared");
-    requireServerText(osSecurityGroupId, "osSecurityGroupId");
-    requireServerText(prepared.osParentPortId(), "osParentPortId");
-    requireServerText(prepared.parentMacAddress(), "parentMacAddress");
-    requireServerText(prepared.parentFixedIp(), "parentFixedIp");
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT);
-        String osNetworkId = requirement.osSubNetworkId();
-        String osSubnetId = requirement.osSubSubnetId();
-        List<? extends Port> matches = client.networking().port().list(
-            Map.of("project_id", List.of(target.osProjectId()), "name", List.of(marker))).stream()
-            .filter(port -> marker.equals(port.getName()) && target.osProjectId().equals(port.getTenantId()))
-            .toList();
-        if (matches.size() > 1) throw new OpenStackOperationException("Duplicate instance port marker", null);
-        Port port = matches.isEmpty() ? null : matches.getFirst();
-        if (port == null) return null;
-        if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
-            || !Set.of(osSecurityGroupId).equals(new HashSet<>(port.getSecurityGroups()))) {
-          throw new OpenStackOperationException("Instance port must use its dedicated security group", null);
-        }
-        if (!osNetworkId.equals(port.getNetworkId()) || port.getFixedIps() == null
-            || !prepared.parentMacAddress().equalsIgnoreCase(port.getMacAddress())) {
-          throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
-        }
-        requireServerText(port.getId(), "osPortId");
-        requireServerText(port.getMacAddress(), "portMacAddress");
-        PreparedPortQos qos = findPortQos(client, target.osProjectId(), marker,
-            port.getQosPolicyId(), requirement.subPortBandwidthLimit());
-        String fixedIp = port.getFixedIps().stream().filter(ip -> osSubnetId.equals(ip.getSubnetId()))
-            .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
-            .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
-        NetFloatingIP floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
-            requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
-        if (floatingIp == null) return null;
-        return prepared.withSubPort(port.getId(), fixedIp, floatingIp.getId(),
-            floatingIp.getFloatingIpAddress(), qos);
-      } catch (ResponseException error) {
-        int status = error.getStatus();
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance sub_port preparation", error);
-        }
-        throw error;
-      }
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Creates the trunk using the prepared parent and subport IDs. */
-  public CompletionStage<PreparedNetwork> prepareInstanceTrunk(ServerTarget target,
-      String operationId, NetworkRequirement requirement, PreparedNetwork prepared) {
-    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    Objects.requireNonNull(prepared, "prepared");
-    requireServerText(prepared.osParentPortId(), "osParentPortId");
-    requireServerText(prepared.parentMacAddress(), "parentMacAddress");
-    requireServerText(prepared.parentFixedIp(), "parentFixedIp");
-    requireServerText(prepared.osSubPortId(), "osSubPortId");
-    requireServerText(prepared.subFixedIp(), "subFixedIp");
-    requireServerText(prepared.osSubFloatingIpId(), "osSubFloatingIpId");
-    requireServerText(prepared.subFloatingIpAddress(), "subFloatingIpAddress");
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
-        NeutronTrunkSubport subport = NeutronTrunkSubport.fromTrunkSubport(NeutronTrunkSubport.builder()
-            .portId(prepared.osSubPortId()).segmentationType("vlan")
-            .segmentationId(requirement.segmentationId()).build());
-        Trunk trunk = client.networking().trunk().create(Builders.neutron().trunk()
-            .name(marker).description(marker).tenantId(target.osProjectId()).adminState(true)
-            .parentPort(prepared.osParentPortId()).trunkSubports(List.of(subport)).build());
-        if (trunk == null) throw new IllegalStateException("Neutron returned no trunk");
-        if (!prepared.osParentPortId().equals(trunk.getParentPort())
-            || trunk.getTrunkSubports() == null || trunk.getTrunkSubports().size() != 1
-            || trunk.getTrunkSubports().stream().noneMatch(sub -> prepared.osSubPortId().equals(sub.getPortId())
-                && "vlan".equals(sub.getSegmentationType())
-                && requirement.segmentationId() == sub.getSegmentationId())) {
-          throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
-        }
-        requireServerText(trunk.getId(), "osTrunkId");
-        return prepared.withTrunk(trunk.getId());
-      } catch (ResponseException error) {
-        int status = error.getStatus();
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance trunk preparation", error);
-        }
-        throw error;
-      }
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Queries and validates the trunk without creating resources. */
-  public CompletionStage<PreparedNetwork> findInstanceTrunk(ServerTarget target,
-      String operationId, NetworkRequirement requirement, PreparedNetwork prepared) {
-    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    Objects.requireNonNull(prepared, "prepared");
-    requireServerText(prepared.osParentPortId(), "osParentPortId");
-    requireServerText(prepared.parentMacAddress(), "parentMacAddress");
-    requireServerText(prepared.parentFixedIp(), "parentFixedIp");
-    requireServerText(prepared.osSubPortId(), "osSubPortId");
-    requireServerText(prepared.subFixedIp(), "subFixedIp");
-    requireServerText(prepared.osSubFloatingIpId(), "osSubFloatingIpId");
-    requireServerText(prepared.subFloatingIpAddress(), "subFloatingIpAddress");
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
-        List<? extends Trunk> matches = client.networking().trunk().list(Map.of("project_id", target.osProjectId())).stream()
-            .filter(trunk -> marker.equals(trunk.getDescription())
-                && target.osProjectId().equals(trunk.getTenantId())).toList();
-        if (matches.size() > 1) throw new OpenStackOperationException("Duplicate instance trunk marker", null);
-        Trunk trunk = matches.isEmpty() ? null : matches.getFirst();
-        if (trunk == null) return null;
-        if (!prepared.osParentPortId().equals(trunk.getParentPort())
-            || trunk.getTrunkSubports() == null || trunk.getTrunkSubports().size() != 1
-            || trunk.getTrunkSubports().stream().noneMatch(sub -> prepared.osSubPortId().equals(sub.getPortId())
-                && "vlan".equals(sub.getSegmentationType())
-                && requirement.segmentationId() == sub.getSegmentationId())) {
-          throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
-        }
-        requireServerText(trunk.getId(), "osTrunkId");
-        return prepared.withTrunk(trunk.getId());
-      } catch (ResponseException error) {
-        int status = error.getStatus();
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new OpenStackOperationException("Neutron rejected instance trunk preparation", error);
-        }
-        throw error;
-      }
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Resumes the parent stage, reusing its policy/rules and creating only the missing port. */
-  public CompletionStage<PreparedNetwork> recoverInstanceParentPort(ServerTarget target,
-      String operationId, NetworkRequirement requirement, String osSecurityGroupId) {
-    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    requireServerText(osSecurityGroupId, "osSecurityGroupId");
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.PARENT_PORT);
         Port port = findInstancePort(client, target.osProjectId(), marker);
-        if (port != null) validateInstancePort(port, target.osProjectId(), marker,
-            requirement.osParentNetworkId(), requirement.osParentSubnetId(), osSecurityGroupId, null);
-        PreparedPortQos qos = recoverPortQos(client, target.osProjectId(), marker,
-            port == null ? null : port.getQosPolicyId(), requirement.parentPortBandwidthLimit());
-        if (port == null) {
-          Port request = Builders.port().name(marker).tenantId(target.osProjectId())
-              .networkId(requirement.osParentNetworkId()).fixedIp(null, requirement.osParentSubnetId())
-              .adminState(true).portSecurityEnabled(true).securityGroup(osSecurityGroupId)
-              .qosPolicyId(qos.osPolicyId()).build();
-          port = recoverPortCreation(client, target.osProjectId(), marker, request);
-        }
-        String fixedIp = validateInstancePort(port, target.osProjectId(), marker,
-            requirement.osParentNetworkId(), requirement.osParentSubnetId(), osSecurityGroupId, null);
-        if (!qos.osPolicyId().equals(port.getQosPolicyId())) {
-          throw new OpenStackOperationException("Instance port is not bound to its recovered QoS policy", null);
-        }
-        return PreparedNetwork.parentPort(port.getId(), port.getMacAddress(), fixedIp, qos);
-      } catch (ResponseException error) {
-        throw networkRecoveryFailure("parent port", error);
-      }
-    }, NETWORK_EXECUTOR);
-  }
-
-  /** Resumes QoS, the subport and its floating IP separately without replacing existing resources. */
-  public CompletionStage<PreparedNetwork> recoverInstanceSubPort(ServerTarget target,
-      String operationId, NetworkRequirement requirement, String osSecurityGroupId, PreparedNetwork prepared) {
-    if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
-    Objects.requireNonNull(prepared, "prepared");
-    requireServerText(osSecurityGroupId, "osSecurityGroupId");
-    requireServerText(prepared.osParentPortId(), "osParentPortId");
-    requireServerText(prepared.parentMacAddress(), "parentMacAddress");
-    requireServerText(prepared.parentFixedIp(), "parentFixedIp");
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
-        String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT);
-        Port port = findInstancePort(client, target.osProjectId(), marker);
-        if (port != null) validateInstancePort(port, target.osProjectId(), marker,
-            requirement.osSubNetworkId(), requirement.osSubSubnetId(), osSecurityGroupId, prepared.parentMacAddress());
-        PreparedPortQos qos = recoverPortQos(client, target.osProjectId(), marker,
-            port == null ? null : port.getQosPolicyId(), requirement.subPortBandwidthLimit());
         if (port == null) {
           Port request = Builders.port().name(marker).tenantId(target.osProjectId())
               .networkId(requirement.osSubNetworkId()).fixedIp(null, requirement.osSubSubnetId())
               .adminState(true).portSecurityEnabled(true).securityGroup(osSecurityGroupId)
               .macAddress(prepared.parentMacAddress()).qosPolicyId(qos.osPolicyId()).build();
-          port = recoverPortCreation(client, target.osProjectId(), marker, request);
+          port = createPort(client, target.osProjectId(), marker, request);
         }
-        String fixedIp = validateInstancePort(port, target.osProjectId(), marker,
-            requirement.osSubNetworkId(), requirement.osSubSubnetId(), osSecurityGroupId, prepared.parentMacAddress());
-        if (!qos.osPolicyId().equals(port.getQosPolicyId())) {
-          throw new OpenStackOperationException("Instance port is not bound to its recovered QoS policy", null);
-        }
-        NetFloatingIP floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
-            requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
+        String fixedIp = instancePortFixedIp(port, requirement.osSubSubnetId());
+        NetFloatingIP floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), port.getId());
         if (floatingIp == null) {
           try {
-            floatingIp = createInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
+            floatingIp = createInstanceSubPortFloatingIp(client, operationId,
                 requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
           } catch (ResponseException error) {
             if (error.getStatus() != 409) throw error;
-            floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), operationId,
-                requirement.osSubFloatingNetworkId(), port.getId(), fixedIp);
+            floatingIp = findInstanceSubPortFloatingIp(client, target.osProjectId(), port.getId());
             if (floatingIp == null) throw error;
           }
         }
         return prepared.withSubPort(port.getId(), fixedIp, floatingIp.getId(), floatingIp.getFloatingIpAddress(), qos);
       } catch (ResponseException error) {
-        throw networkRecoveryFailure("subport", error);
+        throw networkPreparationFailure("subport", error);
       }
     }, NETWORK_EXECUTOR);
   }
 
-  /** Reuses a matching trunk, completing a missing attachment or creating the missing trunk. */
-  public CompletionStage<PreparedNetwork> recoverInstanceTrunk(ServerTarget target,
+  /** Reuses an existing trunk or creates the missing trunk with its subport. */
+  public CompletionStage<PreparedNetwork> prepareInstanceTrunk(ServerTarget target,
       String operationId, NetworkRequirement requirement, PreparedNetwork prepared) {
     if (!requirement.resolved()) throw new IllegalArgumentException("Network dependencies must be resolved");
     Objects.requireNonNull(prepared, "prepared");
@@ -1807,50 +1384,39 @@ public class OpenStackClient {
         String marker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
         var service = client.networking().trunk();
         Trunk trunk = findInstanceTrunk(client, target.osProjectId(), marker);
-        NeutronTrunkSubport subport = NeutronTrunkSubport.fromTrunkSubport(NeutronTrunkSubport.builder()
-            .portId(prepared.osSubPortId()).segmentationType("vlan")
-            .segmentationId(requirement.segmentationId()).build());
         if (trunk == null) {
+          NeutronTrunkSubport subport = NeutronTrunkSubport.fromTrunkSubport(NeutronTrunkSubport.builder()
+              .portId(prepared.osSubPortId()).segmentationType("vlan")
+              .segmentationId(requirement.segmentationId()).build());
           try {
             trunk = service.create(Builders.neutron().trunk().name(marker).description(marker)
                 .tenantId(target.osProjectId()).adminState(true).parentPort(prepared.osParentPortId())
                 .trunkSubports(List.of(subport)).build());
+            if (trunk == null) throw new IllegalStateException("Neutron returned no trunk");
           } catch (ResponseException error) {
             if (error.getStatus() != 409) throw error;
             trunk = findInstanceTrunk(client, target.osProjectId(), marker);
             if (trunk == null) throw error;
           }
         }
-        validateInstanceTrunk(trunk, target.osProjectId(), marker, requirement, prepared, true);
-        if (trunk.getTrunkSubports().isEmpty()) {
-          String osTrunkId = trunk.getId();
-          try {
-            service.addTrunkSubport(osTrunkId, subport);
-          } catch (ResponseException error) {
-            if (error.getStatus() != 409) throw error;
-            Trunk observed = service.get(osTrunkId);
-            validateInstanceTrunk(observed, target.osProjectId(), marker, requirement, prepared, false);
-          }
-          trunk = service.get(osTrunkId);
-        }
-        validateInstanceTrunk(trunk, target.osProjectId(), marker, requirement, prepared, false);
         return prepared.withTrunk(trunk.getId());
       } catch (ResponseException error) {
-        throw networkRecoveryFailure("trunk", error);
+        throw networkPreparationFailure("trunk", error);
       }
     }, NETWORK_EXECUTOR);
   }
 
   private Port findInstancePort(OSClient.OSClientV3 client, String osProjectId, String marker) {
     return uniqueResource(client.networking().port().list(
-        Map.of("project_id", List.of(osProjectId), "name", List.of(marker))).stream()
-        .filter(port -> marker.equals(port.getName()) && osProjectId.equals(port.getTenantId())).toList(),
+        Map.of("project_id", List.of(osProjectId), "name", List.of(marker))),
         "instance port");
   }
 
-  private Port recoverPortCreation(OSClient.OSClientV3 client, String osProjectId, String marker, Port request) {
+  private Port createPort(OSClient.OSClientV3 client, String osProjectId, String marker, Port request) {
     try {
-      return createPort(client, request);
+      Port port = client.networking().port().create(request);
+      if (port == null) throw new IllegalStateException("Neutron returned no port");
+      return port;
     } catch (ResponseException error) {
       if (error.getStatus() != 409) throw error;
       Port port = findInstancePort(client, osProjectId, marker);
@@ -1859,98 +1425,52 @@ public class OpenStackClient {
     }
   }
 
-  private String validateInstancePort(Port port, String osProjectId, String marker, String osNetworkId,
-      String osSubnetId, String osSecurityGroupId, String expectedMacAddress) {
-    if (port == null || !osProjectId.equals(port.getTenantId()) || !marker.equals(port.getName())) {
-      throw new OpenStackOperationException("Missing or mismatched instance port ownership", null);
-    }
-    if (!Boolean.TRUE.equals(port.isPortSecurityEnabled()) || port.getSecurityGroups() == null
-        || !Set.of(osSecurityGroupId).equals(new HashSet<>(port.getSecurityGroups()))) {
-      throw new OpenStackOperationException("Instance port must use its dedicated security group", null);
-    }
-    if (!osNetworkId.equals(port.getNetworkId()) || port.getFixedIps() == null
-        || expectedMacAddress != null && !expectedMacAddress.equalsIgnoreCase(port.getMacAddress())) {
-      throw new OpenStackOperationException("Instance port has mismatched network or MAC address", null);
-    }
-    requireServerText(port.getId(), "osPortId");
-    requireServerText(port.getMacAddress(), "portMacAddress");
-    requireServerText(port.getQosPolicyId(), "osPolicyId");
+  private String instancePortFixedIp(Port port, String osSubnetId) {
     return port.getFixedIps().stream().filter(ip -> osSubnetId.equals(ip.getSubnetId()))
         .map(IP::getIpAddress).filter(ip -> ip != null && !ip.isBlank()).findFirst()
         .orElseThrow(() -> new OpenStackOperationException("Instance port has no IP in the requested subnet", null));
   }
 
   private Trunk findInstanceTrunk(OSClient.OSClientV3 client, String osProjectId, String marker) {
-    return uniqueResource(client.networking().trunk().list(Map.of("project_id", osProjectId)).stream()
-        .filter(trunk -> marker.equals(trunk.getDescription()) && osProjectId.equals(trunk.getTenantId())).toList(),
+    return uniqueResource(client.networking().trunk().list(Map.of("project_id", osProjectId, "name", marker)),
         "instance trunk");
   }
 
-  private void validateInstanceTrunk(Trunk trunk, String osProjectId, String marker,
-      NetworkRequirement requirement, PreparedNetwork prepared, boolean allowMissingSubport) {
-    if (trunk == null || !osProjectId.equals(trunk.getTenantId()) || !marker.equals(trunk.getDescription())) {
-      throw new OpenStackOperationException("Missing or mismatched instance trunk ownership", null);
-    }
-    requireServerText(trunk.getId(), "osTrunkId");
-    if (!prepared.osParentPortId().equals(trunk.getParentPort()) || trunk.getTrunkSubports() == null) {
-      throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
-    }
-    if (allowMissingSubport && trunk.getTrunkSubports().isEmpty()) return;
-    if (trunk.getTrunkSubports().size() != 1 || trunk.getTrunkSubports().stream().noneMatch(sub ->
-        prepared.osSubPortId().equals(sub.getPortId()) && "vlan".equals(sub.getSegmentationType())
-            && requirement.segmentationId() == sub.getSegmentationId())) {
-      throw new OpenStackOperationException("Instance trunk has mismatched ports or VLAN", null);
-    }
-  }
-
-  private RuntimeException networkRecoveryFailure(String resource, ResponseException error) {
+  private RuntimeException networkPreparationFailure(String resource, ResponseException error) {
     int status = error.getStatus();
     return status >= 400 && status < 500 && status != 408 && status != 429
-        ? new OpenStackOperationException("Neutron rejected instance " + resource + " recovery", error) : error;
+        ? new OpenStackOperationException("Neutron rejected instance " + resource + " preparation", error) : error;
   }
 
-  private NetFloatingIP createInstanceSubPortFloatingIp(OSClient.OSClientV3 client, String osProjectId,
-      String operationId, String osFloatingNetworkId, String osPortId, String fixedIp) {
+  private NetFloatingIP createInstanceSubPortFloatingIp(OSClient.OSClientV3 client, String operationId,
+      String osFloatingNetworkId, String osPortId, String fixedIp) {
     String marker = instanceSubPortFloatingIpMarker(operationId);
     NetFloatingIP floatingIp = client.networking().floatingip().create(Builders.netFloatingIP()
         .floatingNetworkId(osFloatingNetworkId).portId(osPortId).fixedIpAddress(fixedIp).description(marker).build());
     if (floatingIp == null) throw new IllegalStateException("Neutron returned no subport floating IP");
-    if (!osProjectId.equals(floatingIp.getTenantId()) || !marker.equals(floatingIp.getDescription())
-        || !osFloatingNetworkId.equals(floatingIp.getFloatingNetworkId()) || !osPortId.equals(floatingIp.getPortId())
-        || !fixedIp.equals(floatingIp.getFixedIpAddress())) {
-      throw new OpenStackOperationException("Instance subport floating IP has mismatched ownership, network or binding", null);
-    }
     requireServerText(floatingIp.getId(), "osSubFloatingIpId");
     requireServerText(floatingIp.getFloatingIpAddress(), "subFloatingIpAddress");
     return floatingIp;
   }
 
   private NetFloatingIP findInstanceSubPortFloatingIp(OSClient.OSClientV3 client, String osProjectId,
-      String operationId, String osFloatingNetworkId, String osPortId, String fixedIp) {
-    String marker = instanceSubPortFloatingIpMarker(operationId);
-    NetFloatingIP floatingIp = uniqueResource(findInstanceSubPortFloatingIps(client, osProjectId, operationId),
+      String osPortId) {
+    NetFloatingIP floatingIp = uniqueResource(findInstanceSubPortFloatingIps(client, osProjectId, osPortId),
         "instance subport floating IP");
-    // Keep this lookup read-only; recovery separately decides whether the missing address must be created.
+    // Keep this lookup read-only; preparation decides whether the missing address must be created.
     if (floatingIp == null) return null;
-    if (!osProjectId.equals(floatingIp.getTenantId()) || !marker.equals(floatingIp.getDescription())
-        || !osFloatingNetworkId.equals(floatingIp.getFloatingNetworkId()) || !osPortId.equals(floatingIp.getPortId())
-        || !fixedIp.equals(floatingIp.getFixedIpAddress())) {
-      throw new OpenStackOperationException("Instance subport floating IP has mismatched ownership, network or binding", null);
-    }
     requireServerText(floatingIp.getId(), "osSubFloatingIpId");
     requireServerText(floatingIp.getFloatingIpAddress(), "subFloatingIpAddress");
     return floatingIp;
   }
 
   private List<? extends NetFloatingIP> findInstanceSubPortFloatingIps(OSClient.OSClientV3 client,
-      String osProjectId, String operationId) {
-    String marker = instanceSubPortFloatingIpMarker(operationId);
-    return client.networking().floatingip().list(Map.of("project_id", osProjectId)).stream()
-        .filter(ip -> osProjectId.equals(ip.getTenantId()) && marker.equals(ip.getDescription())).toList();
+      String osProjectId, String osPortId) {
+    return client.networking().floatingip().list(Map.of("project_id", osProjectId, "port_id", osPortId));
   }
 
   private static String instanceSubPortFloatingIpMarker(String operationId) {
-    return instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT) + "-fip";
+    return instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT) + "_fip";
   }
 
   /** Use recorded port IDs and discover by marker when a create response was lost. */
@@ -1959,8 +1479,20 @@ public class OpenStackClient {
     return CompletableFuture.runAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());
       // Release owned addresses before deleting ports, including addresses whose create response was lost.
-      for (NetFloatingIP floatingIp : findInstanceSubPortFloatingIps(client, target.osProjectId(), operationId)) {
-        requireDeleteResponse(client.networking().floatingip().delete(floatingIp.getId()));
+      List<Port> subPorts = findInstancePortsForDeletion(client, target.osProjectId(),
+          instanceNetworkMarker(operationId, InstanceNetworkStep.SUB_PORT), prepared.osSubPortId());
+      Set<String> subPortIds = new LinkedHashSet<>();
+      if (prepared.osSubPortId() != null) subPortIds.add(prepared.osSubPortId());
+      for (Port port : subPorts) subPortIds.add(port.getId());
+      Set<String> floatingIpIds = new LinkedHashSet<>();
+      if (prepared.osSubFloatingIpId() != null) floatingIpIds.add(prepared.osSubFloatingIpId());
+      for (String osPortId : subPortIds) {
+        for (NetFloatingIP floatingIp : findInstanceSubPortFloatingIps(client, target.osProjectId(), osPortId)) {
+          floatingIpIds.add(floatingIp.getId());
+        }
+      }
+      for (String osFloatingIpId : floatingIpIds) {
+        requireDeleteResponse(client.networking().floatingip().delete(osFloatingIpId));
       }
       String trunkMarker = instanceNetworkMarker(operationId, InstanceNetworkStep.TRUNK);
       for (Trunk trunk : client.networking().trunk().list(Map.of("project_id", target.osProjectId()))) {
@@ -1976,7 +1508,9 @@ public class OpenStackClient {
       for (InstanceNetworkStep step : portSteps) {
         String marker = instanceNetworkMarker(operationId, step);
         String osPortId = step == InstanceNetworkStep.SUB_PORT ? prepared.osSubPortId() : prepared.osParentPortId();
-        for (Port port : findInstancePortsForDeletion(client, target.osProjectId(), marker, osPortId)) {
+        List<Port> ports = step == InstanceNetworkStep.SUB_PORT ? subPorts
+            : findInstancePortsForDeletion(client, target.osProjectId(), marker, osPortId);
+        for (Port port : ports) {
           requireDeleteResponse(client.networking().port().delete(port.getId()));
         }
       }
@@ -2015,8 +1549,7 @@ public class OpenStackClient {
   }
 
   private static String instanceNetworkMarker(String operationId, InstanceNetworkStep step) {
-    return "veryai:net:" + operationId
-        + ":" + step.name().toLowerCase(Locale.ROOT);
+    return "veryai_" + operationId + "_" + step.name().toLowerCase(Locale.ROOT);
   }
 
   public Trunk createTrunk(String region, String osProjectId, String name, String osParentPortId) {

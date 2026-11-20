@@ -7,6 +7,7 @@ import cn.veryai.arcreactor.actor.instance.event.HypervisorReservationStarted;
 import cn.veryai.arcreactor.actor.instance.event.HypervisorSelected;
 import cn.veryai.arcreactor.actor.instance.event.InstanceActivated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceCreationRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceDeletionFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceDeletionStarted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingEvent;
@@ -64,8 +65,8 @@ public final class InstanceProjectionHandler
             mapper.updatePhase(instanceId, InstancePhase.PREPARING_SECURITY_GROUP, version, timestamp);
         } else if (event instanceof SecurityGroupPrepared prepared) {
             mapper.updateSecurityGroup(instanceId, InstancePhase.PREPARING_SECURITY_GROUP, prepared.osSecurityGroupId(), version, timestamp);
-        } else if (event instanceof SchedulingStarted) {
-            mapper.updatePhase(instanceId, InstancePhase.SCHEDULING, version, timestamp);
+        } else if (event instanceof SchedulingStarted started) {
+            mapper.updateScheduling(instanceId, InstancePhase.SCHEDULING, started.reservationId(), version, timestamp);
         } else if (event instanceof NetworkPreparationStarted) {
             mapper.updatePhase(instanceId, InstancePhase.PREPARING_NETWORK, version, timestamp);
         } else if (event instanceof NetworkPrepared prepared) {
@@ -95,10 +96,10 @@ public final class InstanceProjectionHandler
                     failed.failureCode(), version, timestamp);
         } else if (event instanceof HypervisorReservationStarted started) {
             mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, started.hypervisorId(),
-                    started.reservationId(), version, timestamp);
+                    version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
             mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, selected.hypervisorId(),
-                    selected.reservationId(), version, timestamp);
+                    version, timestamp);
         } else if (event instanceof NovaCreationStarted started) {
             mapper.updateNovaOperation(instanceId, InstancePhase.PROVISIONING, started.operationId(), version, timestamp);
         } else if (event instanceof NovaServerCreated created) {
@@ -125,6 +126,9 @@ public final class InstanceProjectionHandler
         } else if (event instanceof InstanceActivated) {
             mapper.updateFailure(instanceId, InstancePhase.ACTIVE, null, null, version, timestamp);
         } else if (event instanceof InstanceProvisioningFailed failed) {
+            mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
+                    failed.failureMessage(), version, timestamp);
+        } else if (event instanceof InstanceDeletionFailed failed) {
             mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
                     failed.failureMessage(), version, timestamp);
         }

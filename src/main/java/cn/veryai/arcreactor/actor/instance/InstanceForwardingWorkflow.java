@@ -1,6 +1,12 @@
 package cn.veryai.arcreactor.actor.instance;
 
+import static org.springframework.util.StringUtils.hasText;
+
+import cn.veryai.arcreactor.actor.fip.FloatingIpForwardings;
+import cn.veryai.arcreactor.actor.fip.FloatingIpSettings;
+import cn.veryai.arcreactor.actor.fip.model.ForwardingClaim;
 import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
+import cn.veryai.arcreactor.actor.fip.model.ForwardingSpec;
 import cn.veryai.arcreactor.actor.fip.reply.ForwardingReply;
 import cn.veryai.arcreactor.actor.instance.command.CheckForwardingStatus;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
@@ -23,6 +29,7 @@ import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState.Phase;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
+import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.openstack.OpenStackOperationException;
 import java.time.Duration;
 import java.util.HashMap;
@@ -40,23 +47,31 @@ import org.apache.pekko.persistence.typed.javadsl.Effect;
 import org.apache.pekko.persistence.typed.javadsl.EffectBuilder;
 import org.apache.pekko.persistence.typed.javadsl.EffectFactories;
 
-/** Handles forwarding operations in the instance mailbox; lifecycle transitions stay in the instance actor. */
+/** Handles forwarding and security group operations in the instance mailbox using the instance's event journal. */
 final class InstanceForwardingWorkflow {
+  private static final class InvalidForwardingResult extends IllegalStateException {
+    InvalidForwardingResult() {
+      super("Incomplete or mismatched port forwarding result");
+    }
+  }
+
   private final String instanceId;
   private final ActorContext<WorkflowCommand> context;
   private final TimerScheduler<WorkflowCommand> timers;
-  private final InstanceForwardingOperations operations;
+  private final OpenStackClient openStackClient;
+  private final FloatingIpForwardings floatingIpForwardings;
   private final InstanceWorkflowSettings settings;
   private final EffectFactories<InstanceWorkflowEvent, InstanceWorkflowState> effects;
   private final Map<String, String> requests = new HashMap<>();
 
   InstanceForwardingWorkflow(String instanceId, ActorContext<WorkflowCommand> context,
-      TimerScheduler<WorkflowCommand> timers, InstanceForwardingOperations operations,
+      TimerScheduler<WorkflowCommand> timers, OpenStackClient openStackClient, FloatingIpForwardings floatingIpForwardings,
       InstanceWorkflowSettings settings, EffectFactories<InstanceWorkflowEvent, InstanceWorkflowState> effects) {
     this.instanceId = instanceId;
     this.context = context;
     this.timers = timers;
-    this.operations = operations;
+    this.openStackClient = openStackClient;
+    this.floatingIpForwardings = floatingIpForwardings;
     this.settings = settings;
     this.effects = effects;
   }
@@ -171,9 +186,7 @@ final class InstanceForwardingWorkflow {
   void recover(InstanceWorkflowState state) {
     for (InstanceForwardingState forwarding : state.forwardingStates().values()) {
       if (!matches(state, forwarding, forwarding.generation())) continue;
-      pipe(forwarding, 1, true, () -> forwarding.phase() == Phase.CREATING
-          ? operations.recoverForwardingCreation(state, forwarding)
-          : operations.requestDeletion(state, forwarding, false));
+      request(state, forwarding, 1, true);
     }
   }
 
@@ -187,8 +200,84 @@ final class InstanceForwardingWorkflow {
 
   private void request(InstanceWorkflowState state, InstanceForwardingState forwarding, int attempt, boolean submit) {
     pipe(forwarding, attempt, submit, () -> forwarding.phase() == Phase.CREATING
-        ? operations.requestCreation(state, forwarding, submit)
-        : operations.requestDeletion(state, forwarding, submit));
+        ? requestCreation(state, forwarding, submit)
+        : requestDeletion(state, forwarding, submit));
+  }
+
+  private CompletionStage<ForwardingReply> requestCreation(InstanceWorkflowState state,
+      InstanceForwardingState forwarding, boolean submit) {
+    ForwardingSpec spec = targetSpec(state, forwarding);
+    return askForwarding(() -> submit ? floatingIpForwardings.create(forwarding.floatingIpId(), forwarding.claimId(), spec)
+        : floatingIpForwardings.get(forwarding.floatingIpId(), forwarding.claimId()))
+        .thenCompose(reply -> ensureAccessAfterCreation(state, forwarding, spec, reply));
+  }
+
+  private CompletionStage<ForwardingReply> requestDeletion(InstanceWorkflowState state,
+      InstanceForwardingState forwarding, boolean submit) {
+    String floatingIpId = forwarding.floatingIpId();
+    String claimId = forwarding.claimId();
+    CompletionStage<ForwardingReply> request;
+    if (submit) {
+      request = floatingIpForwardings.delete(floatingIpId, claimId);
+    } else {
+      request = floatingIpForwardings.get(floatingIpId, claimId).thenCompose(reply -> {
+        if (reply == null) return CompletableFuture.completedFuture(null);
+        boolean retryDelete = switch (reply.status()) {
+          case READY, FAILED, NOT_FOUND -> true;
+          case DELETED, IN_PROGRESS, REJECTED, DELETE_FAILED -> false;
+        };
+        return retryDelete ? floatingIpForwardings.delete(floatingIpId, claimId) : CompletableFuture.completedFuture(reply);
+      });
+    }
+    return request.thenCompose(reply -> cleanAccessAfterDeletion(state, forwarding.internalPort(), reply));
+  }
+
+  private static ForwardingSpec targetSpec(InstanceWorkflowState state, InstanceForwardingState forwarding) {
+    var network = state.networkPreparation().resources();
+    return new ForwardingSpec(state.instanceId(), state.userId(), state.spec().region(), state.osProjectId(),
+        network.osParentPortId(), network.parentFixedIp(), forwarding.internalPort(), forwarding.kind());
+  }
+
+  /** A transport failure leaves the claim outcome uncertain. The actor polls the same claim. */
+  private static CompletionStage<ForwardingReply> askForwarding(Supplier<CompletionStage<ForwardingReply>> request) {
+    try {
+      return request.get().exceptionally(error -> null);
+    } catch (RuntimeException error) {
+      return CompletableFuture.completedFuture(null);
+    }
+  }
+
+  private static boolean matchesReady(InstanceForwardingState forwarding, ForwardingSpec expected, ForwardingClaim claim) {
+    if (claim == null || claim.phase() != ForwardingClaim.Phase.READY || !expected.equals(claim.spec())
+        || !forwarding.claimId().equals(claim.claimId()) || !forwarding.floatingIpId().equals(claim.floatingIpId())
+        || !hasText(claim.osFloatingIpId())) return false;
+    var resources = claim.resources();
+    return hasText(resources.floatingIpAddress()) && hasText(resources.osTcpForwardingId())
+        && hasText(resources.osUdpForwardingId()) && resources.externalPort() >= FloatingIpSettings.FIRST_PORT
+        && resources.externalPort() <= FloatingIpSettings.LAST_PORT;
+  }
+
+  private CompletionStage<ForwardingReply> ensureAccessAfterCreation(InstanceWorkflowState state,
+      InstanceForwardingState forwarding, ForwardingSpec spec, ForwardingReply reply) {
+    if (reply == null || reply.status() != ForwardingReply.Status.READY) {
+      return CompletableFuture.completedFuture(reply);
+    }
+    if (!matchesReady(forwarding, spec, reply.claim())) throw new InvalidForwardingResult();
+    return openStackClient.ensureInstanceForwardingAccess(target(state), state.instanceId(), state.osSecurityGroupId(),
+        spec.internalPort()).thenApply(ignored -> reply);
+  }
+
+  private CompletionStage<ForwardingReply> cleanAccessAfterDeletion(InstanceWorkflowState state,
+      int internalPort, ForwardingReply reply) {
+    if (reply == null || reply.status() != ForwardingReply.Status.DELETED) {
+      return CompletableFuture.completedFuture(reply);
+    }
+    return openStackClient.deleteInstanceForwardingAccess(target(state), state.instanceId(), state.osSecurityGroupId(),
+        internalPort).thenApply(ignored -> reply);
+  }
+
+  private static OpenStackClient.ServerTarget target(InstanceWorkflowState state) {
+    return new OpenStackClient.ServerTarget(state.spec().clusterId(), state.osProjectId(), state.spec().region());
   }
 
   private void pipe(InstanceForwardingState forwarding, int attempt, boolean submission,
@@ -201,7 +290,7 @@ final class InstanceForwardingWorkflow {
     context.pipeToSelf(request, (reply, error) -> {
       Throwable cause = error == null ? null : rootCause(error);
       String failureCode = null;
-      if (cause instanceof InstanceForwardingOperations.InvalidForwardingResult) {
+      if (cause instanceof InvalidForwardingResult) {
         failureCode = "FORWARDING_RESULT_INVALID";
       } else if (definitiveFailure(cause)) {
         failureCode = forwarding.phase() == Phase.CREATING ? "SECURITY_GROUP_RULE_FAILED" : "FORWARDING_DELETE_FAILED";
