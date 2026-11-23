@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import java.time.OffsetDateTime;
 import lombok.Data;
 
 @Data
@@ -13,10 +14,11 @@ public class UpdateInstanceQosParam {
   private BandwidthLimitParam parentPort;
   @Valid
   private BandwidthLimitParam subPort;
+  private OffsetDateTime expiresAt;
 
-  @AssertTrue(message = "at least one of parentPort or subPort is required")
-  public boolean isPortSelected() {
-    return parentPort != null || subPort != null;
+  @AssertTrue(message = "expiresAt is required for a QoS update")
+  public boolean isExpiryValid() {
+    return (parentPort == null && subPort == null) || expiresAt != null;
   }
 
   @Data

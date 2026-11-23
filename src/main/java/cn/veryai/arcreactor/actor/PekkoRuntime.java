@@ -15,6 +15,7 @@ import cn.veryai.arcreactor.actor.instance.InstanceWorkflowActor;
 import cn.veryai.arcreactor.actor.instance.InstanceWorkflowSettings;
 import cn.veryai.arcreactor.actor.instance.command.WorkflowCommand;
 import cn.veryai.arcreactor.actor.instance.projection.InstanceProjection;
+import cn.veryai.arcreactor.actor.instance.projection.InstanceQosProjection;
 import cn.veryai.arcreactor.actor.user.UserActor;
 import cn.veryai.arcreactor.actor.user.UserShareSettings;
 import cn.veryai.arcreactor.actor.user.command.UserCommand;
@@ -100,6 +101,7 @@ public final class PekkoRuntime {
         int sliceRanges = config.getProjectionSliceRanges();
         HypervisorProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
         InstanceProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
+        InstanceQosProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
         UserProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
         FloatingIpProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
       }

@@ -5,6 +5,7 @@ import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstanceForwarding;
 import cn.veryai.arcreactor.actor.instance.command.UpdateInstanceQos;
+import cn.veryai.arcreactor.actor.instance.command.ExpireInstanceQos;
 import cn.veryai.arcreactor.actor.instance.command.RebootInstance;
 import cn.veryai.arcreactor.actor.instance.command.RebuildInstance;
 import cn.veryai.arcreactor.actor.instance.command.CheckServerOperation;
@@ -19,6 +20,9 @@ import cn.veryai.arcreactor.actor.instance.event.ForwardingDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosExpired;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosExpiryRequested;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosExpiryFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationSubmitted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationCompleted;
@@ -197,7 +201,7 @@ public final class InstanceWorkflowActor
     this.clock = Objects.requireNonNull(clock);
     this.forwardings = new InstanceForwardingWorkflow(instanceId, context, timers,
         openStackClient, floatingIpForwardings, settings, Effect());
-    this.qos = new InstanceQosWorkflow(instanceId, context, openStackClient, Effect());
+    this.qos = new InstanceQosWorkflow(instanceId, context, openStackClient, clock, Effect());
     this.serverOperations = new InstanceServerOperationWorkflow(instanceId, context, timers,
         openStackClient, sshChecker, settings, clock, Effect());
   }
@@ -218,6 +222,7 @@ public final class InstanceWorkflowActor
         .onCommand(DeleteInstanceForwarding.class, forwardings::onDelete)
         .onCommand(ReconcileInstanceForwardings.class, this::onReconcileInstanceForwardings)
         .onCommand(UpdateInstanceQos.class, qos::onUpdate)
+        .onCommand(ExpireInstanceQos.class, qos::onExpire)
         .onCommand(QosUpdateCompleted.class, qos::onCompleted)
         .onCommand(RebootInstance.class, serverOperations::onReboot)
         .onCommand(RebuildInstance.class, serverOperations::onRebuild)
@@ -975,9 +980,12 @@ public final class InstanceWorkflowActor
             (state, event) -> state.created(event.requestId(), event.spec()))
         .onEvent(InstanceForwardingEvent.class, (state, event) -> event instanceof ForwardingDeleted
             ? state.forwardingDeleted(event.forwarding()) : state.forwardingChanged(event.forwarding()))
-        .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.qosUpdateChanged(event.update()))
+        .onEvent(InstanceQosUpdateRequested.class, (state, event) -> state.pendingQosChanged(event.update()))
         .onEvent(InstanceQosUpdated.class, (state, event) -> state.qosUpdated(event.update(), event.resources()))
-        .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.qosUpdateChanged(event.update()))
+        .onEvent(InstanceQosUpdateFailed.class, (state, event) -> state.pendingQosChanged(event.update()))
+        .onEvent(InstanceQosExpiryRequested.class, (state, event) -> state.activeQosChanged(event.update()))
+        .onEvent(InstanceQosExpiryFailed.class, (state, event) -> state.activeQosChanged(event.update()))
+        .onEvent(InstanceQosExpired.class, (state, event) -> state.qosExpired(event.resources()))
         .onEvent(InstanceServerOperationRequested.class,
             (state, event) -> state.serverOperationChanged(event.operation(), null, null, null))
         .onEvent(InstanceServerOperationSubmitted.class,

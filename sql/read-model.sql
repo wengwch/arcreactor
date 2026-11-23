@@ -134,7 +134,6 @@ CREATE TABLE IF NOT EXISTS instance_view (
   os_sub_floating_ip_id VARCHAR(255),
   sub_floating_ip_address VARCHAR(45),
   os_trunk_id VARCHAR(255),
-  qos_update JSON,
   server_operation JSON,
   failure_code VARCHAR(128),
   failure_message TEXT,
@@ -147,6 +146,47 @@ CREATE TABLE IF NOT EXISTS instance_view (
   INDEX idx_instance_user_region_created (user_id, region_id, created_at),
   INDEX idx_instance_region_phase_created (region_id, phase, created_at),
   INDEX idx_instance_request (request_id)
+) ENGINE=InnoDB;
+
+-- QoS history and the last successfully activated record are maintained atomically by instance-qos.
+CREATE TABLE IF NOT EXISTS instance_qos_record (
+  instance_id VARCHAR(255) NOT NULL,
+  operation_id VARCHAR(255) NOT NULL,
+  phase VARCHAR(32) NOT NULL COMMENT 'UPDATING, READY, FAILED, EXPIRING, EXPIRY_FAILED, EXPIRED, CANCELLED',
+  expires_at TIMESTAMP(6) NOT NULL,
+  switched_at TIMESTAMP(6) NULL COMMENT 'Confirmed activation time from InstanceQosUpdated',
+  replaced_qos_id VARCHAR(255) NULL COMMENT 'Previously active QoS operation ID',
+  parent_max_kbps INT NULL,
+  parent_max_burst_kbits INT NULL,
+  sub_max_kbps INT NULL,
+  sub_max_burst_kbits INT NULL,
+  expiry_parent_max_kbps INT NULL,
+  expiry_parent_max_burst_kbits INT NULL,
+  expiry_sub_max_kbps INT NULL,
+  expiry_sub_max_burst_kbits INT NULL,
+  failure_message TEXT,
+  resource_version BIGINT NOT NULL,
+  created_at TIMESTAMP(6) NOT NULL,
+  updated_at TIMESTAMP(6) NOT NULL,
+  cancelled_at TIMESTAMP(6) NULL,
+  expired_at TIMESTAMP(6) NULL,
+  PRIMARY KEY (instance_id, operation_id),
+  INDEX idx_instance_qos_history (instance_id, created_at, operation_id)
+) ENGINE=InnoDB;
+
+-- The last successfully activated QoS per instance, retained until replacement or confirmed expiry.
+-- Rates and saved expiry reset parameters are in instance_qos_record under the same operation_id.
+CREATE TABLE IF NOT EXISTS instance_current_qos (
+  instance_id VARCHAR(255) NOT NULL PRIMARY KEY,
+  operation_id VARCHAR(255) NOT NULL,
+  phase VARCHAR(32) NOT NULL COMMENT 'READY, EXPIRING, EXPIRY_FAILED',
+  expires_at TIMESTAMP(6) NOT NULL,
+  switched_at TIMESTAMP(6) NOT NULL,
+  replaced_qos_id VARCHAR(255) NULL,
+  resource_version BIGINT NOT NULL,
+  created_at TIMESTAMP(6) NOT NULL,
+  updated_at TIMESTAMP(6) NOT NULL,
+  INDEX idx_instance_current_qos_expiry (phase, expires_at, instance_id)
 ) ENGINE=InnoDB;
 
 -- One lifecycle record per claim on a floating IP, including failed and deleted mappings.

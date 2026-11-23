@@ -1,6 +1,5 @@
 package cn.veryai.arcreactor.vo;
 
-import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
 import cn.veryai.arcreactor.actor.instance.model.InstanceServerOperation;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
 import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
@@ -27,7 +26,6 @@ public record InstanceView(
         PreparedNetwork network,
         String osSecurityGroupId,
         String osProjectId,
-        InstanceQosUpdate qosUpdate,
         String osImageId,
         InstanceServerOperation serverOperation) implements Serializable {
 
@@ -42,6 +40,6 @@ public record InstanceView(
                 state.visibleForwardings().stream().map(InstanceForwardingView::from).toList(),
                 state.networkPreparation() == null ? null : state.networkPreparation().resources(),
                 state.osSecurityGroupId(), state.osProjectId(),
-                state.qosUpdate(), state.osImageId(), state.serverOperation());
+                state.osImageId(), state.serverOperation());
     }
 }

@@ -1095,13 +1095,13 @@ public class OpenStackClient {
     return portName + "_qos";
   }
 
-  /** Applies the persisted bandwidth intent without replacing either port's dedicated QoS policy. */
+  /** Applies non-null bandwidth intents, preserving each skipped port's dedicated QoS policy and rules. */
   public CompletionStage<PreparedNetwork> updateInstanceQos(ServerTarget target, String operationId,
       PreparedNetwork prepared, PortBandwidthLimit parentLimit, PortBandwidthLimit subLimit) {
     requireServerText(operationId, "operationId");
     Objects.requireNonNull(prepared, "prepared");
     if (parentLimit == null && subLimit == null) {
-      throw new IllegalArgumentException("At least one instance port bandwidth limit is required");
+      return CompletableFuture.completedFuture(prepared);
     }
     return CompletableFuture.supplyAsync(() -> {
       OSClient.OSClientV3 client = getOsAdminClient(resolveServerRegion(target), target.osProjectId());

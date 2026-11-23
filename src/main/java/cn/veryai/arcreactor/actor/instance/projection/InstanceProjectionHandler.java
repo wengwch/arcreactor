@@ -17,6 +17,9 @@ import cn.veryai.arcreactor.actor.instance.event.InstanceProvisioningFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateFailed;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdated;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosExpired;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosExpiryFailed;
+import cn.veryai.arcreactor.actor.instance.event.InstanceQosExpiryRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationRequested;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationSubmitted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceServerOperationCompleted;
@@ -37,7 +40,6 @@ import cn.veryai.arcreactor.actor.instance.event.SecurityGroupPrepared;
 import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceProjectionMapper;
-import cn.veryai.arcreactor.util.JsonUtil;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.apache.pekko.persistence.query.typed.EventEnvelope;
@@ -73,14 +75,14 @@ public final class InstanceProjectionHandler
             mapper.updateNetwork(instanceId, InstancePhase.PREPARING_NETWORK, prepared.resources(), version, timestamp);
         } else if (event instanceof ForwardingPreparationStarted) {
             mapper.updatePhase(instanceId, InstancePhase.PREPARING_FORWARDING, version, timestamp);
-        } else if (event instanceof InstanceForwardingEvent) {
+        } else if (event instanceof InstanceForwardingEvent
+                || event instanceof InstanceQosUpdateRequested || event instanceof InstanceQosUpdateFailed
+                || event instanceof InstanceQosExpiryRequested || event instanceof InstanceQosExpiryFailed) {
             mapper.updateVersion(instanceId, version, timestamp);
-        } else if (event instanceof InstanceQosUpdateRequested requested) {
-            mapper.updateQosState(instanceId, JsonUtil.toJson(requested.update()), version, timestamp);
-        } else if (event instanceof InstanceQosUpdateFailed failed) {
-            mapper.updateQosState(instanceId, JsonUtil.toJson(failed.update()), version, timestamp);
         } else if (event instanceof InstanceQosUpdated updated) {
-            mapper.updateQos(instanceId, updated.resources(), JsonUtil.toJson(updated.update()), version, timestamp);
+            mapper.updateQos(instanceId, updated.resources(), version, timestamp);
+        } else if (event instanceof InstanceQosExpired expired) {
+            mapper.updateQos(instanceId, expired.resources(), version, timestamp);
         } else if (event instanceof InstanceServerOperationRequested requested) {
             mapper.updateServerOperation(instanceId, requested.operation().type().instancePhase(), requested.operation(),
                     null, null, null, version, timestamp);

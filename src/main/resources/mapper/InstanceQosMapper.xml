@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.mapper.InstanceQosMapper">
+    <resultMap id="record" type="cn.veryai.arcreactor.entity.InstanceQosRecordEntity">
+        <id column="instance_id" property="instanceId"/>
+        <id column="operation_id" property="operationId"/>
+        <result column="phase" property="phase"/>
+        <result column="expires_at" property="expiresAt"/>
+        <result column="switched_at" property="switchedAt"/>
+        <result column="replaced_qos_id" property="replacedQosId"/>
+        <result column="parent_max_kbps" property="parentMaxKbps"/>
+        <result column="parent_max_burst_kbits" property="parentMaxBurstKbits"/>
+        <result column="sub_max_kbps" property="subMaxKbps"/>
+        <result column="sub_max_burst_kbits" property="subMaxBurstKbits"/>
+        <result column="expiry_parent_max_kbps" property="expiryParentMaxKbps"/>
+        <result column="expiry_parent_max_burst_kbits" property="expiryParentMaxBurstKbits"/>
+        <result column="expiry_sub_max_kbps" property="expirySubMaxKbps"/>
+        <result column="expiry_sub_max_burst_kbits" property="expirySubMaxBurstKbits"/>
+        <result column="failure_message" property="failureMessage"/>
+        <result column="resource_version" property="resourceVersion"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+        <result column="cancelled_at" property="cancelledAt"/>
+        <result column="expired_at" property="expiredAt"/>
+    </resultMap>
+
+    <resultMap id="current" type="cn.veryai.arcreactor.entity.InstanceCurrentQosEntity">
+        <id column="instance_id" property="instanceId"/>
+        <result column="operation_id" property="operationId"/>
+        <result column="phase" property="phase"/>
+        <result column="expires_at" property="expiresAt"/>
+        <result column="switched_at" property="switchedAt"/>
+        <result column="replaced_qos_id" property="replacedQosId"/>
+        <result column="resource_version" property="resourceVersion"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <select id="findHistoryByInstanceId" resultMap="record">
+        SELECT instance_id, operation_id, phase, expires_at, switched_at, replaced_qos_id,
+               parent_max_kbps, parent_max_burst_kbits, sub_max_kbps, sub_max_burst_kbits,
+               expiry_parent_max_kbps, expiry_parent_max_burst_kbits,
+               expiry_sub_max_kbps, expiry_sub_max_burst_kbits,
+               failure_message, resource_version, created_at, updated_at, cancelled_at, expired_at
+        FROM instance_qos_record
+        WHERE instance_id = #{instanceId}
+        ORDER BY created_at DESC, operation_id ASC
+    </select>
+
+    <select id="findCurrentByInstanceId" resultMap="current">
+        SELECT instance_id, operation_id, phase, expires_at, switched_at, replaced_qos_id,
+               resource_version, created_at, updated_at
+        FROM instance_current_qos
+        WHERE instance_id = #{instanceId}
+    </select>
+</mapper>

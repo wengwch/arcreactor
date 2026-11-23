@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.actor.instance.projection.mybatis.InstanceQosProjectionMapper">
+    <select id="findRecordVersion" resultType="java.lang.Long">
+        SELECT resource_version FROM instance_qos_record
+        WHERE instance_id = #{instanceId} AND operation_id = #{operationId}
+    </select>
+
+    <update id="cancelOutstanding">
+        UPDATE instance_qos_record SET phase = 'CANCELLED', cancelled_at = #{updatedAt},
+            updated_at = #{updatedAt}, resource_version = #{version}
+        WHERE instance_id = #{instanceId} AND phase NOT IN ('EXPIRED', 'CANCELLED')
+          AND resource_version &lt; #{version}
+    </update>
+
+    <update id="cancelReplaced">
+        UPDATE instance_qos_record SET phase = 'CANCELLED', cancelled_at = #{switchedAt},
+            updated_at = #{updatedAt}, resource_version = #{version}
+        WHERE instance_id = #{instanceId} AND operation_id = #{operationId}
+          AND phase NOT IN ('EXPIRED', 'CANCELLED') AND resource_version &lt; #{version}
+    </update>
+
+    <insert id="insertRequested">
+        INSERT INTO instance_qos_record (
+            instance_id, operation_id, phase, expires_at,
+            parent_max_kbps, parent_max_burst_kbits, sub_max_kbps, sub_max_burst_kbits,
+            resource_version, created_at, updated_at
+        ) VALUES (
+            #{instanceId}, #{update.operationId}, #{update.phase}, #{expiresAt,jdbcType=TIMESTAMP},
+            #{update.parentPort.maxKbps,jdbcType=INTEGER}, #{update.parentPort.maxBurstKbits,jdbcType=INTEGER},
+            #{update.subPort.maxKbps,jdbcType=INTEGER}, #{update.subPort.maxBurstKbits,jdbcType=INTEGER},
+            #{version}, #{updatedAt}, #{updatedAt}
+        )
+    </insert>
+
+    <insert id="upsertCurrent">
+        INSERT INTO instance_current_qos (instance_id, operation_id, phase, expires_at, switched_at, replaced_qos_id,
+            resource_version, created_at, updated_at)
+        VALUES (#{instanceId}, #{update.operationId}, #{update.phase}, #{expiresAt,jdbcType=TIMESTAMP},
+            #{switchedAt}, #{replacedQosId,jdbcType=VARCHAR}, #{version}, #{switchedAt}, #{updatedAt})
+        ON DUPLICATE KEY UPDATE
+            operation_id = IF(resource_version &lt; VALUES(resource_version), VALUES(operation_id), operation_id),
+            phase = IF(resource_version &lt; VALUES(resource_version), VALUES(phase), phase),
+            expires_at = IF(resource_version &lt; VALUES(resource_version), VALUES(expires_at), expires_at),
+            switched_at = IF(resource_version &lt; VALUES(resource_version), VALUES(switched_at), switched_at),
+            replaced_qos_id = IF(resource_version &lt; VALUES(resource_version), VALUES(replaced_qos_id), replaced_qos_id),
+            created_at = IF(resource_version &lt; VALUES(resource_version), VALUES(created_at), created_at),
+            updated_at = IF(resource_version &lt; VALUES(resource_version), VALUES(updated_at), updated_at),
+            resource_version = GREATEST(resource_version, VALUES(resource_version))
+    </insert>
+
+    <update id="activateRecord">
+        UPDATE instance_qos_record SET phase = #{update.phase}, switched_at = #{switchedAt},
+            replaced_qos_id = #{replacedQosId,jdbcType=VARCHAR},
+            failure_message = #{update.failure,jdbcType=LONGVARCHAR},
+            updated_at = #{updatedAt}, resource_version = #{version}
+        WHERE instance_id = #{instanceId} AND operation_id = #{update.operationId}
+          AND resource_version &lt; #{version}
+    </update>
+
+    <update id="updateRecord">
+        UPDATE instance_qos_record SET phase = #{update.phase},
+            expiry_parent_max_kbps = #{update.expiryParentPort.maxKbps,jdbcType=INTEGER},
+            expiry_parent_max_burst_kbits = #{update.expiryParentPort.maxBurstKbits,jdbcType=INTEGER},
+            expiry_sub_max_kbps = #{update.expirySubPort.maxKbps,jdbcType=INTEGER},
+            expiry_sub_max_burst_kbits = #{update.expirySubPort.maxBurstKbits,jdbcType=INTEGER},
+            failure_message = #{update.failure,jdbcType=LONGVARCHAR},
+            expired_at = CASE WHEN #{update.phase} = 'EXPIRED' THEN #{updatedAt} ELSE expired_at END,
+            updated_at = #{updatedAt}, resource_version = #{version}
+        WHERE instance_id = #{instanceId} AND operation_id = #{update.operationId}
+          AND resource_version &lt; #{version}
+    </update>
+
+    <update id="updateCurrent">
+        UPDATE instance_current_qos SET phase = #{update.phase},
+            updated_at = #{updatedAt}, resource_version = #{version}
+        WHERE instance_id = #{instanceId} AND operation_id = #{update.operationId}
+          AND resource_version &lt; #{version}
+    </update>
+
+    <delete id="deleteCurrent">
+        DELETE FROM instance_current_qos
+        WHERE instance_id = #{instanceId} AND resource_version &lt; #{version}
+        <if test="operationId != null">AND operation_id = #{operationId}</if>
+    </delete>
+</mapper>

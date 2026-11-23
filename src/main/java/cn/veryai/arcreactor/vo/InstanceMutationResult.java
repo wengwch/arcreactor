@@ -1,4 +1,4 @@
 package cn.veryai.arcreactor.vo;
 
-/** The durable mutation has been accepted and continues asynchronously. */
+/** An accepted asynchronous mutation, or an immediate no-op success when operationId is null. */
 public record InstanceMutationResult(String operationId) {}

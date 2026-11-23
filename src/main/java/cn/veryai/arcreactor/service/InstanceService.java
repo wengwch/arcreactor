@@ -27,6 +27,8 @@ import cn.veryai.arcreactor.entity.FlavorEntity;
 import cn.veryai.arcreactor.entity.FloatingIpEntity;
 import cn.veryai.arcreactor.entity.HypervisorTypeEntity;
 import cn.veryai.arcreactor.entity.ImageEntity;
+import cn.veryai.arcreactor.entity.InstanceCurrentQosEntity;
+import cn.veryai.arcreactor.entity.InstanceQosRecordEntity;
 import cn.veryai.arcreactor.entity.PortForwardingEntity;
 import cn.veryai.arcreactor.entity.RegionEntity;
 import cn.veryai.arcreactor.exceptions.BaseException;
@@ -35,6 +37,7 @@ import cn.veryai.arcreactor.repo.FlavorRepo;
 import cn.veryai.arcreactor.repo.FloatingIpRepo;
 import cn.veryai.arcreactor.repo.HypervisorTypeRepo;
 import cn.veryai.arcreactor.repo.ImageRepo;
+import cn.veryai.arcreactor.repo.InstanceQosRepo;
 import cn.veryai.arcreactor.repo.OpenstackClusterRepo;
 import cn.veryai.arcreactor.repo.PortForwardingRepo;
 import cn.veryai.arcreactor.repo.RegionRepo;
@@ -51,6 +54,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -79,6 +83,7 @@ public class InstanceService {
     private final HypervisorTypeRepo hypervisorTypeRepo;
     private final FloatingIpRepo floatingIpRepo;
     private final PortForwardingRepo portForwardingRepo;
+    private final InstanceQosRepo instanceQosRepo;
     private final InstanceCreationProperties creationProperties;
     private final CloudInitRenderer cloudInitRenderer;
     private final PekkoRuntime pekkoRuntime;
@@ -153,6 +158,16 @@ public class InstanceService {
         return portForwardingRepo.findByInstanceId(instanceId);
     }
 
+    @Transactional(readOnly = true)
+    public List<InstanceQosRecordEntity> getQosHistory(String instanceId) {
+        return instanceQosRepo.findHistoryByInstanceId(instanceId);
+    }
+
+    @Transactional(readOnly = true)
+    public InstanceCurrentQosEntity getCurrentQos(String instanceId) {
+        return instanceQosRepo.findCurrentByInstanceId(instanceId);
+    }
+
     public CompletionStage<InstanceMutationResult> createForwarding(String instanceId, CreateUserForwardingParam param) {
         return submitMutation(instanceId, replyTo -> new CreateInstanceForwarding(param.getInternalPort(), List.of(), replyTo));
     }
@@ -162,9 +177,13 @@ public class InstanceService {
     }
 
     public CompletionStage<InstanceMutationResult> updateQos(String instanceId, UpdateInstanceQosParam param) {
+        if (param.getParentPort() == null && param.getSubPort() == null) {
+            return CompletableFuture.completedFuture(new InstanceMutationResult(null));
+        }
         return submitMutation(instanceId, replyTo -> new UpdateInstanceQos(
                 param.getParentPort() == null ? null : param.getParentPort().toLimit(),
-                param.getSubPort() == null ? null : param.getSubPort().toLimit(), replyTo));
+                param.getSubPort() == null ? null : param.getSubPort().toLimit(),
+                param.getExpiresAt().toInstant(), replyTo));
     }
 
     public CompletionStage<InstanceMutationResult> reboot(String instanceId) {

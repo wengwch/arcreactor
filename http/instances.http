@@ -63,6 +63,7 @@ Accept: application/json
 }
 
 ### 5. 查询实例创建状态和公网端口映射
+# network 返回端口 QoS 资源和速率；QoS 操作记录通过第 10b/10c 项查询，响应不再包含 qosUpdate。
 # osSecurityGroupId 为实例专属安全组，安全组就绪后才创建父子端口和转发。
 # forwardings 按 internalPort 区分 22 和 8888，每项都有自己的 floatingIp/externalPort，以及创建时保存的可空 domain。
 # 创建中可能只出现一条映射；映射创建成功后还需要等待 Nova 和实例内服务启动。
@@ -104,9 +105,13 @@ DELETE {{baseUrl}}/api/v1/instances/{{instanceId}}/forwardings/{{claimId}}
 Accept: application/json
 
 ### 9. 修改 ACTIVE 实例父子端口的 QoS 速率
-# 返回 HTTP 202 和 result.operationId，通过 GET 实例观察 QoS 操作状态和实际资源。
+# 返回 HTTP 202 和 result.operationId，通过第 10b/10c 项观察 QoS 操作状态，第 5 项查看已确认资源。
 # maxKbps 单位为 kbit/s，maxBurstKbits 单位为 kbit；同一端口的 ingress/egress 使用相同限制。
-# parentPort/subPort 至少指定一个，省略或 null 的端口保持不变；两个值均为 0 表示不限速。
+# parentPort/subPort 省略或 null 时保持不变；都为空时直接返回 HTTP 200 和 operationId: null，不创建操作。
+# 指定端口的 maxKbps/maxBurstKbits 均为 0 表示不限速。
+# 实际更新必填带时区的 expiresAt；成功后才切换当前记录并将旧记录标记 CANCELLED，失败保留原生效记录。
+# 成功记录返回 switchedAt 和 replacedQosId；旧记录的 cancelledAt 与本次 switchedAt 相同。
+# FAILED/EXPIRY_FAILED 后可提交不同的速率和 expiresAt 创建新操作；进行中的管理操作仍需等待完成。
 # 资源变更尚未完成时应先查询结果；拒绝返回业务 code=11722，受理结果不确定为 11723/11724。
 PUT {{baseUrl}}/api/v1/instances/{{instanceId}}/qos
 Content-Type: application/json
@@ -114,7 +119,8 @@ Accept: application/json
 
 {
   "parentPort": {"maxKbps": 102400, "maxBurstKbits": 10240},
-  "subPort": {"maxKbps": 51200, "maxBurstKbits": 5120}
+  "subPort": {"maxKbps": 51200, "maxBurstKbits": 5120},
+  "expiresAt": "2026-12-01T00:00:00+08:00"
 }
 
 ### 10. 取消父端口限速，保留子端口当前限制
@@ -123,13 +129,41 @@ Content-Type: application/json
 Accept: application/json
 
 {
-  "parentPort": {"maxKbps": 0, "maxBurstKbits": 0}
+  "parentPort": {"maxKbps": 0, "maxBurstKbits": 0},
+  "expiresAt": "2026-12-01T00:00:00+08:00"
 }
+
+### 10a. 两个端口均为空，直接返回成功
+# HTTP 200，result.operationId 为 null；不创建 QoS 操作，也不调用 Actor 或 OpenStack。请求体为 {} 时语义相同。
+PUT {{baseUrl}}/api/v1/instances/{{instanceId}}/qos
+Content-Type: application/json
+Accept: application/json
+
+{
+  "parentPort": null,
+  "subPort": null
+}
+
+### 10b. 查询实例 QoS 历史记录
+# HTTP 200，result 为数组；按 createdAt 倒序、operationId 升序，无记录时为 []。
+# 直接读取 instance_qos_record，包含 CANCELLED、EXPIRED 等全部阶段，不调用 Actor 或 OpenStack。
+# 新更新的 UPDATING/FAILED 状态按受理返回的 operationId 在历史中查询。
+GET {{baseUrl}}/api/v1/instances/{{instanceId}}/qos/history
+Accept: application/json
+
+### 10c. 查询实例当前 QoS 记录
+# HTTP 200，result 为 instance_current_qos 记录；无当前记录时为 null。
+# 返回当前表的九个字段，包含 switchedAt/replacedQosId；速率与过期失败信息通过 operationId 匹配历史记录。
+# 当前记录指向最后成功生效的 QoS；新请求受理或失败不会切换，首次更新尚未成功时为 null。
+# 两个查询接口均读取异步投影，事件持久化后可能短暂返回旧状态。
+GET {{baseUrl}}/api/v1/instances/{{instanceId}}/qos/current
+Accept: application/json
 
 ### 11. 查询用户名下的实例列表（数据库读模型）
 # 直接查询 instance_view，不调用 Actor；HTTP 202 后可能需要等待异步投影。
 # result 为数组，按 createdAt 降序、instanceId 升序；无分页，默认包含所有阶段（含 DELETED）。
-# 字段按表结构平铺；qosUpdate、serverOperation 返回 JSON 对象或 null，端口转发见第 14 项，时间默认携带 +08:00。
+# 字段按表结构平铺；QoS 返回父子端口当前速率，操作记录见第 10b/10c 项；serverOperation 为 JSON 对象或 null。
+# 端口转发见第 14 项，时间默认携带 +08:00。
 GET {{baseUrl}}/api/v1/users/{{userId}}/instances
 Accept: application/json
 

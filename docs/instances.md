@@ -826,7 +826,8 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 响应沿用 `RespWrapper`，字段按 `instance_view` 列名转为 camelCase，包含名称、描述、用户、区域、
 资源规格、实例阶段、已投影的资源 ID、限速值、失败信息和 `workflowVersion`。
 列表和详情均返回 `hostname`，直接读取事件投影写入的 `instance_view.hostname`；宿主机事件尚未投影时为 `null`。
-`qosUpdate`、`serverOperation` 是 JSON 对象或 `null`；端口转发通过独立的转发查询接口读取。
+QoS 返回父子端口当前已确认的 `parentMaxKbps`、`parentMaxBurstKbits`、`subMaxKbps`、`subMaxBurstKbits`，不返回 `qosUpdate`。
+QoS 操作记录通过独立的历史和当前记录接口读取；`serverOperation` 是 JSON 对象或 `null`，端口转发通过独立的转发查询接口读取。
 `createdAt`、`updatedAt` 使用带偏移量的时间格式；默认 JDBC 连接时区为 `Asia/Shanghai`，返回 `+08:00`。
 以下仅展示列表中的部分字段：
 
@@ -841,7 +842,10 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
       "regionId": "Test-SH-01",
       "phase": "ACTIVE",
       "hostname": "demo-gpu-01",
-      "qosUpdate": null,
+      "parentMaxKbps": 102400,
+      "parentMaxBurstKbits": 10240,
+      "subMaxKbps": 51200,
+      "subMaxBurstKbits": 5120,
       "createdAt": "2026-11-17T10:00:00+08:00",
       "updatedAt": "2026-11-17T10:01:00+08:00"
     }
@@ -852,6 +856,7 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 此查询读取已完成的投影，创建或变更接口返回 HTTP `202` 后，新记录和新状态可能尚未可见。
 接口不触发 Actor 查询，也不额外读取 `port_forwarding`，不会返回密码、Jupyter token 或 Share 访问凭据。
 `GET /api/v1/instances/{instanceId}` 继续提供 Actor 当前状态及已确认的端口转发映射。
+响应不再包含 `qosUpdate`，`network` 中仍包含端口 QoS 资源和速率；QoS 操作记录统一通过历史和当前记录接口查询。
 返回的 `InstanceView.hostname` 直接读取 `InstanceWorkflowState.hostname`，表示当前候选宿主机的实际名称；
 尚未选定候选时为 `null`，不使用创建请求中的 hostname 筛选条件，也不额外查询宿主机记录。
 
@@ -949,14 +954,16 @@ Actor 恢复后只查询，不重新提交重启或重建。已记录 Nova 受�
 实例处于 `ACTIVE` 且没有进行中的管理操作时，才接受新的用户转发创建、删除和 QoS 修改。
 管理操作拥有独立状态，不改变实例的 `ACTIVE` 生命周期阶段；转发或 QoS 操作之间串行执行。
 接口持久化操作意图后返回 HTTP `202`，响应为 `{"code":200,"result":{"operationId":"..."}}`，
-不等待 OpenStack 完成。业务拒绝使用 `11722`，受理等待超时和结果未确认分别为 `11723`、`11724`；
+不等待 OpenStack 完成。QoS 请求两个端口参数均为空时直接返回 HTTP `200`，响应为
+`{"code":200,"result":{"operationId":null}}`，不创建更新操作。
+业务拒绝使用 `11722`，受理等待超时和结果未确认分别为 `11723`、`11724`；
 结果不确定时先查询实例状态，再决定是否重试。接口示例见 `http/instances.http`。
 
 | 接口 | 请求内容 | `operationId` |
 | --- | --- | --- |
 | `POST /api/v1/instances/{instanceId}/forwardings` | `{"internalPort":8080}`，端口范围 `1–65535` | 新建用户转发的 `claimId` |
 | `DELETE /api/v1/instances/{instanceId}/forwardings/{claimId}` | 无请求体，仅允许 `USER` | 被删除用户转发的 `claimId` |
-| `PUT /api/v1/instances/{instanceId}/qos` | 可选的 `parentPort`、`subPort`，至少指定一个 | 本次 QoS 操作的独立 ID |
+| `PUT /api/v1/instances/{instanceId}/qos` | 可选的 `parentPort`、`subPort`；实际更新必填带时区的 `expiresAt`；两个端口均为空时直接成功 | 有更新时为本次 QoS 操作的独立 ID，否则为 `null` |
 
 用户转发沿用该实例配置的浮动 IP 候选列表，由 FloatingIpActor 在位图空闲范围内按随机起点分配公网端口，
 同时建立 TCP、UDP 映射；请求不接收类型、浮动 IP 或公网端口。内部端口已被系统转发或尚未删除的
@@ -964,7 +971,8 @@ Actor 恢复后只查询，不重新提交重启或重建。已记录 Nova 受�
 通过 `GET /api/v1/instances/{instanceId}/forwardings` 按 `claimId` 查找转发记录，
 可见 FIP 的 `CREATING`、`READY`、`FAILED`、`DELETING`、`DELETE_FAILED`、`DELETED` 及资源和失败信息。
 顶层 `forwardings` 选取 `resources` 非空的转发，由 `InstanceForwardingView` 将状态中的标识、内部端口、类型与资源字段组装为平铺响应。
-实例查询在顶层返回 `qosUpdate`；实例 Actor 保存当前转发状态，用于恢复尚未完成的操作；
+QoS 操作记录统一通过 `GET /api/v1/instances/{instanceId}/qos/history` 和 `GET /api/v1/instances/{instanceId}/qos/current` 查询。
+实例 Actor 保存当前转发状态，用于恢复尚未完成的操作；
 已删除转发的历史通过 `port_forwarding` 查询，实例状态不保留删除历史缓存。
 
 用户转发删除先等待 FIP claim 返回 `DELETED`，再删除实例安全组中该端口的专属规则，
@@ -975,32 +983,130 @@ Actor 恢复后只查询，不重新提交重启或重建。已记录 Nova 受�
 `DELETE_FAILED` 可再次调用删除接口重试。删除整个实例仍统一清理全部 `SYSTEM`、`USER` 转发和专属安全组。
 
 QoS 由独立的 `InstanceQosWorkflow` 负责受理校验、OpenStack 请求、回调校验、请求 token 和恢复，
-与实例 Actor 共用邮箱和事件日志。`InstanceWorkflowActor` 分发 QoS 命令、回放原有 QoS 事件，
-并在恢复时委托处理器重置 token、恢复实例处于 `ACTIVE` 且 QoS 为 `UPDATING` 的已持久化意图。
+与实例 Actor 共用邮箱和事件日志。`InstanceWorkflowActor` 分发 QoS 命令、回放 QoS 事件，
+并在恢复时委托处理器重置 token；实例处于 `ACTIVE` 时，恢复 `pendingQos.UPDATING` 或 `activeQos.EXPIRING` 的已持久化意图。
 
 QoS 修改示例：
 
 ```json
 {
   "parentPort": {"maxKbps": 102400, "maxBurstKbits": 10240},
-  "subPort": {"maxKbps": 51200, "maxBurstKbits": 5120}
+  "subPort": {"maxKbps": 51200, "maxBurstKbits": 5120},
+  "expiresAt": "2026-12-01T00:00:00+08:00"
 }
 ```
 
 省略或传 `null` 的端口保持不变；每个指定端口的两个字段均必填且不得为负。
+实际更新必须提供 ISO-8601 带时区的绝对过期时间 `expiresAt`，受理时转换为 `Instant` 并随操作持久化。
+同一条记录的父子端口共用这个截止时间；已经到期的请求也可受理，生效后由外部任务触发过期处理，便于按原参数重试。
+`OpenStackClient.updateInstanceQos()` 只校验和更新非空参数对应的端口；两个参数都为空时直接返回原网络记录，不调用 OpenStack。
+管理 API 接受 `{}` 或 `{"parentPort":null,"subPort":null}`，直接返回 HTTP `200` 和 `operationId: null`；
+Service 不查询实例 Actor，也不发送 QoS 更新命令，不生成操作 ID、不持久化事件、不调用 OpenStack，已有 QoS 操作和资源保持不变；这种空更新无需 `expiresAt`。
 `maxKbps` 单位为 kbit/s，`maxBurstKbits` 单位为 kbit，同一端口的 ingress 和 egress 使用相同参数。
 `0 / 0` 表示删除该端口的限速规则、保留专属 QoS policy；重新设置正速率时补齐所需规则。
 操作只修改已有实例端口绑定的专属 policy，不重建端口或替换 policy。
 QoS 修改保留初始规则查询和 409 冲突重查，按目标值更新已有规则或创建缺失规则；目标为 `0 / 0` 时删除规则，确认成功或 404 后移除本地记录。
 创建、更新须返回非空结果，直接使用返回规则生成 `PreparedPortQos`，不重复校验内容或完整性，也不在末尾重新查询。
-通过实例查询的顶层 `qosUpdate` 查看 `UPDATING`、`READY`、`FAILED`、请求参数和失败信息；
+通过 QoS 历史和当前记录接口查看 `UPDATING`、`READY`、`FAILED`、`EXPIRING`、`EXPIRY_FAILED`、`EXPIRED`、`CANCELLED` 等状态、请求参数、截止时间和失败信息；
 成功后 `network.parentQos`、`network.subQos` 记录返回规则 ID 及请求目标 `bandwidthLimit`。
-失败不回滚已经修改的远端规则，实例仍为 `ACTIVE`；需使用与失败操作相同的参数重试，完成后才能提交其他限速值。
+失败不回滚已经修改的远端规则，实例仍为 `ACTIVE`；无进行中的管理操作时，可以使用不同的端口参数和 `expiresAt` 创建新更新，也可以沿用原参数重试。
+`pendingQos` 为 `FAILED` 或 `activeQos` 为 `EXPIRY_FAILED` 均不限制新更新的参数；新请求生成独立操作，成功后才取消旧的生效记录，未指定的端口仍按空值语义跳过。
 
 管理意图分别使用 `ForwardingCreationRequested`、`ForwardingDeletionRequested`、
 `InstanceQosUpdateRequested` 持久化，成功和失败使用各自明确的结果事件。
 重启后独立恢复已持久化的创建、删除和 QoS 修改意图：用户转发创建使用原 claim ID 和规格重复提交，再补充未完成的安全组规则；删除使用原 claim ID 直接重复提交，确认删除后清理安全组规则。
 QoS 恢复由 `InstanceQosWorkflow.recover()` 按保存的目标参数检查并修复部分修改，不重新分配操作标识；已经失败的管理操作等待外部处理。
+`InstanceWorkflowState.activeQos` 保存当前生效记录及其过期处理状态（`READY`、`EXPIRING`、`EXPIRY_FAILED`），
+`pendingQos` 只保存进行中或失败的新 QoS 更新（`UPDATING`、`FAILED`）。
+新更新受理或失败时保留 `activeQos`；更新成功后用新记录替换它并清空 `pendingQos`。
+过期请求和失败直接更新 `activeQos`；过期重置成功后只清空 `activeQos`，保留 `pendingQos` 中已有的新更新失败记录。
+`inProgressQos()` 统一选择 `pendingQos.UPDATING` 或 `activeQos.EXPIRING`，供请求、回调、恢复和管理操作互斥检查使用；
+失败记录不参与选择，避免 `pendingQos.FAILED` 遮住当前生效记录的过期操作。失败操作仍等待显式重试，恢复不会自动重试它们。
+这些内部字段不映射到对外的 `InstanceView`；远端部分失败仍不会自动回滚，实例查询仍返回最后确认的端口资源和速率。
+
+### QoS 历史、当前记录和外部过期命令
+
+`InstanceQosProjection` 使用独立的 `instance-qos` 偏移量，在同一个 JDBC 事务中更新两个表和投影偏移量：
+
+| 表 | 内容 |
+| --- | --- |
+| `instance_qos_record` | 每次受理的更新记录，主键为 `(instance_id, operation_id)`，保存父子端口目标、`expires_at`、阶段、`switched_at`、`replaced_qos_id`、过期重置目标、失败原因、取消/过期时间和日志版本 |
+| `instance_current_qos` | 每个实例最后成功生效的 QoS，保存 `operation_id`、`expires_at`、阶段、`switched_at`、`replaced_qos_id` 和日志版本；具体端口参数关联历史表读取 |
+
+两个查询接口均返回 HTTP `200`，按实例 ID 直接读取对应投影表：
+
+| 接口 | 数据来源 | `result` |
+| --- | --- | --- |
+| `GET /api/v1/instances/{instanceId}/qos/history` | `instance_qos_record` | 历史记录数组，按 `createdAt` 倒序、`operationId` 升序；包含全部阶段，无分页；无记录时为 `[]` |
+| `GET /api/v1/instances/{instanceId}/qos/current` | `instance_current_qos` | 当前记录对象；无记录时为 `null` |
+
+字段按表结构平铺为 camelCase。历史记录返回 `instanceId`、`operationId`、`phase`、`expiresAt`、`switchedAt`、`replacedQosId`，
+父子端口的 `parentMaxKbps`、`parentMaxBurstKbits`、`subMaxKbps`、`subMaxBurstKbits`，
+以及同名加 `expiry` 前缀的重置参数、`failureMessage`、`resourceVersion`、`createdAt`、`updatedAt`、`cancelledAt`、`expiredAt`。
+当前记录仅返回该表的九个字段：`instanceId`、`operationId`、`phase`、`expiresAt`、`switchedAt`、`replacedQosId`、`resourceVersion`、`createdAt`、`updatedAt`；
+需要速率或过期失败信息时，通过 `operationId` 匹配历史查询中的记录。新更新的处理状态和失败信息按其受理返回的 `operationId` 查询历史。
+时间字段返回带时区的值；未生效记录的 `switchedAt`、首次生效记录的 `replacedQosId`、未指定的端口参数或未发生的取消/过期时间为 `null`。
+两个接口不调用 Actor 或 OpenStack，也不额外验证实例是否存在；尚未投影、没有更新历史或当前记录已清除时返回上述空结果。
+投影异步更新，事件持久化后查询可能短暂返回旧状态；它们不触发任何 QoS 更新或过期处理。
+
+新更新受理时，`InstanceQosUpdateRequested` 只插入 `UPDATING` 历史记录，当前记录保持原值；首次更新尚未成功时当前表无记录。
+更新失败只将新历史记录改为 `FAILED`，不取消原生效记录、不替换当前记录。后续新请求不会批量取消这些失败历史。
+OpenStack 返回成功后，Actor 在 `InstanceQosUpdated` 中持久化本次 `switchedAt` 和被替换记录的 `replacedQosId`；首次生效时后者为 `null`。
+投影在同一事务中将新记录改为 `READY`、保存切换字段，仅取消 `replacedQosId` 对应的旧记录，再切换当前记录。
+旧记录的 `cancelledAt` 与新记录的 `switchedAt` 使用同一个事件值；回放不会重新读取当前时间，后续过期事件也不会覆盖切换字段。
+旧记录即使已到截止时间、但尚未完成重置，也在替换成功时标记为 `CANCELLED`。
+当前表只出现 `READY`、`EXPIRING`、`EXPIRY_FAILED`，直到替换成功、过期重置成功或实例清理才切换/移除；已确认资源仍通过实例查询的 `network` 查看。
+历史记录的 `createdAt` 是受理时间，当前记录的 `createdAt` 是本次切换时间。后续退款可按切换字段确定替换关系和时间，本次不接入退款流程。
+每次真正受理的更新（包括失败重试）生成新的 `operationId`；空请求、校验失败和业务拒绝不产生新记录。
+`EXPIRED` 只表示重置已成功完成，时间到达本身不会写入该状态。
+
+外部任务可按索引分批查询到期记录，例如：
+
+```sql
+SELECT c.instance_id, c.operation_id, c.phase, c.expires_at,
+       r.expiry_parent_max_kbps, r.expiry_parent_max_burst_kbits,
+       r.expiry_sub_max_kbps, r.expiry_sub_max_burst_kbits
+FROM instance_current_qos c
+JOIN instance_qos_record r
+  ON r.instance_id = c.instance_id AND r.operation_id = c.operation_id
+WHERE c.expires_at <= CURRENT_TIMESTAMP(6)
+  AND c.phase IN ('READY', 'EXPIRING', 'EXPIRY_FAILED')
+ORDER BY c.expires_at, c.instance_id
+LIMIT 100;
+```
+
+任务按 `instance_id` 获取 Actor，并发送 `ExpireInstanceQos(operationId, parentPort, subPort, replyTo)`。
+`operationId` 必须使用当前表查到的记录 ID；两个重置端口参数都必填，`0 / 0` 表示取消限速。
+正常更新时省略的端口在过期时也按命令中的对应参数重置；重置值由任务提供，Actor 不读取当前默认配置。
+Java 调用形式：
+
+```java
+AskPattern.<WorkflowCommand, InstanceMutationReply>ask(
+    pekkoRuntime.instanceActor(instanceId),
+    replyTo -> new ExpireInstanceQos(operationId, resetParentLimit, resetSubLimit, replyTo),
+    pekkoRuntime.getConfig().getAskTimeout(),
+    pekkoRuntime.getActorSystem().scheduler());
+```
+
+Actor 再次校验当前记录 ID、`expiresAt <= now`、实例 `ACTIVE` 且无其他进行中的管理操作，
+持久化 `InstanceQosExpiryRequested` 和重置参数，将 `activeQos` 推进到 `EXPIRING` 后才调用 OpenStack。
+过期命令仅匹配 `activeQos`，不会过期未成功生效的新请求，也不占用或覆盖 `pendingQos`。
+新更新进行中时，旧记录的过期命令被拒绝，等待外部任务重试；新更新失败后，仍可对原生效记录执行到期重置。
+成功事件 `InstanceQosExpired` 同时保存返回的端口 QoS 资源，清空 Actor 的 `activeQos`，保留 `pendingQos` 中的新更新失败记录；投影将历史记录改为 `EXPIRED`，并按实例 ID 和操作 ID 删除当前记录。
+失败事件 `InstanceQosExpiryFailed` 将 `activeQos` 改为 `EXPIRY_FAILED`，保留当前记录及本次重置参数；任务可沿用已保存的 `expiry_*` 参数，也可提供不同的父子端口重置参数重试。
+`EXPIRING` 期间相同命令只返回受理结果；参数不同会拒绝，避免一次重置被两个目标混用。
+针对同一条 `EXPIRY_FAILED` 记录重试时保留 `operationId` 和 `expiresAt`，仍校验记录 ID、截止时间和实例管理状态；
+受理后重新持久化 `InstanceQosExpiryRequested`，将 `expiry_*` 更新为本次命令的重置目标，再调用 OpenStack。后续回调通过请求 token 区分重试，恢复时使用最新已持久化的参数。
+也可以提交新的 QoS 更新；只有新更新成功后才取代原生效记录，此后旧过期命令按记录 ID 幂等忽略。
+已过期、已被替换或实例已删除的命令幂等返回成功，不调用 OpenStack；尚未到期或实例正在其他操作中则拒绝，由外部任务稍后再检查。
+受理回复不代表重置完成，任务通过历史表和当前表确认最终状态；任务不直接修改投影表。
+`EXPIRING` 会阻止重启、重建、删除和其他管理操作并发，Actor 恢复后按已保存的重置目标继续处理。
+实例网络删除成功时清空 Actor 内部两项 QoS 状态；网络删除成功或实例最终删除时，投影取消尚存记录并清除当前记录，保留历史。
+
+尚未上线，直接使用新状态和事件结构，不提供旧 `qosUpdate` 快照或旧 QoS 事件的兼容转换。
+新库使用 `sql/read-model.sql`；`sql/migrations/add-instance-qos-records.sql` 提供同一结构的独立建表脚本。
+重建独立投影时从本结构的完整事件日志回放 QoS 历史；日志须包含相应请求事件，不能只保留实例快照。
+过期处理通过 Actor 命令入口触发，不提供过期 HTTP API 或内置扫描定时任务。
 
 ## 用户资源清理
 
@@ -1194,8 +1300,8 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 
 ## 实例读模型
 
-`InstanceProjection` 将实例状态写入 `instance_view`；端口转发记录统一由 `FloatingIpProjection`
-写入 `port_forwarding`，建表定义均位于 `sql/read-model.sql`。
+`InstanceProjection` 将实例状态写入 `instance_view`；`InstanceQosProjection` 将 QoS 历史和当前意图写入
+`instance_qos_record`、`instance_current_qos`；端口转发记录统一由 `FloatingIpProjection` 写入 `port_forwarding`，建表定义均位于 `sql/read-model.sql`。
 `instance_view.os_security_group_id` 保存实例专属安全组 ID；本次状态和事件结构调整不提供历史数据兼容转换。
 网络准备统一使用 `PREPARING_NETWORK`、`NetworkPreparationStarted` 和 `NetworkPrepared`，
 不提供旧网络阶段、事件或快照的兼容转换。
@@ -1213,15 +1319,18 @@ Actor 清理过期 `outcomes` 时不删除这些数据库记录；同一 claim I
 `NetworkPreparationStarted` 更新为 `PREPARING_NETWORK`，`NetworkPrepared` 一次写入父子端口、QoS、
 子端口浮动 IP 和 Trunk 资源。`ForwardingPreparationStarted` 将实例投影置为 `PREPARING_FORWARDING`。
 共享转发事件只更新实例投影版本和时间；转发详情及历史统一由 FIP 事件投影到 `port_forwarding`。
-QoS 请求和失败事件写入 `qos_update` JSON，完成事件同时更新返回规则 ID 和目标限速字段
+QoS 更新与过期重置的请求和失败事件只推进实例投影版本及更新时间，保留最后确认的速率；
+`InstanceQosUpdated`、`InstanceQosExpired` 完成事件更新返回规则 ID 和当前限速字段
 `parent_max_kbps`、`parent_max_burst_kbits`、`sub_max_kbps`、`sub_max_burst_kbits`。
+`instance_view` 不再保存 `qos_update` JSON，操作状态、截止时间和历史由独立 QoS 表及查询接口提供；过期成功时写入重置后的速率。
 网络准备完成时也写入父子端口请求的目标限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
 重启、重建的请求、Nova 受理、完成和失败事件写入 `server_operation` JSON，并同步实例生命周期阶段；
 完成事件更新已确认的 `os_image_id` 和 Nova 状态，失败事件保存失败代码及原因。
 新库使用 `sql/read-model.sql`，已有 `instance_view` 可执行
 `sql/migrations/add-instance-network-management.sql` 增加两列 JSON 和四列限速值，不转换旧事件或快照。
-该历史脚本中的 `user_forwardings` JSON 已停用，升级后可执行
-`sql/migrations/remove-instance-user-forwardings.sql` 删除旧列；新库不再创建该列。
+该历史脚本中的 `user_forwardings`、`qos_update` JSON 均已停用，部署不再读写这些列的代码后，分别执行
+`sql/migrations/remove-instance-user-forwardings.sql`、`sql/migrations/remove-instance-qos-update.sql` 删除旧列；新库不再创建这两列。
+QoS 删列迁移保留已有速率、独立 QoS 表、事件日志和投影偏移量，无需重建实例读模型。
 缺少 hostname 列时先执行 `sql/migrations/add-instance-hostname.sql`；脚本只加列，不回填历史名称，已消费的宿主机事件不会自动重新投影。
 旧 `nova_operation_id` 列可在部署不再读写该字段的代码后，通过 `sql/migrations/remove-instance-nova-operation-id.sql` 删除；新库、实例状态和查询接口均不再包含该字段。
 `InstanceDeletionStarted` 将实例投影置为 `DELETING_NOVA`；各资源清理完成事件分别推进到上表中的下一删除阶段。
