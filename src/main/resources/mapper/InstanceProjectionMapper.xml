@@ -108,6 +108,7 @@
         UPDATE instance_view SET
           phase = #{phase},
           hypervisor_id = #{hypervisorId,jdbcType=VARCHAR},
+          hostname = #{hostname,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>
@@ -184,15 +185,6 @@
           os_sub_qos_egress_rule_id = #{network.subQos.osEgressRuleId,jdbcType=VARCHAR},
           sub_max_kbps = #{network.subQos.bandwidthLimit.maxKbps,jdbcType=INTEGER},
           sub_max_burst_kbits = #{network.subQos.bandwidthLimit.maxBurstKbits,jdbcType=INTEGER},
-          updated_at = #{updatedAt},
-          workflow_version = #{version}
-        <include refid="newerWorkflow"/>
-    </update>
-
-    <update id="updateNovaOperation">
-        UPDATE instance_view SET
-          phase = #{phase},
-          nova_operation_id = #{operationId,jdbcType=VARCHAR},
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

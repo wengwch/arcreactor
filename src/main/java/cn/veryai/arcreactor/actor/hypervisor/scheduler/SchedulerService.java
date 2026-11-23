@@ -67,12 +67,12 @@ public final class SchedulerService implements HypervisorPlacement {
                     List<ScoredCandidate> ranked = rank(candidates, request);
                     log.info("scheduler ranked requestId={} instanceId={} candidates={} eligible={}",
                             request.requestId(), request.instanceId(), candidates.size(), ranked.size());
-                    List<String> hypervisorIds = ranked.stream()
+                    List<Candidate> hosts = ranked.stream()
                             .limit(maxClaimAttempts)
-                            .map(candidate -> candidate.candidate().hypervisorId())
+                            .map(scored -> new Candidate(scored.candidate().hypervisorId(), scored.candidate().hostname()))
                             .toList();
-                    return new ScheduleResult(hypervisorIds,
-                            hypervisorIds.isEmpty() ? "no eligible hosts" : "candidates ranked");
+                    return new ScheduleResult(hosts,
+                            hosts.isEmpty() ? "no eligible hosts" : "candidates ranked");
                 });
     }
 

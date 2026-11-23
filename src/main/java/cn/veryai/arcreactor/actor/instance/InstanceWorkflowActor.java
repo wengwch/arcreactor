@@ -1,6 +1,5 @@
 package cn.veryai.arcreactor.actor.instance;
 
-import static cn.veryai.arcreactor.actor.instance.InstanceOperationIds.*;
 
 import cn.veryai.arcreactor.actor.fip.model.ForwardingKind;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstanceForwarding;
@@ -15,8 +14,6 @@ import cn.veryai.arcreactor.actor.instance.command.ReconcileInstanceForwardings;
 import cn.veryai.arcreactor.actor.instance.command.QosUpdateCompleted;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState;
 import cn.veryai.arcreactor.actor.instance.model.InstanceForwardingState.Phase;
-import cn.veryai.arcreactor.actor.instance.model.InstanceQosUpdate;
-import cn.veryai.arcreactor.actor.instance.reply.InstanceMutationReply;
 import cn.veryai.arcreactor.actor.instance.event.InstanceForwardingEvent;
 import cn.veryai.arcreactor.actor.instance.event.ForwardingDeleted;
 import cn.veryai.arcreactor.actor.instance.event.InstanceQosUpdateRequested;
@@ -34,10 +31,7 @@ import cn.veryai.arcreactor.actor.instance.command.CheckProvisioning;
 import cn.veryai.arcreactor.actor.instance.command.ConfirmCompleted;
 import cn.veryai.arcreactor.actor.instance.command.CreateInstance;
 import cn.veryai.arcreactor.actor.instance.command.DeleteInstance;
-import cn.veryai.arcreactor.actor.instance.command.AllocationReleaseCompleted;
-import cn.veryai.arcreactor.actor.instance.command.InstanceNetworkDeletionCompleted;
-import cn.veryai.arcreactor.actor.instance.command.InstanceSecurityGroupDeletionCompleted;
-import cn.veryai.arcreactor.actor.instance.command.ReservationCancellationCompleted;
+import cn.veryai.arcreactor.actor.instance.command.DeletionStepCompleted;
 import cn.veryai.arcreactor.actor.instance.command.ResourceReservationCompleted;
 import cn.veryai.arcreactor.actor.instance.command.RetryResourceReservation;
 import cn.veryai.arcreactor.actor.instance.command.DependencyPreparationCompleted;
@@ -83,8 +77,6 @@ import cn.veryai.arcreactor.actor.instance.event.SshConnectivityVerified;
 import cn.veryai.arcreactor.actor.instance.model.InstancePhase;
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
 import cn.veryai.arcreactor.actor.instance.model.InstanceWorkflowState;
-import cn.veryai.arcreactor.actor.instance.model.PreparedNetwork;
-import cn.veryai.arcreactor.actor.instance.model.PreparedShare;
 import cn.veryai.arcreactor.actor.instance.reply.InstanceReply;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
@@ -94,14 +86,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
 import java.util.function.Supplier;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
@@ -128,21 +118,19 @@ public final class InstanceWorkflowActor
   private static final String CONFIRM_TIMER = "reservation-confirm";
   private static final String RESERVATION_TIMER = "resource-reservation";
   private static final String DELETION_TIMER = "instance-deletion";
-  private static final Executor CLOUD_INIT_EXECUTOR =
-      task -> Thread.ofVirtual().name("instance-cloud-init").start(task);
 
   private final String instanceId;
   private final ActorContext<WorkflowCommand> context;
   private final TimerScheduler<WorkflowCommand> timers;
   private final HypervisorPlacement placement;
   private final OpenStackClient openStackClient;
-  private final CloudInitRenderer cloudInitRenderer;
+  private final InstanceLaunchPreparer launchPreparer;
   private final InstanceDependencyPreparer dependencyPreparer;
   private final InstanceWorkflowSettings settings;
   private final Clock clock;
   private final InstanceForwardingWorkflow forwardings;
+  private final InstanceQosWorkflow qos;
   private final InstanceServerOperationWorkflow serverOperations;
-  private String qosUpdateRequestToken;
   private final InstanceSshChecker sshChecker = new InstanceSshChecker(new SSHValidator());
   private String schedulingRequestToken;
   private String dependencyRequestToken;
@@ -202,13 +190,14 @@ public final class InstanceWorkflowActor
     this.timers = timers;
     this.placement = Objects.requireNonNull(placement);
     this.openStackClient = Objects.requireNonNull(openStackClient);
-    this.cloudInitRenderer = Objects.requireNonNull(cloudInitRenderer);
+    this.launchPreparer = new InstanceLaunchPreparer(this.instanceId, cloudInitRenderer);
     Objects.requireNonNull(floatingIpForwardings);
     this.dependencyPreparer = Objects.requireNonNull(dependencyPreparer);
     this.settings = Objects.requireNonNull(settings);
     this.clock = Objects.requireNonNull(clock);
     this.forwardings = new InstanceForwardingWorkflow(instanceId, context, timers,
         openStackClient, floatingIpForwardings, settings, Effect());
+    this.qos = new InstanceQosWorkflow(instanceId, context, openStackClient, Effect());
     this.serverOperations = new InstanceServerOperationWorkflow(instanceId, context, timers,
         openStackClient, sshChecker, settings, clock, Effect());
   }
@@ -228,8 +217,8 @@ public final class InstanceWorkflowActor
         .onCommand(CreateInstanceForwarding.class, forwardings::onCreate)
         .onCommand(DeleteInstanceForwarding.class, forwardings::onDelete)
         .onCommand(ReconcileInstanceForwardings.class, this::onReconcileInstanceForwardings)
-        .onCommand(UpdateInstanceQos.class, this::onUpdateInstanceQos)
-        .onCommand(QosUpdateCompleted.class, this::onQosUpdateCompleted)
+        .onCommand(UpdateInstanceQos.class, qos::onUpdate)
+        .onCommand(QosUpdateCompleted.class, qos::onCompleted)
         .onCommand(RebootInstance.class, serverOperations::onReboot)
         .onCommand(RebuildInstance.class, serverOperations::onRebuild)
         .onCommand(ServerOperationSubmitted.class, serverOperations::onSubmitted)
@@ -251,10 +240,7 @@ public final class InstanceWorkflowActor
         .onCommand(RetryConfirm.class, this::onRetryConfirm)
         .onCommand(NovaDeletionChecked.class, this::onNovaDeletionChecked)
         .onCommand(NovaDeletionSubmitted.class, this::onNovaDeletionSubmitted)
-        .onCommand(InstanceNetworkDeletionCompleted.class, this::onInstanceNetworkDeletionCompleted)
-        .onCommand(InstanceSecurityGroupDeletionCompleted.class, this::onInstanceSecurityGroupDeletionCompleted)
-        .onCommand(ReservationCancellationCompleted.class, this::onReservationCancellationCompleted)
-        .onCommand(AllocationReleaseCompleted.class, this::onAllocationReleaseCompleted)
+        .onCommand(DeletionStepCompleted.class, this::onDeletionStepCompleted)
         .onCommand(CheckDeletion.class, this::onCheckDeletion)
         .build();
   }
@@ -310,7 +296,7 @@ public final class InstanceWorkflowActor
       }
       if (forwarding.phase() != Phase.READY) return Effect().none();
     }
-    return Effect().persist(novaCreationStarted(state, clock.instant())).thenRun(this::requestNovaCreation);
+    return Effect().persist(new NovaCreationStarted(instanceId, clock.instant())).thenRun(this::requestNovaCreation);
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> deleteInstanceForwardings(
@@ -338,61 +324,6 @@ public final class InstanceWorkflowActor
     if (state.phase() == InstancePhase.PREPARING_FORWARDING) return prepareInstanceForwardings(state);
     if (state.phase() == InstancePhase.DELETING_FORWARDINGS) return deleteInstanceForwardings(state, false);
     return Effect().none();
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onUpdateInstanceQos(
-      InstanceWorkflowState state, UpdateInstanceQos command) {
-    if (state.phase() != InstancePhase.ACTIVE || state.hasPendingOperation()) {
-      command.replyTo().tell(InstanceMutationReply.rejected("Instance must be ACTIVE with no pending management operation"));
-      return Effect().none();
-    }
-    InstanceQosUpdate previous = state.qosUpdate();
-    if (previous != null && previous.phase() == InstanceQosUpdate.Phase.FAILED
-        && (!Objects.equals(previous.parentPort(), command.parentPort())
-            || !Objects.equals(previous.subPort(), command.subPort()))) {
-      command.replyTo().tell(InstanceMutationReply.rejected("Retry the failed QoS update with the same limits before changing them"));
-      return Effect().none();
-    }
-    InstanceQosUpdate update = new InstanceQosUpdate(UUID.randomUUID().toString(), InstanceQosUpdate.Phase.UPDATING,
-        command.parentPort(), command.subPort(), null);
-    return Effect().persist(new InstanceQosUpdateRequested(instanceId, update)).thenRun(next -> {
-      command.replyTo().tell(InstanceMutationReply.accepted(update.operationId()));
-      requestQosUpdate(next);
-    });
-  }
-
-  private void requestQosUpdate(InstanceWorkflowState state) {
-    if (qosUpdateRequestToken != null) return;
-    InstanceQosUpdate update = state.qosUpdate();
-    String token = UUID.randomUUID().toString();
-    qosUpdateRequestToken = token;
-    var request = invoke(() -> openStackClient.updateInstanceQos(target(state), networkOperationId(state),
-        state.networkPreparation().resources(), update.parentPort(), update.subPort()));
-    context.pipeToSelf(request, (resources, error) -> new QosUpdateCompleted(update.operationId(), token,
-        resources, error == null ? null : rootCause(error).toString()));
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onQosUpdateCompleted(
-      InstanceWorkflowState state, QosUpdateCompleted command) {
-    InstanceQosUpdate update = state.qosUpdate();
-    if (state.phase() != InstancePhase.ACTIVE || update == null || update.phase() != InstanceQosUpdate.Phase.UPDATING
-        || !update.operationId().equals(command.operationId()) || qosUpdateRequestToken == null
-        || !qosUpdateRequestToken.equals(command.requestToken())) return Effect().none();
-    qosUpdateRequestToken = null;
-    if (command.failure() != null || command.resources() == null) {
-      return Effect().persist(new InstanceQosUpdateFailed(instanceId,
-          update.failed(command.failure() == null ? "QoS update returned no resources" : command.failure())));
-    }
-    return Effect().persist(new InstanceQosUpdated(instanceId, update.completed(), command.resources()));
-  }
-
-  private void recoverManagement(InstanceWorkflowState state) {
-    forwardings.recover(state);
-    InstanceQosUpdate update = state.qosUpdate();
-    if (update != null && update.phase() == InstanceQosUpdate.Phase.UPDATING) {
-      // Reapply only the saved intent; the client reads actual rules before repairing a partial update.
-      requestQosUpdate(state);
-    }
   }
 
   private void requestDependencies(InstanceWorkflowState state) {
@@ -461,10 +392,6 @@ public final class InstanceWorkflowActor
         .thenRun(this::requestNetwork);
   }
 
-  private NovaCreationStarted novaCreationStarted(InstanceWorkflowState state, Instant now) {
-    return new NovaCreationStarted(instanceId, operationId(state), now);
-  }
-
   private void requestNetwork(InstanceWorkflowState state) {
     String token = UUID.randomUUID().toString();
     networkPreparationRequestToken = token;
@@ -505,15 +432,16 @@ public final class InstanceWorkflowActor
           command.failure() == null ? "Missing scheduling result" : command.failure());
     }
     HypervisorPlacement.ScheduleResult result = command.result();
-    if (result.hypervisorIds().isEmpty()) {
+    if (result.candidates().isEmpty()) {
       return failCreation("NO_VALID_HOST", result.detail());
     }
-    return Effect().persist(reservationStarted(result.hypervisorIds()))
+    return Effect().persist(reservationStarted(result.candidates()))
         .thenRun(this::requestResourceReservation);
   }
 
-  private HypervisorReservationStarted reservationStarted(List<String> candidates) {
-    return new HypervisorReservationStarted(instanceId, candidates.getFirst(),
+  private HypervisorReservationStarted reservationStarted(List<HypervisorPlacement.Candidate> candidates) {
+    HypervisorPlacement.Candidate candidate = candidates.getFirst();
+    return new HypervisorReservationStarted(instanceId, candidate.hypervisorId(), candidate.hostname(),
         candidates.subList(1, candidates.size()), clock.instant());
   }
 
@@ -541,17 +469,17 @@ public final class InstanceWorkflowActor
     resourceReservationRequestToken = null;
     return switch (command.result().status()) {
       case ACCEPTED -> Effect().persist(List.of(
-              new HypervisorSelected(instanceId, state.hypervisorId(), clock.instant()),
+              new HypervisorSelected(instanceId, state.hypervisorId(), state.hostname(), clock.instant()),
               new DependencyPreparationStarted(instanceId)))
           .thenRun(next -> {
             timers.cancel(RESERVATION_TIMER);
             requestDependencies(next);
           });
       case UNAVAILABLE -> {
-        if (state.remainingHypervisorIds().isEmpty()) {
+        if (state.remainingHypervisors().isEmpty()) {
           yield failCreation("NO_VALID_HOST", command.result().detail());
         }
-        yield Effect().persist(reservationStarted(state.remainingHypervisorIds()))
+        yield Effect().persist(reservationStarted(state.remainingHypervisors()))
             .thenRun(next -> {
               timers.cancel(RESERVATION_TIMER);
               requestResourceReservation(next);
@@ -593,7 +521,7 @@ public final class InstanceWorkflowActor
   private void requestNovaCreation(InstanceWorkflowState state) {
     String token = UUID.randomUUID().toString();
     novaCreationRequestToken = token;
-    var request = invoke(() -> submitNova(state));
+    var request = invoke(() -> launchPreparer.prepare(state).thenCompose(openStackClient::createServer));
     context.pipeToSelf(request, (server, error) -> {
       Throwable cause = error == null ? null : rootCause(error);
       return new NovaCreationCompleted(state.pollingGeneration(), token, server,
@@ -613,7 +541,7 @@ public final class InstanceWorkflowActor
           command.failure() == null ? "Nova returned no server" : command.failure());
     }
     OpenStackClient.NovaServer server = command.server();
-    return Effect().persist(new NovaServerCreated(instanceId, state.novaOperationId(), server.osServerId(),
+    return Effect().persist(new NovaServerCreated(instanceId, server.osServerId(),
         server.status(), clock.instant())).thenRun(next -> scheduleProvisioningPoll(next, 1));
   }
 
@@ -623,7 +551,7 @@ public final class InstanceWorkflowActor
     long generation = state.pollingGeneration();
     // An uncertain submission is resolved by lookup, never by another Nova creation request.
     var request = invoke(() -> state.osNovaServerId() == null
-        ? openStackClient.findServerByOperationId(target(state), state.novaOperationId())
+        ? openStackClient.findInstanceServer(target(state), instanceId)
             .thenApply(OpenStackClient.ServerLookupResult::server)
         : openStackClient.getServer(target(state), state.osNovaServerId()));
     var check = request.thenCompose(server -> {
@@ -659,7 +587,7 @@ public final class InstanceWorkflowActor
       }
     } else {
       if (!server.osServerId().equals(state.osNovaServerId()) || server.status() != state.novaStatus()) {
-        events.add(new NovaServerCreated(instanceId, state.novaOperationId(), server.osServerId(), server.status(), now));
+        events.add(new NovaServerCreated(instanceId, server.osServerId(), server.status(), now));
       }
       if (server.status() == OpenStackClient.NovaServer.Status.ERROR) {
         events.add(new InstanceProvisioningFailed(instanceId, "NOVA_ERROR", server.fault(), now));
@@ -767,50 +695,22 @@ public final class InstanceWorkflowActor
         .thenRun(this::scheduleDeletionCheck);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onInstanceNetworkDeletionCompleted(
-      InstanceWorkflowState state, InstanceNetworkDeletionCompleted command) {
-    if (!matchesDeletion(state, InstancePhase.DELETING_NETWORK, command.generation(),
-        command.requestToken())) return Effect().none();
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onDeletionStepCompleted(
+      InstanceWorkflowState state, DeletionStepCompleted command) {
+    if (!matchesDeletion(state, command.phase(), command.generation(), command.requestToken())) return Effect().none();
     deletionRequestToken = null;
-    if (command.failure() != null) return retryDeletionStage(state, command.failure());
-    return Effect().persist(new InstanceNetworkDeleted(instanceId, clock.instant()))
-        .thenRun(this::startDeletionStage);
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onInstanceSecurityGroupDeletionCompleted(
-      InstanceWorkflowState state, InstanceSecurityGroupDeletionCompleted command) {
-    if (!matchesDeletion(state, InstancePhase.DELETING_SECURITY_GROUP, command.generation(),
-        command.requestToken())) return Effect().none();
-    deletionRequestToken = null;
-    if (command.failure() != null) return retryDeletionStage(state, command.failure());
-    return Effect().persist(new InstanceSecurityGroupDeleted(instanceId, clock.instant()))
-        .thenRun(this::startDeletionStage);
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onReservationCancellationCompleted(
-      InstanceWorkflowState state, ReservationCancellationCompleted command) {
-    if (!matchesDeletion(state, InstancePhase.CANCELLING_RESERVATION, command.generation(),
-        command.requestToken())) return Effect().none();
-    deletionRequestToken = null;
-    if (command.failure() != null) return retryDeletionStage(state, command.failure());
-    if (command.result() == null || command.result().status() != HypervisorPlacement.ReservationResult.Status.SUCCEEDED) {
-      return retryDeletionStage(state, command.result() == null ? "Missing cancellation result" : command.result().detail());
-    }
-    return Effect().persist(new InstanceReservationCancelled(instanceId, clock.instant()))
-        .thenRun(this::startDeletionStage);
-  }
-
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onAllocationReleaseCompleted(
-      InstanceWorkflowState state, AllocationReleaseCompleted command) {
-    if (!matchesDeletion(state, InstancePhase.RELEASING_ALLOCATION, command.generation(),
-        command.requestToken())) return Effect().none();
-    deletionRequestToken = null;
-    if (command.failure() != null) return retryDeletionStage(state, command.failure());
-    if (command.result() == null || command.result().status() != HypervisorPlacement.ReservationResult.Status.SUCCEEDED) {
-      return retryDeletionStage(state, command.result() == null ? "Missing release result" : command.result().detail());
-    }
-    return Effect().persist(new InstanceDeleted(instanceId, clock.instant()))
-        .thenRun(next -> timers.cancel(DELETION_TIMER));
+    if (!command.succeeded() || command.failure() != null) return retryDeletionStage(state, command.failure());
+    InstanceWorkflowEvent event = switch (command.phase()) {
+      case DELETING_NETWORK -> new InstanceNetworkDeleted(instanceId, clock.instant());
+      case DELETING_SECURITY_GROUP -> new InstanceSecurityGroupDeleted(instanceId, clock.instant());
+      case CANCELLING_RESERVATION -> new InstanceReservationCancelled(instanceId, clock.instant());
+      case RELEASING_ALLOCATION -> new InstanceDeleted(instanceId, clock.instant());
+      default -> throw new IllegalArgumentException("Unsupported deletion step: " + command.phase());
+    };
+    return Effect().persist(event).thenRun(next -> {
+      if (next.phase() == InstancePhase.DELETED) timers.cancel(DELETION_TIMER);
+      else startDeletionStage(next);
+    });
   }
 
   private boolean matchesDeletion(InstanceWorkflowState state, InstancePhase phase, long generation,
@@ -910,57 +810,6 @@ public final class InstanceWorkflowActor
         spec.region(), spec.hypervisorType(), spec.hostname());
   }
 
-  private CompletionStage<OpenStackClient.NovaServer> submitNova(InstanceWorkflowState state) {
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        return cloudInitRenderer.render(cloudInitModel(state));
-      } catch (RuntimeException error) {
-        throw new OpenStackOperationException("Cloud-init preparation failed before Nova submission", error);
-      }
-    }, CLOUD_INIT_EXECUTOR)
-        .thenCompose(userData -> createNovaServer(state, userData));
-  }
-
-  private static Map<String, Object> cloudInitModel(InstanceWorkflowState state) {
-    var cloudInit = state.spec().cloudInit();
-    String cidr = state.spec().network().userNetwork().ipv4CIDR();
-    PreparedShare share = Objects.requireNonNull(state.preparedShare(), "preparedShare");
-    PreparedNetwork network = Objects.requireNonNull(state.networkPreparation(), "networkPreparation").resources();
-    if (!hasText(network.osTrunkId()) || !hasText(network.osSubPortId())
-        || !hasText(network.subMacAddress()) || !hasText(network.subFixedIp())) {
-      throw new IllegalStateException("Instance ports and trunk must be ready before rendering cloud-init");
-    }
-    return Map.ofEntries(
-        Map.entry("share_access_key", share.accessKey()),
-        Map.entry("share_export_location", share.exportLocationPath()),
-        Map.entry("share_access_to", share.accessTo()),
-        Map.entry("segmentId", state.spec().network().segmentationId()),
-        Map.entry("macaddress", network.subMacAddress()),
-        Map.entry("ipv4", network.subFixedIp() + cidr.substring(cidr.lastIndexOf('/'))),
-        Map.entry("username", cloudInit.username()),
-        Map.entry("password", cloudInit.password()),
-        Map.entry("jupyter_token", cloudInit.jupyterToken()),
-        Map.entry("hostRoutes", cloudInit.hostRoutes()));
-  }
-
-  private CompletionStage<OpenStackClient.NovaServer> createNovaServer(InstanceWorkflowState state, String userData) {
-    InstanceSpec spec = state.spec();
-    OpenStackClient.CreateServerRequest request =
-        new OpenStackClient.CreateServerRequest(
-            target(state),
-            instanceId,
-            state.requestId(),
-            state.novaOperationId(),
-            spec.name(),
-            spec.osImageId(),
-            spec.osFlavorId(),
-            state.hypervisorId(),
-            spec.metadata(),
-            state.networkPreparation().resources().osParentPortId(),
-            userData);
-    return openStackClient.createServer(request);
-  }
-
   private void startConfirm(InstanceWorkflowState state) {
     startConfirm(state, 0);
   }
@@ -1015,8 +864,9 @@ public final class InstanceWorkflowActor
       if (state.osNovaServerId() != null) {
         return openStackClient.getServer(target(state), state.osNovaServerId());
       }
-      if (state.novaOperationId() != null) {
-        return openStackClient.findServerByOperationId(target(state), state.novaOperationId())
+      // The persisted start time records creation intent even if no server ID was observed.
+      if (state.provisioningStartedAt() != null) {
+        return openStackClient.findInstanceServer(target(state), instanceId)
             .thenApply(OpenStackClient.ServerLookupResult::server);
       }
       return CompletableFuture.completedFuture(null);
@@ -1040,10 +890,11 @@ public final class InstanceWorkflowActor
     String token = UUID.randomUUID().toString();
     deletionRequestToken = token;
     var request = invoke(() -> state.networkPreparation() == null ? CompletableFuture.completedFuture(null)
-        : openStackClient.deleteInstanceNetwork(target(state), networkOperationId(state),
+        : openStackClient.deleteInstanceNetwork(target(state), instanceId,
             state.networkPreparation().resources()));
-    context.pipeToSelf(request, (ignored, error) -> new InstanceNetworkDeletionCompleted(
-        state.pollingGeneration(), token, error == null ? null : rootCause(error).toString()));
+    context.pipeToSelf(request, (ignored, error) -> new DeletionStepCompleted(
+        state.phase(), state.pollingGeneration(), token, error == null,
+        error == null ? null : rootCause(error).toString()));
   }
 
   private void requestInstanceSecurityGroupDeletion(InstanceWorkflowState state) {
@@ -1052,8 +903,9 @@ public final class InstanceWorkflowActor
     deletionRequestToken = token;
     var request = invoke(() -> state.securityGroupPreparation() == null ? CompletableFuture.completedFuture(null)
         : openStackClient.deleteInstanceSecurityGroup(target(state), instanceId));
-    context.pipeToSelf(request, (ignored, error) -> new InstanceSecurityGroupDeletionCompleted(
-        state.pollingGeneration(), token, error == null ? null : rootCause(error).toString()));
+    context.pipeToSelf(request, (ignored, error) -> new DeletionStepCompleted(
+        state.phase(), state.pollingGeneration(), token, error == null,
+        error == null ? null : rootCause(error).toString()));
   }
 
   private void requestReservationCancellation(InstanceWorkflowState state) {
@@ -1063,8 +915,7 @@ public final class InstanceWorkflowActor
     var request = invoke(() -> state.hypervisorId() == null || state.reservationId() == null
         ? CompletableFuture.completedFuture(HypervisorPlacement.ReservationResult.succeeded(true, "no reservation"))
         : placement.cancel(state.hypervisorId(), state.reservationId()));
-    context.pipeToSelf(request, (result, error) -> new ReservationCancellationCompleted(
-        state.pollingGeneration(), token, result, error == null ? null : rootCause(error).toString()));
+    context.pipeToSelf(request, (result, error) -> reservationDeletionCompleted(state, token, result, error));
   }
 
   private void requestAllocationRelease(InstanceWorkflowState state) {
@@ -1074,8 +925,20 @@ public final class InstanceWorkflowActor
     var request = invoke(() -> state.hypervisorId() == null
         ? CompletableFuture.completedFuture(HypervisorPlacement.ReservationResult.succeeded(true, "no allocation"))
         : placement.release(state.hypervisorId(), instanceId));
-    context.pipeToSelf(request, (result, error) -> new AllocationReleaseCompleted(
-        state.pollingGeneration(), token, result, error == null ? null : rootCause(error).toString()));
+    context.pipeToSelf(request, (result, error) -> reservationDeletionCompleted(state, token, result, error));
+  }
+
+  private static DeletionStepCompleted reservationDeletionCompleted(InstanceWorkflowState state, String token,
+      HypervisorPlacement.ReservationResult result, Throwable error) {
+    boolean succeeded = error == null && result != null
+        && result.status() == HypervisorPlacement.ReservationResult.Status.SUCCEEDED;
+    String failure = error == null ? null : rootCause(error).toString();
+    if (error == null && !succeeded) {
+      failure = result == null
+          ? (state.phase() == InstancePhase.CANCELLING_RESERVATION ? "Missing cancellation result" : "Missing release result")
+          : result.detail();
+    }
+    return new DeletionStepCompleted(state.phase(), state.pollingGeneration(), token, succeeded, failure);
   }
 
   private void scheduleProvisioningPoll(InstanceWorkflowState state, int attempt) {
@@ -1133,12 +996,12 @@ public final class InstanceWorkflowActor
         .onEvent(ForwardingPreparationStarted.class, (state, event) -> state.preparingForwarding())
         .onEvent(SchedulingStarted.class, (state, event) -> state.scheduling(event.reservationId()))
         .onEvent(HypervisorReservationStarted.class, (state, event) -> state.reservingResources(
-            event.hypervisorId(), event.remainingHypervisorIds()))
-        .onEvent(HypervisorSelected.class, (state, event) -> state.hypervisorSelected(event.hypervisorId()))
+            event.hypervisorId(), event.hostname(), event.remainingHypervisors()))
+        .onEvent(HypervisorSelected.class, (state, event) -> state.hypervisorSelected(event.hypervisorId(), event.hostname()))
         .onEvent(
             NovaCreationStarted.class,
             (state, event) ->
-                state.provisioning(event.operationId(), event.startedAt()))
+                state.provisioning(event.startedAt()))
         .onEvent(
             NovaServerCreated.class,
             (state, event) -> state.serverObserved(event.osServerId(), event.status()))
@@ -1172,8 +1035,8 @@ public final class InstanceWorkflowActor
   private void recoverState(InstanceWorkflowState state) {
     timers.cancelAll();
     forwardings.reset();
+    qos.reset();
     serverOperations.reset();
-    qosUpdateRequestToken = null;
     schedulingRequestToken = null;
     dependencyRequestToken = null;
     resourceReservationRequestToken = null;
@@ -1186,9 +1049,9 @@ public final class InstanceWorkflowActor
     deletionPollAttempt = 0;
     context.getLog().info(
         "workflow recovery completed instanceId={} requestId={} phase={} "
-            + "workflowVersion={} hypervisorId={} reservationId={} novaOperationId={} osNovaServerId={}",
+            + "workflowVersion={} hypervisorId={} reservationId={} provisioningStartedAt={} osNovaServerId={}",
         instanceId, state.requestId(), state.phase(), state.version(), state.hypervisorId(),
-        state.reservationId(), state.novaOperationId(), state.osNovaServerId());
+        state.reservationId(), state.provisioningStartedAt(), state.osNovaServerId());
     if (state.phase().isDeleting()) {
       if (state.phase() == InstancePhase.DELETING_FORWARDINGS) {
         forwardings.recover(state);
@@ -1212,7 +1075,10 @@ public final class InstanceWorkflowActor
       }
       case PROVISIONING -> requestProvisioningCheck(state, 1);
       case CONFIRMING -> scheduleConfirmRetry(state, 0);
-      case ACTIVE -> recoverManagement(state);
+      case ACTIVE -> {
+        forwardings.recover(state);
+        qos.recover(state);
+      }
       default -> { }
     }
   }

@@ -26,8 +26,8 @@
         <result column="segmentation_id" property="segmentationId"/>
         <result column="phase" property="phase"/>
         <result column="hypervisor_id" property="hypervisorId"/>
+        <result column="hostname" property="hostname"/>
         <result column="reservation_id" property="reservationId"/>
-        <result column="nova_operation_id" property="novaOperationId"/>
         <result column="os_nova_server_id" property="osNovaServerId"/>
         <result column="nova_status" property="novaStatus"/>
         <result column="os_security_group_id" property="osSecurityGroupId"/>
@@ -64,8 +64,8 @@
         os_image_id, os_flavor_id, hypervisor_type, vcpus,
         memory_gb, disk_gb, gpu_count, share_id,
         os_parent_network_id, os_parent_subnet_id, os_sub_network_id, os_sub_subnet_id,
-        os_sub_floating_network_id, segmentation_id, phase, hypervisor_id,
-        reservation_id, nova_operation_id, os_nova_server_id, nova_status,
+        os_sub_floating_network_id, segmentation_id, phase, hypervisor_id, hostname,
+        reservation_id, os_nova_server_id, nova_status,
         os_security_group_id, os_parent_port_id, parent_mac_address, parent_fixed_ip,
         os_parent_qos_policy_id, os_parent_qos_ingress_rule_id, os_parent_qos_egress_rule_id, parent_max_kbps,
         parent_max_burst_kbits, os_sub_port_id, sub_fixed_ip, os_sub_qos_policy_id,

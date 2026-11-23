@@ -35,8 +35,8 @@ public class InstanceViewEntity {
     private Integer segmentationId;
     private InstancePhase phase;
     private String hypervisorId;
+    private String hostname;
     private String reservationId;
-    private String novaOperationId;
     private String osNovaServerId;
     private String novaStatus;
     private String osSecurityGroupId;

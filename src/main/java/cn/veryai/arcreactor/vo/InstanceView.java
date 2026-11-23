@@ -13,8 +13,8 @@ public record InstanceView(
         String requestId,
         String phase,
         String hypervisorId,
+        String hostname,
         String reservationId,
-        String novaOperationId,
         String osNovaServerId,
         String novaStatus,
         String failureCode,
@@ -33,7 +33,7 @@ public record InstanceView(
 
     public static InstanceView from(InstanceWorkflowState state) {
         return new InstanceView(state.instanceId(), state.requestId(), state.phase().name(), state.hypervisorId(),
-                state.reservationId(), state.novaOperationId(), state.osNovaServerId(),
+                state.hostname(), state.reservationId(), state.osNovaServerId(),
                 state.novaStatus() == null ? null : state.novaStatus().name(), state.failureCode(),
                 state.failureMessage(), state.version(),
                 state.userId(),

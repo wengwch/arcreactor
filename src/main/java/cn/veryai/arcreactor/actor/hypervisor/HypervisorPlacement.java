@@ -47,9 +47,12 @@ public interface HypervisorPlacement {
         }
     }
 
-    record ScheduleResult(List<String> hypervisorIds, String detail) implements Serializable {
+    /** Keeps the scheduled hostname paired with its resource-accounting actor ID. */
+    record Candidate(String hypervisorId, String hostname) implements Serializable {}
+
+    record ScheduleResult(List<Candidate> candidates, String detail) implements Serializable {
         public ScheduleResult {
-            hypervisorIds = List.copyOf(hypervisorIds);
+            candidates = List.copyOf(candidates);
         }
     }
 

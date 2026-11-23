@@ -49,6 +49,7 @@ public interface InstanceProjectionMapper {
             @Param("instanceId") String instanceId,
             @Param("phase") InstancePhase phase,
             @Param("hypervisorId") String hypervisorId,
+            @Param("hostname") String hostname,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -76,13 +77,6 @@ public interface InstanceProjectionMapper {
             @Param("instanceId") String instanceId,
             @Param("network") PreparedNetwork network,
             @Param("qosUpdateJson") String qosUpdateJson,
-            @Param("version") long version,
-            @Param("updatedAt") Timestamp updatedAt);
-
-    int updateNovaOperation(
-            @Param("instanceId") String instanceId,
-            @Param("phase") InstancePhase phase,
-            @Param("operationId") String operationId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

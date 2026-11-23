@@ -49,6 +49,12 @@ import org.apache.pekko.persistence.typed.javadsl.EffectFactories;
 
 /** Handles forwarding and security group operations in the instance mailbox using the instance's event journal. */
 final class InstanceForwardingWorkflow {
+  private static final class ForwardingRequestFailed extends RuntimeException {
+    ForwardingRequestFailed(Throwable cause) {
+      super(cause);
+    }
+  }
+
   private static final class InvalidForwardingResult extends IllegalStateException {
     InvalidForwardingResult() {
       super("Incomplete or mismatched port forwarding result");
@@ -150,7 +156,15 @@ final class InstanceForwardingWorkflow {
           : creationFailed(forwarding, command.failureCode(), command.failure());
     }
     ForwardingReply reply = command.reply();
-    if (reply == null) return poll(forwarding, command.attempt() + 1);
+    if (reply == null) {
+      if (command.failure() != null) {
+        context.getLog().warn(
+            "Forwarding outcome uncertain: instanceId={} claimId={} floatingIpId={} phase={} attempt={} reason={}",
+            instanceId, forwarding.claimId(), forwarding.floatingIpId(), forwarding.phase(), command.attempt(),
+            command.failure());
+      }
+      return poll(forwarding, command.attempt() + 1);
+    }
     if (forwarding.phase() == Phase.DELETING) {
       return switch (reply.status()) {
         case DELETED -> completed(new ForwardingDeleted(instanceId, forwarding.transition(Phase.DELETED, null)));
@@ -233,12 +247,12 @@ final class InstanceForwardingWorkflow {
         network.osParentPortId(), network.parentFixedIp(), forwarding.internalPort(), forwarding.kind());
   }
 
-  /** A transport failure leaves the claim outcome uncertain. The actor polls the same claim. */
+  /** Preserve ask failures separately from access errors: the claim outcome is uncertain, so poll the same claim. */
   private static CompletionStage<ForwardingReply> askForwarding(Supplier<CompletionStage<ForwardingReply>> request) {
     try {
-      return request.get().exceptionally(error -> null);
+      return request.get().exceptionally(error -> { throw new ForwardingRequestFailed(error); });
     } catch (RuntimeException error) {
-      return CompletableFuture.completedFuture(null);
+      return CompletableFuture.failedFuture(new ForwardingRequestFailed(error));
     }
   }
 
@@ -285,7 +299,9 @@ final class InstanceForwardingWorkflow {
     context.pipeToSelf(request, (reply, error) -> {
       Throwable cause = error == null ? null : rootCause(error);
       String failureCode = null;
-      if (cause instanceof InvalidForwardingResult) {
+      if (cause instanceof ForwardingRequestFailed requestFailure) {
+        cause = rootCause(requestFailure.getCause());
+      } else if (cause instanceof InvalidForwardingResult) {
         failureCode = "FORWARDING_RESULT_INVALID";
       } else if (definitiveFailure(cause)) {
         failureCode = forwarding.phase() == Phase.CREATING ? "SECURITY_GROUP_RULE_FAILED" : "FORWARDING_DELETE_FAILED";

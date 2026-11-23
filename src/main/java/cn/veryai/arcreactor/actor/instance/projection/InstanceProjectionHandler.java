@@ -96,12 +96,12 @@ public final class InstanceProjectionHandler
                     failed.failureCode(), version, timestamp);
         } else if (event instanceof HypervisorReservationStarted started) {
             mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, started.hypervisorId(),
-                    version, timestamp);
+                    started.hostname(), version, timestamp);
         } else if (event instanceof HypervisorSelected selected) {
             mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, selected.hypervisorId(),
-                    version, timestamp);
-        } else if (event instanceof NovaCreationStarted started) {
-            mapper.updateNovaOperation(instanceId, InstancePhase.PROVISIONING, started.operationId(), version, timestamp);
+                    selected.hostname(), version, timestamp);
+        } else if (event instanceof NovaCreationStarted) {
+            mapper.updatePhase(instanceId, InstancePhase.PROVISIONING, version, timestamp);
         } else if (event instanceof NovaServerCreated created) {
             mapper.updateNovaServer(instanceId, InstancePhase.PROVISIONING, created.osServerId(),
                     created.status().name(), version, timestamp);
