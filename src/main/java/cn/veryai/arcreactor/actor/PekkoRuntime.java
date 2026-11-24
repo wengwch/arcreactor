@@ -22,13 +22,25 @@ import cn.veryai.arcreactor.actor.user.command.UserCommand;
 import cn.veryai.arcreactor.actor.user.projection.UserProjection;
 import cn.veryai.arcreactor.openstack.OpenStackClient;
 import cn.veryai.arcreactor.actor.instance.InstanceDependencyPreparer;
+import cn.veryai.arcreactor.actor.lease.LeaseActor;
+import cn.veryai.arcreactor.actor.lease.LeaseSettings;
+import cn.veryai.arcreactor.actor.lease.command.LeaseCommand;
+import cn.veryai.arcreactor.actor.lease.projection.LeaseProjection;
+import cn.veryai.arcreactor.actor.order.OrderActor;
+import cn.veryai.arcreactor.actor.order.OrderSettings;
+import cn.veryai.arcreactor.actor.order.command.OrderCommand;
+import cn.veryai.arcreactor.actor.order.projection.OrderProjection;
+import cn.veryai.arcreactor.service.FundWalletService;
+import cn.veryai.arcreactor.service.RentalPriceService;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import lombok.Getter;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.pekko.actor.typed.ActorSystem;
+import org.apache.pekko.actor.typed.DispatcherSelector;
 import org.apache.pekko.cluster.sharding.typed.javadsl.ClusterSharding;
 import org.apache.pekko.cluster.sharding.typed.javadsl.Entity;
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityRef;
@@ -64,7 +76,9 @@ public final class PekkoRuntime {
       CloudInitRenderer cloudInitRenderer,
       FloatingIpForwardings floatingIpForwardings,
       InstanceDependencyPreparer dependencyPreparer,
-      HypervisorPlacement hypervisorPlacement) {
+      HypervisorPlacement hypervisorPlacement,
+      FundWalletService fundWalletService,
+      RentalPriceService rentalPriceService) {
     try {
       HypervisorSettings hypervisorSettings = new HypervisorSettings(
           config.getReservationOutcomeRetention(), config.getReservationOutcomeCleanupInterval());
@@ -97,6 +111,12 @@ public final class PekkoRuntime {
                   InstanceWorkflowActor.create(
                       context.getEntityId(), hypervisorPlacement, openStackClient, cloudInitRenderer,
                       floatingIpForwardings, dependencyPreparer, instanceSettings)));
+      LeaseSettings leaseSettings = new LeaseSettings(config.getRentalRetryInterval());
+      sharding.init(Entity.of(LeaseActor.TYPE_KEY,
+          context -> LeaseActor.create(context.getEntityId(), this, leaseSettings, rentalPriceService)));
+      OrderSettings orderSettings = new OrderSettings(config.getRentalRetryInterval(), config.getAskTimeout());
+      sharding.init(Entity.of(OrderActor.TYPE_KEY,
+          context -> OrderActor.create(context.getEntityId(), fundWalletService, getBlockingExecutor(), orderSettings)));
       if (config.isProjectionEnabled()) {
         int sliceRanges = config.getProjectionSliceRanges();
         HypervisorProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
@@ -104,11 +124,18 @@ public final class PekkoRuntime {
         InstanceQosProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
         UserProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
         FloatingIpProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
+        LeaseProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
+        OrderProjection.init(actorSystem, dataSource, sqlSessionFactory, sliceRanges);
       }
     } catch (RuntimeException error) {
       closeAfterInitializationFailure(error);
       throw error;
     }
+  }
+
+  /** Shared dispatcher for blocking work; its lifecycle belongs to the ActorSystem. */
+  public Executor getBlockingExecutor() {
+    return actorSystem.dispatchers().lookup(DispatcherSelector.fromConfig("virtual-thread-dispatcher"));
   }
 
   public EntityRef<HypervisorCommand> hypervisorActor(String id) {
@@ -117,6 +144,14 @@ public final class PekkoRuntime {
 
   public EntityRef<WorkflowCommand> instanceActor(String id) {
     return sharding.entityRefFor(InstanceWorkflowActor.TYPE_KEY, id);
+  }
+
+  public EntityRef<LeaseCommand> leaseActor(String id) {
+    return sharding.entityRefFor(LeaseActor.TYPE_KEY, id);
+  }
+
+  public EntityRef<OrderCommand> orderActor(String id) {
+    return sharding.entityRefFor(OrderActor.TYPE_KEY, id);
   }
 
   public EntityRef<UserCommand> userActor(String userId) {
@@ -158,6 +193,14 @@ public final class PekkoRuntime {
 
     public Duration getAskTimeout() {
       return source.getDuration("cloud.ask-timeout");
+    }
+
+    public Duration getRentalRetryInterval() {
+      return source.getDuration("cloud.rental.retry-interval");
+    }
+
+    public Duration getRentalScanInterval() {
+      return source.getDuration("cloud.rental.scan-interval");
     }
 
     public int getSchedulerCandidateQueryLimit() {

@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.actor.lease.projection.mybatis.LeaseProjectionMapper">
+    <select id="findVersionForUpdate" resultType="java.lang.Long" useCache="false">
+        SELECT workflow_version
+        FROM lease_view
+        WHERE lease_id = #{leaseId,jdbcType=VARCHAR}
+        FOR UPDATE
+    </select>
+
+    <sql id="advanceVersion">
+        workflow_version = #{version,jdbcType=BIGINT},
+        updated_at = #{updatedAt,jdbcType=TIMESTAMP}
+    </sql>
+
+    <sql id="expectedVersion">
+        WHERE lease_id = #{leaseId,jdbcType=VARCHAR}
+          AND workflow_version = #{version,jdbcType=BIGINT} - 1
+    </sql>
+
+    <sql id="clearCurrentPeriod">
+        current_order_id = NULL,
+        current_intent_id = NULL,
+        current_plan_unit = NULL,
+        current_plan_quantity = NULL,
+        current_amount = NULL,
+        current_starts_at = NULL,
+        current_ends_at = NULL,
+    </sql>
+
+    <sql id="clearPendingPurchase">
+        pending_order_id = NULL,
+        pending_intent_id = NULL,
+        pending_period_seq = NULL,
+        pending_plan_unit = NULL,
+        pending_plan_quantity = NULL,
+        pending_amount = NULL,
+        pending_plan_revision = NULL,
+        pending_phase = NULL,
+    </sql>
+
+    <insert id="insertCreated">
+        INSERT INTO lease_view
+          (lease_id, user_id, phase, renewal_plan_unit, renewal_plan_quantity, plan_revision,
+           auto_renew, workflow_version, updated_at)
+        VALUES
+          (#{leaseId,jdbcType=VARCHAR}, #{userId,jdbcType=VARCHAR}, 'WAITING_LOCK',
+           #{plan.unit,jdbcType=VARCHAR}, #{plan.quantity,jdbcType=INTEGER}, 1,
+           #{autoRenew,jdbcType=BOOLEAN}, #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
+    </insert>
+
+    <update id="updateRenewalPlan">
+        UPDATE lease_view
+        SET renewal_plan_unit = #{plan.unit,jdbcType=VARCHAR},
+            renewal_plan_quantity = #{plan.quantity,jdbcType=INTEGER},
+            plan_revision = #{planRevision,jdbcType=BIGINT},
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateAutoRenew">
+        UPDATE lease_view
+        SET auto_renew = #{enabled,jdbcType=BOOLEAN},
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updatePurchaseRequested">
+        UPDATE lease_view
+        SET pending_order_id = #{purchase.orderId,jdbcType=VARCHAR},
+            pending_intent_id = #{purchase.intentId,jdbcType=VARCHAR},
+            pending_period_seq = #{purchase.periodSeq,jdbcType=BIGINT},
+            pending_plan_unit = #{purchase.plan.unit,jdbcType=VARCHAR},
+            pending_plan_quantity = #{purchase.plan.quantity,jdbcType=INTEGER},
+            pending_amount = #{purchase.amount,jdbcType=BIGINT},
+            pending_plan_revision = #{purchase.planRevision,jdbcType=BIGINT},
+            pending_phase = #{purchase.phase,jdbcType=VARCHAR},
+            error = NULL,
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updatePurchasePriced">
+        UPDATE lease_view
+        SET pending_amount = IF(pending_order_id = #{orderId,jdbcType=VARCHAR},
+                                #{amount,jdbcType=BIGINT}, pending_amount),
+            pending_phase = IF(pending_order_id = #{orderId,jdbcType=VARCHAR},
+                               'CREATING_ORDER', pending_phase),
+            error = IF(pending_order_id = #{orderId,jdbcType=VARCHAR}, NULL, error),
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updatePeriodEnded">
+        UPDATE lease_view
+        SET phase = 'EXPIRED',
+            last_period_ends_at = #{endsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            <include refid="clearCurrentPeriod"/>
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updatePurchasePhase">
+        UPDATE lease_view
+        SET phase = IF(pending_order_id = #{orderId,jdbcType=VARCHAR}
+                       AND #{phase,jdbcType=VARCHAR} = 'WAITING_ACTIVATION', 'PROVISIONING', phase),
+            pending_phase = IF(pending_order_id = #{orderId,jdbcType=VARCHAR},
+                               #{phase,jdbcType=VARCHAR}, pending_phase),
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateSettlementRequested">
+        UPDATE lease_view
+        SET settlement_order_id = #{settlement.orderId,jdbcType=VARCHAR},
+            settlement_intent_id = #{settlement.intentId,jdbcType=VARCHAR},
+            settlement_amount = #{settlement.amount,jdbcType=BIGINT},
+            settlement_deduct_amount = #{settlement.deductAmount,jdbcType=BIGINT},
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateSettlementCompleted">
+        UPDATE lease_view
+        SET settlement_intent_id = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_intent_id),
+            settlement_amount = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_amount),
+            settlement_deduct_amount = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_deduct_amount),
+            settlement_order_id = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_order_id),
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateTermination">
+        UPDATE lease_view
+        SET phase = 'TERMINATING',
+            terminated_at = #{terminatedAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            auto_renew = FALSE,
+            <include refid="clearCurrentPeriod"/>
+            <include refid="clearPendingPurchase"/>
+            error = #{error,jdbcType=LONGVARCHAR},
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateTerminated">
+        UPDATE lease_view
+        SET phase = 'TERMINATED',
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updatePeriodStarted">
+        UPDATE lease_view
+        SET period_seq = #{period.periodSeq,jdbcType=BIGINT},
+            current_order_id = #{period.orderId,jdbcType=VARCHAR},
+            current_intent_id = #{period.intentId,jdbcType=VARCHAR},
+            current_plan_unit = #{period.plan.unit,jdbcType=VARCHAR},
+            current_plan_quantity = #{period.plan.quantity,jdbcType=INTEGER},
+            current_amount = #{period.amount,jdbcType=BIGINT},
+            current_starts_at = #{period.startsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            current_ends_at = #{period.endsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            last_period_ends_at = #{period.endsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            phase = 'ACTIVE',
+            <include refid="clearPendingPurchase"/>
+            error = NULL,
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateError">
+        UPDATE lease_view
+        SET error = #{error,jdbcType=LONGVARCHAR},
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateNextAction">
+        UPDATE lease_view
+        SET next_action_at = #{nextActionAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateVersion">
+        UPDATE lease_view
+        SET <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+</mapper>

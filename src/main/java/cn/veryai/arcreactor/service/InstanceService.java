@@ -90,6 +90,11 @@ public class InstanceService {
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CompletionStage<CreateInstanceResult> create(CreateInstanceParam param) {
+        return submit(UUID.randomUUID().toString(), UUID.randomUUID().toString(), prepareSpec(param));
+    }
+
+    /** Prepares a frozen spec without allocating cloud resources; leases persist it before payment. */
+    public InstanceSpec prepareSpec(CreateInstanceParam param) {
         RegionEntity region = regionRepo.findById(param.getRegionId());
         if (region == null) throw new BaseException(ErrorCode.REGION_NOT_FOUND);
         if (!region.isEnabled()) throw new BaseException(ErrorCode.INSTANCE_REGION_DISABLED);
@@ -105,15 +110,13 @@ public class InstanceService {
         if (hypervisorType == null) throw new BaseException(ErrorCode.HYPERVISOR_TYPE_NOT_FOUND);
         validateResources(region, flavor, image, hypervisorType);
 
-        String instanceId = UUID.randomUUID().toString();
-        String requestId = UUID.randomUUID().toString();
         CreationDefaults defaults = creationDefaults(param, region);
         InstanceSpec spec = new InstanceSpec(region.getClusterId(), region.getId(), param.getName(),
                 image.getOsImageId(), flavor.getOsFlavorId(), flavor.getVcpus(), flavor.getRam(), flavor.getDisk(), flavor.getGpus(),
                 StringUtils.isBlank(param.getDescription()) ? Map.of() : Map.of("description", param.getDescription()),
                 new ShareRequirement(param.getUserId(), defaults.share()),
                 defaults.forwarding(), defaults.network(), defaults.cloudInit(), param.getHypervisorType(), param.getHostname());
-        return submit(requestId, instanceId, spec);
+        return spec;
     }
 
     public CompletionStage<InstanceView> get(String instanceId) {

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.veryai.arcreactor.actor.order.projection.mybatis.OrderProjectionMapper">
+    <sql id="projectionMetadata">
+        workflow_version = #{version,jdbcType=BIGINT},
+        updated_at = #{updatedAt,jdbcType=TIMESTAMP}
+    </sql>
+
+    <sql id="previousVersion">
+        WHERE order_id = #{orderId,jdbcType=VARCHAR}
+          AND workflow_version = #{version,jdbcType=BIGINT} - 1
+    </sql>
+
+    <select id="findVersionForUpdate" resultType="java.lang.Long" useCache="false">
+        SELECT workflow_version FROM order_view
+        WHERE order_id = #{orderId,jdbcType=VARCHAR}
+        FOR UPDATE
+    </select>
+
+    <insert id="insertCreated">
+        INSERT INTO order_view
+          (order_id, user_id, lease_id, intent_id, amount, phase, deduct_amount, error, workflow_version, updated_at)
+        VALUES
+          (#{orderId,jdbcType=VARCHAR}, #{userId,jdbcType=VARCHAR}, #{leaseId,jdbcType=VARCHAR},
+           #{intentId,jdbcType=VARCHAR}, #{amount,jdbcType=BIGINT},
+           #{phase,javaType=cn.veryai.arcreactor.actor.order.model.OrderState$Phase,jdbcType=VARCHAR,typeHandler=org.apache.ibatis.type.EnumTypeHandler},
+           #{deductAmount,jdbcType=BIGINT}, NULL, #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
+    </insert>
+
+    <update id="updateLocked">
+        UPDATE order_view
+        SET phase = IF(deduct_amount IS NULL, 'LOCKED', 'DEDUCTING'),
+            error = NULL,
+            <include refid="projectionMetadata"/>
+        <include refid="previousVersion"/>
+    </update>
+
+    <update id="updateDeductionRequested">
+        UPDATE order_view
+        SET phase = IF(phase = 'LOCKED', 'DEDUCTING', phase),
+            deduct_amount = #{deductAmount,jdbcType=BIGINT},
+            error = NULL,
+            <include refid="projectionMetadata"/>
+        <include refid="previousVersion"/>
+    </update>
+
+    <update id="updateDeducted">
+        UPDATE order_view
+        SET phase = 'SETTLED',
+            error = NULL,
+            <include refid="projectionMetadata"/>
+        <include refid="previousVersion"/>
+    </update>
+
+    <update id="updateInsufficientFunds">
+        UPDATE order_view
+        SET phase = 'INSUFFICIENT_FUNDS',
+            error = 'INSUFFICIENT_FUNDS',
+            <include refid="projectionMetadata"/>
+        <include refid="previousVersion"/>
+    </update>
+
+    <update id="updateError">
+        UPDATE order_view
+        SET error = #{error,jdbcType=LONGVARCHAR},
+            <include refid="projectionMetadata"/>
+        <include refid="previousVersion"/>
+    </update>
+</mapper>
