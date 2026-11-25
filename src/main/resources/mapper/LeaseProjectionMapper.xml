@@ -72,21 +72,10 @@
             pending_period_seq = #{purchase.periodSeq,jdbcType=BIGINT},
             pending_plan_unit = #{purchase.plan.unit,jdbcType=VARCHAR},
             pending_plan_quantity = #{purchase.plan.quantity,jdbcType=INTEGER},
-            pending_amount = #{purchase.amount,jdbcType=BIGINT},
+            pending_amount = #{purchase.amount,jdbcType=DECIMAL},
             pending_plan_revision = #{purchase.planRevision,jdbcType=BIGINT},
             pending_phase = #{purchase.phase,jdbcType=VARCHAR},
             error = NULL,
-            <include refid="advanceVersion"/>
-        <include refid="expectedVersion"/>
-    </update>
-
-    <update id="updatePurchasePriced">
-        UPDATE lease_view
-        SET pending_amount = IF(pending_order_id = #{orderId,jdbcType=VARCHAR},
-                                #{amount,jdbcType=BIGINT}, pending_amount),
-            pending_phase = IF(pending_order_id = #{orderId,jdbcType=VARCHAR},
-                               'CREATING_ORDER', pending_phase),
-            error = IF(pending_order_id = #{orderId,jdbcType=VARCHAR}, NULL, error),
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
     </update>
@@ -102,10 +91,10 @@
 
     <update id="updatePurchasePhase">
         UPDATE lease_view
-        SET phase = IF(pending_order_id = #{orderId,jdbcType=VARCHAR}
-                       AND #{phase,jdbcType=VARCHAR} = 'WAITING_ACTIVATION', 'PROVISIONING', phase),
-            pending_phase = IF(pending_order_id = #{orderId,jdbcType=VARCHAR},
-                               #{phase,jdbcType=VARCHAR}, pending_phase),
+        SET phase = IF(#{phase,jdbcType=VARCHAR} = 'WAITING_ACTIVATION', 'PROVISIONING', phase),
+            pending_phase = #{phase,jdbcType=VARCHAR},
+            pending_amount = COALESCE(#{orderAmount,jdbcType=DECIMAL}, pending_amount),
+            error = IF(#{orderAmount,jdbcType=DECIMAL} IS NOT NULL, NULL, error),
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
     </update>
@@ -114,18 +103,18 @@
         UPDATE lease_view
         SET settlement_order_id = #{settlement.orderId,jdbcType=VARCHAR},
             settlement_intent_id = #{settlement.intentId,jdbcType=VARCHAR},
-            settlement_amount = #{settlement.amount,jdbcType=BIGINT},
-            settlement_deduct_amount = #{settlement.deductAmount,jdbcType=BIGINT},
+            settlement_amount = #{settlement.amount,jdbcType=DECIMAL},
+            settlement_deduct_amount = #{settlement.deductAmount,jdbcType=DECIMAL},
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
     </update>
 
     <update id="updateSettlementCompleted">
         UPDATE lease_view
-        SET settlement_intent_id = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_intent_id),
-            settlement_amount = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_amount),
-            settlement_deduct_amount = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_deduct_amount),
-            settlement_order_id = IF(settlement_order_id = #{orderId,jdbcType=VARCHAR}, NULL, settlement_order_id),
+        SET settlement_order_id = NULL,
+            settlement_intent_id = NULL,
+            settlement_amount = NULL,
+            settlement_deduct_amount = NULL,
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
     </update>
@@ -156,7 +145,7 @@
             current_intent_id = #{period.intentId,jdbcType=VARCHAR},
             current_plan_unit = #{period.plan.unit,jdbcType=VARCHAR},
             current_plan_quantity = #{period.plan.quantity,jdbcType=INTEGER},
-            current_amount = #{period.amount,jdbcType=BIGINT},
+            current_amount = #{period.amount,jdbcType=DECIMAL},
             current_starts_at = #{period.startsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
             current_ends_at = #{period.endsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
             last_period_ends_at = #{period.endsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},

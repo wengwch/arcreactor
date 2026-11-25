@@ -10,13 +10,13 @@ import java.math.RoundingMode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-/** Quotes rental amounts in CNY cents from hypervisor type prices stored in CNY yuan. */
+/** Quotes rental amounts in CNY yuan, rounded to two decimal places. */
 @Service
 @RequiredArgsConstructor
 public class RentalPriceService {
     private final HypervisorTypeRepo hypervisorTypes;
 
-    public long quote(String hypervisorTypeId, RentalPlan plan) {
+    public BigDecimal quote(String hypervisorTypeId, RentalPlan plan) {
         HypervisorTypeEntity type = hypervisorTypes.findById(hypervisorTypeId);
         if (type == null) throw new BaseException(ErrorCode.HYPERVISOR_TYPE_NOT_FOUND);
         BigDecimal discount = switch (plan.unit()) {
@@ -35,9 +35,9 @@ public class RentalPriceService {
         if (price == null || price.signum() <= 0) {
             throw new IllegalArgumentException("rental price must be positive");
         }
-        long amount = price.multiply(BigDecimal.valueOf(plan.quantity())).movePointRight(2)
-                .setScale(0, RoundingMode.HALF_UP).longValueExact();
-        if (amount <= 0) throw new IllegalArgumentException("rental amount must be at least one cent");
+        BigDecimal amount = price.multiply(BigDecimal.valueOf(plan.quantity())).setScale(2, RoundingMode.HALF_UP);
+        if (amount.signum() <= 0) throw new IllegalArgumentException("rental amount must be at least one cent");
+        if (amount.precision() > 19) throw new IllegalArgumentException("rental amount exceeds DECIMAL(19,2)");
         return amount;
     }
 }

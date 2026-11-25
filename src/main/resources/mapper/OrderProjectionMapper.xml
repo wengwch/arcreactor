@@ -22,9 +22,17 @@
           (order_id, user_id, lease_id, intent_id, amount, phase, deduct_amount, error, workflow_version, updated_at)
         VALUES
           (#{orderId,jdbcType=VARCHAR}, #{userId,jdbcType=VARCHAR}, #{leaseId,jdbcType=VARCHAR},
-           #{intentId,jdbcType=VARCHAR}, #{amount,jdbcType=BIGINT},
-           #{phase,javaType=cn.veryai.arcreactor.actor.order.model.OrderState$Phase,jdbcType=VARCHAR,typeHandler=org.apache.ibatis.type.EnumTypeHandler},
-           #{deductAmount,jdbcType=BIGINT}, NULL, #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
+           #{intentId,jdbcType=VARCHAR}, #{amount,jdbcType=DECIMAL}, 'LOCKING', NULL, NULL,
+           #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
+    </insert>
+
+    <insert id="insertUnopenedSettled">
+        INSERT INTO order_view
+          (order_id, user_id, lease_id, intent_id, amount, phase, deduct_amount, error, workflow_version, updated_at)
+        VALUES
+          (#{orderId,jdbcType=VARCHAR}, #{userId,jdbcType=VARCHAR}, #{leaseId,jdbcType=VARCHAR},
+           #{intentId,jdbcType=VARCHAR}, 0, 'SETTLED', 0, NULL,
+           #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
     </insert>
 
     <update id="updateLocked">
@@ -38,7 +46,7 @@
     <update id="updateDeductionRequested">
         UPDATE order_view
         SET phase = IF(phase = 'LOCKED', 'DEDUCTING', phase),
-            deduct_amount = #{deductAmount,jdbcType=BIGINT},
+            deduct_amount = #{deductAmount,jdbcType=DECIMAL},
             error = NULL,
             <include refid="projectionMetadata"/>
         <include refid="previousVersion"/>

@@ -22,10 +22,25 @@ public record LeaseView(String leaseId, String userId, LeaseState.Phase phase, l
     }
 
     public static LeaseView from(LeaseViewEntity view) {
+        LeasePeriod currentPeriod = view.getCurrentOrderId() == null ? null
+                : new LeasePeriod(view.getPeriodSeq(), view.getCurrentOrderId(), view.getCurrentIntentId(),
+                        new RentalPlan(view.getCurrentPlanUnit(), view.getCurrentPlanQuantity()), view.getCurrentAmount(),
+                        view.getCurrentStartsAt(), view.getCurrentEndsAt());
+        RentalPlan renewalPlan = view.getRenewalPlanUnit() == null ? null
+                : new RentalPlan(view.getRenewalPlanUnit(), view.getRenewalPlanQuantity());
+        LeasePurchase pendingRenewal = view.getPendingOrderId() == null ? null
+                : new LeasePurchase(view.getPendingOrderId(), view.getPendingIntentId(), view.getPendingPeriodSeq(),
+                        new RentalPlan(view.getPendingPlanUnit(), view.getPendingPlanQuantity()), view.getPendingAmount(),
+                        view.getPendingPlanRevision(), view.getPendingPhase());
+        LeaseSettlement pendingSettlement = view.getSettlementOrderId() == null ? null
+                : new LeaseSettlement(view.getSettlementOrderId(), view.getSettlementIntentId(),
+                        view.getSettlementAmount(), view.getSettlementDeductAmount());
+        boolean settled = (view.getPhase() == LeaseState.Phase.TERMINATING || view.getPhase() == LeaseState.Phase.TERMINATED)
+                && pendingRenewal == null && pendingSettlement == null;
         return new LeaseView(view.getLeaseId(), view.getUserId(), view.getPhase(), view.getPeriodSeq(),
-                view.getCurrentPeriod(), view.getLastPeriodEndsAt(), view.getRenewalPlan(), view.getPlanRevision(),
-                view.isAutoRenew(), view.getPendingRenewal(), view.getPendingSettlement(), view.getTerminatedAt(),
-                view.getNextActionAt(), view.settled(), view.getError());
+                currentPeriod, view.getLastPeriodEndsAt(), renewalPlan, view.getPlanRevision(),
+                view.isAutoRenew(), pendingRenewal, pendingSettlement, view.getTerminatedAt(),
+                view.getNextActionAt(), settled, view.getError());
     }
 
     public record Created(LeaseView lease, String username, String password, String jupyterToken) {}

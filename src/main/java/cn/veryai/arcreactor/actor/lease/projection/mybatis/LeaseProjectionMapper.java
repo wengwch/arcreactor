@@ -5,6 +5,7 @@ import cn.veryai.arcreactor.actor.lease.model.LeasePurchase;
 import cn.veryai.arcreactor.actor.lease.model.LeaseSettlement;
 import cn.veryai.arcreactor.actor.lease.model.LeaseState.PurchasePhase;
 import cn.veryai.arcreactor.actor.lease.model.RentalPlan;
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.apache.ibatis.annotations.Mapper;
@@ -42,17 +43,10 @@ public interface LeaseProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
-    int updatePurchasePriced(
-            @Param("leaseId") String leaseId,
-            @Param("orderId") String orderId,
-            @Param("amount") long amount,
-            @Param("version") long version,
-            @Param("updatedAt") Timestamp updatedAt);
-
     int updatePurchasePhase(
             @Param("leaseId") String leaseId,
-            @Param("orderId") String orderId,
             @Param("phase") PurchasePhase phase,
+            @Param("orderAmount") BigDecimal orderAmount,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -64,7 +58,6 @@ public interface LeaseProjectionMapper {
 
     int updateSettlementCompleted(
             @Param("leaseId") String leaseId,
-            @Param("orderId") String orderId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

@@ -1,6 +1,6 @@
 package cn.veryai.arcreactor.actor.order.projection.mybatis;
 
-import cn.veryai.arcreactor.actor.order.model.OrderState.Phase;
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -14,9 +14,15 @@ public interface OrderProjectionMapper {
             @Param("userId") String userId,
             @Param("leaseId") String leaseId,
             @Param("intentId") String intentId,
-            @Param("amount") long amount,
-            @Param("phase") Phase phase,
-            @Param("deductAmount") Long deductAmount,
+            @Param("amount") BigDecimal amount,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int insertUnopenedSettled(
+            @Param("orderId") String orderId,
+            @Param("userId") String userId,
+            @Param("leaseId") String leaseId,
+            @Param("intentId") String intentId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -27,7 +33,7 @@ public interface OrderProjectionMapper {
 
     int updateDeductionRequested(
             @Param("orderId") String orderId,
-            @Param("deductAmount") long deductAmount,
+            @Param("deductAmount") BigDecimal deductAmount,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

@@ -1,22 +1,27 @@
 package cn.veryai.arcreactor.actor.order.model;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 public record OrderState(String orderId, String userId, String leaseId, String intentId,
-    long amount, Phase phase, Long deductAmount, String error) implements Serializable {
+    BigDecimal amount, Phase phase, BigDecimal deductAmount, String error) implements Serializable {
 
   public enum Phase { NEW, LOCKING, LOCKED, DEDUCTING, SETTLED, INSUFFICIENT_FUNDS }
 
   public static OrderState empty(String orderId) {
-    return new OrderState(orderId, null, null, null, 0, Phase.NEW, null, null);
+    return new OrderState(orderId, null, null, null,
+        BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), Phase.NEW, null, null);
   }
 
-  public OrderState created(String nextUserId, String nextLeaseId, String nextIntentId, long nextAmount) {
+  public OrderState created(String nextUserId, String nextLeaseId, String nextIntentId, BigDecimal nextAmount) {
     return new OrderState(orderId, nextUserId, nextLeaseId, nextIntentId, nextAmount, Phase.LOCKING, null, null);
   }
 
-  public OrderState settledWithoutLock(String nextUserId, String nextLeaseId, String nextIntentId, long nextAmount) {
-    return new OrderState(orderId, nextUserId, nextLeaseId, nextIntentId, nextAmount, Phase.SETTLED, 0L, null);
+  public OrderState settledWithoutLock(String nextUserId, String nextLeaseId, String nextIntentId) {
+    return new OrderState(orderId, nextUserId, nextLeaseId, nextIntentId,
+        BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), Phase.SETTLED,
+        BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), null);
   }
 
   public OrderState locked() {
@@ -24,7 +29,7 @@ public record OrderState(String orderId, String userId, String leaseId, String i
         deductAmount == null ? Phase.LOCKED : Phase.DEDUCTING, deductAmount, null);
   }
 
-  public OrderState deductionRequested(long requestedAmount) {
+  public OrderState deductionRequested(BigDecimal requestedAmount) {
     return new OrderState(orderId, userId, leaseId, intentId, amount,
         phase == Phase.LOCKED ? Phase.DEDUCTING : phase, requestedAmount, null);
   }

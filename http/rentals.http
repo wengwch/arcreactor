@@ -1,7 +1,6 @@
-# 首先导入 sql/rentals.sql，并按 http/instances.http 准备有效的 OpenStack 资源配置。
+# 使用当前 sql/rentals.sql 建表；按 http/instances.http 准备实例资源配置。
 # 冻结和结算调用 FundWalletService；实例创建和删除复用现有工作流，操作真实 OpenStack 资源。
-# 续租沿用同一实例；仅明确余额不足才因续租失败删除，其他异常保持运行并重试。
-# 续租先结算旧订单，再冻结新订单；新租期仍从上一期结束时间连续计时。
+# 续租先结算旧单再冻结新单，期间实例保持运行；明确余额不足则终止租约并删除实例，其他错误继续重试。
 # 各请求单独执行；创建重试保留 requestId 和原参数，新租用使用新的 requestId。
 @baseUrl = http://localhost:8080
 @userId = test-user-003
@@ -16,9 +15,10 @@
 @expectedPlanRevision = 1
 
 ### 创建租约；MONTH 固定 30 天，价格从 hypervisor_type 表查询
-# 按 hypervisorType 取对应周期折扣价，未设置则取原价；元单价 × quantity 后四舍五入到分。
-# result 包含 lease、username、password、jupyterToken。
-# 将 result.lease.leaseId 填入 leaseId，报价、冻结和实例创建在后台继续。
+# 创建订单时取对应周期折扣价，未设置则取原价；单价 × quantity 后四舍五入保留两位小数，订单创建后金额固定。
+# 租约和订单的所有金额单位均为元。
+# HTTP 202 表示受理，result 包含 lease、username、password、jupyterToken。
+# 将 result.lease.leaseId 填入 leaseId，订单冻结和实例创建在后台继续。
 POST {{baseUrl}}/api/v1/leases
 Content-Type: application/json
 Accept: application/json
@@ -40,8 +40,8 @@ Accept: application/json
 
 ### 查询租约 Actor 状态
 # ACTIVE 表示当前租期已开始；currentPeriod 包含计费起止时间及 orderId。
-# lastPeriodEndsAt 保存上一期结束时间；pendingSettlement 保存待结算旧单，结算后才冻结新单。
-# pendingRenewal.phase=PRICING 时 amount=0 表示尚未报价，订单尚未创建；成功后金额固定。
+# lastPeriodEndsAt 保留最近租期的结束时间，作为续租起点；pendingSettlement 保存待结算订单。
+# pendingRenewal.phase=CREATING_ORDER 时先查询原订单，不存在才取价并创建；amount=0 表示价格未确认，订单可能已创建或冻结。
 GET {{baseUrl}}/api/v1/leases/{{leaseId}}
 Accept: application/json
 
@@ -49,9 +49,9 @@ Accept: application/json
 GET {{baseUrl}}/api/v1/leases?userId={{userId}}
 Accept: application/json
 
-### 修改下期方案；先根据当前查询结果更新期号和 planRevision 变量
-# 当前租期不变；已开始的目标期不可修改。
-# pendingRenewal 必须为空；等待旧单结算、报价、冻结或实例确认未结束时返回 409 / RENEWAL_PENDING，相同 plan 也拒绝。
+### 修改下期方案；先将 targetPeriodSeq 设为 periodSeq + 1，expectedPlanRevision 设为当前 planRevision
+# 当前租期不变；pendingRenewal 非空时返回 HTTP 409，result.error=RENEWAL_PENDING，相同 plan 也拒绝。
+# 修改方案、配置自动续租、续租和退租：HTTP 202/409 表示受理/拒绝，查看 result.accepted、result.error、result.lease。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/renewal-plan
 Content-Type: application/json
 Accept: application/json
@@ -63,8 +63,8 @@ Accept: application/json
 }
 
 ### 关闭自动续租；只影响后续周期
-# 不会中断已有 pending 的结算、报价、冻结、确认或重试；主动终止 pending 只能使用退租接口。
-# 没有 pending 时，关闭后实例继续运行，到期等待手动续租或主动退租。
+# 已有 pendingRenewal 继续推进，主动终止只能退租；到期旧单仍全额结算。
+# 没有待续租时实例保持运行，等待手动续租或退租。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/auto-renew
 Content-Type: application/json
 Accept: application/json
@@ -78,16 +78,15 @@ POST {{baseUrl}}/api/v1/leases/{{leaseId}}/renew
 Accept: application/json
 
 ### 查询订单；orderId 来自 currentPeriod、pendingRenewal 或 pendingSettlement
-# WAITING_SETTLEMENT / PRICING 阶段的新订单尚未创建，应先等待旧单结算和报价成功。
-# LOCKING / DEDUCTING 表示冻结或结算未确认；SETTLED 表示结算完成，INSUFFICIENT_FUNDS 表示余额不足。
+# WAITING_SETTLEMENT 时新订单尚未创建，查询返回资源不存在；可先查询 pendingSettlement.orderId。
+# LOCKING / DEDUCTING 表示冻结或扣款未确认；SETTLED 为结算终态（包含未创建订单的零额结算），INSUFFICIENT_FUNDS 表示余额不足。
 GET {{baseUrl}}/api/v1/orders/{{orderId}}
 Accept: application/json
 
-### 退租；固定本期实际使用金额，资源清理与钱包结算异步继续
-# pending 续租不可单独取消；如需主动终止，使用此接口退租并删除实例。
-# PRICING 阶段退租直接结束待报价购买，迟到报价忽略；已保存的旧单结算继续完成。
-# 续租包括待确认租期或未知冻结结果，均从上一期结束时间计算，首次受理退租时固定截止时间。
-# 按已保存的实际使用金额调用 deduct；首次交付前消费为零，冻结未知时继续确认后结算。
-# 创建中的实例等待工作流进入 ACTIVE/FAILED 且无在途管理操作后调用现有删除接口。
+### 退租；固定计费截止时间，资源清理与钱包结算异步继续
+# 消费金额按已使用整分钟数占比计算，不足一分钟舍弃，最终金额四舍五入保留两位小数。
+# 待确认的续租也从上一期结束时间计算消费；首次实例交付前消费为零。
+# 通过 SettleOrder 统一处理：金额未知时，未创建订单保存零额终态，已有订单按原金额和固定截止时间结算。
+# TERMINATED 表示资源清理完成；settled 表示退租后资金待办已结束，扣款是否成功需查看订单阶段和 error。
 POST {{baseUrl}}/api/v1/leases/{{leaseId}}/terminate
 Accept: application/json

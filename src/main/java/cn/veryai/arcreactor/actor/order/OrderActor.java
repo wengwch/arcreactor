@@ -19,7 +19,7 @@ import cn.veryai.arcreactor.actor.order.model.OrderState.Phase;
 import cn.veryai.arcreactor.actor.order.model.WalletAction;
 import cn.veryai.arcreactor.service.FundWalletService;
 import java.math.BigDecimal;
-import java.util.List;
+import java.math.RoundingMode;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -87,16 +87,21 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
   }
 
   private Effect<OrderEvent, OrderState> onCreate(OrderState state, CreateOrder command) {
-    if (command.userId() == null || command.userId().isBlank() || command.leaseId() == null
-        || command.leaseId().isBlank() || command.intentId() == null || command.intentId().isBlank()
-        || command.amount() <= 0) {
+    if (!hasText(command.userId()) || !hasText(command.leaseId()) || !hasText(command.intentId())
+        || command.amount() == null || command.amount().signum() <= 0) {
       return reject(state, command.replyTo(), "User, lease, intent and a positive amount are required");
     }
+    BigDecimal orderAmount = command.amount().setScale(2, RoundingMode.HALF_UP);
+    if (orderAmount.signum() <= 0) {
+      return reject(state, command.replyTo(), "Order amount must be at least one cent");
+    }
     if (state.initialized()) {
-      return matches(state, command.userId(), command.leaseId(), command.intentId(), command.amount())
+      // Concurrent retries may quote again; the first persisted order keeps its price.
+      return matches(state, command.userId(), command.leaseId(), command.intentId())
           ? Effect().reply(command.replyTo(), state) : reject(state, command.replyTo(), "Order binding differs");
     }
-    return Effect().persist(new OrderCreated(command.userId(), command.leaseId(), command.intentId(), command.amount()))
+    return Effect().persist(new OrderCreated(command.userId(), command.leaseId(), command.intentId(),
+        orderAmount))
         .thenRun(updated -> {
           command.replyTo().tell(updated);
           retryWalletOperation(updated);
@@ -104,47 +109,53 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
   }
 
   private Effect<OrderEvent, OrderState> onSettle(OrderState state, SettleOrder command) {
-    if (command.userId() == null || command.userId().isBlank() || command.leaseId() == null
-        || command.leaseId().isBlank() || command.intentId() == null || command.intentId().isBlank()
-        || command.amount() <= 0 || command.deductAmount() < 0 || command.deductAmount() > command.amount()) {
+    if (!hasText(command.userId()) || !hasText(command.leaseId()) || !hasText(command.intentId())
+        || command.amount() == null || command.deductAmount() == null
+        || command.amount().signum() < 0 || command.deductAmount().signum() < 0) {
+      return reject(state, command.replyTo(), "Invalid order settlement");
+    }
+    BigDecimal orderAmount = command.amount().setScale(2, RoundingMode.HALF_UP);
+    BigDecimal deductAmount = command.deductAmount().setScale(2, RoundingMode.HALF_UP);
+    if ((command.amount().signum() > 0 && orderAmount.signum() == 0) || deductAmount.compareTo(orderAmount) > 0) {
       return reject(state, command.replyTo(), "Invalid order settlement");
     }
     if (!state.initialized()) {
-      if (command.deductAmount() == 0) {
-        // A termination arriving before create must prevent a delayed create from freezing funds.
-        return Effect().persist(new UnopenedOrderSettled(
-            command.userId(), command.leaseId(), command.intentId(), command.amount()))
-            .thenRun(updated -> command.replyTo().tell(updated));
+      if (orderAmount.signum() > 0) {
+        return reject(state, command.replyTo(), "Order has not been created");
       }
-      // A renewal may already have provided service before its create request was received.
-      return Effect().persist(List.of(
-          new OrderCreated(command.userId(), command.leaseId(), command.intentId(), command.amount()),
-          new OrderDeductionRequested(command.deductAmount())))
-          .thenRun(updated -> {
-            command.replyTo().tell(updated);
-            retryWalletOperation(updated);
-          });
+      // A termination arriving before create must prevent a delayed create from freezing funds.
+      return Effect().persist(new UnopenedOrderSettled(command.userId(), command.leaseId(), command.intentId()))
+          .thenRun(updated -> command.replyTo().tell(updated));
     }
-    if (!matches(state, command.userId(), command.leaseId(), command.intentId(), command.amount())) {
+    if (!matches(state, command.userId(), command.leaseId(), command.intentId())
+        || orderAmount.signum() > 0 && state.amount().compareTo(orderAmount) != 0) {
       return reject(state, command.replyTo(), "Order binding differs");
     }
+    if (orderAmount.signum() == 0) {
+      // Return the persisted price so the lease can calculate consumption at its saved cutoff.
+      return Effect().reply(command.replyTo(), state);
+    }
     if (state.deductAmount() != null) {
-      return state.deductAmount() == command.deductAmount() ? Effect().reply(command.replyTo(), state)
+      return state.deductAmount().compareTo(deductAmount) == 0 ? Effect().reply(command.replyTo(), state)
           : reject(state, command.replyTo(), "Settlement amount differs from the original request");
     }
     if (state.phase() == Phase.INSUFFICIENT_FUNDS) {
       return Effect().reply(command.replyTo(), state);
     }
-    return Effect().persist(new OrderDeductionRequested(command.deductAmount()))
+    return Effect().persist(new OrderDeductionRequested(deductAmount))
         .thenRun(updated -> {
           command.replyTo().tell(updated);
           retryWalletOperation(updated);
         });
   }
 
-  private boolean matches(OrderState state, String userId, String leaseId, String intentId, long amount) {
+  private static boolean matches(OrderState state, String userId, String leaseId, String intentId) {
     return Objects.equals(state.userId(), userId) && Objects.equals(state.leaseId(), leaseId)
-        && Objects.equals(state.intentId(), intentId) && state.amount() == amount;
+        && Objects.equals(state.intentId(), intentId);
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
   }
 
   private Effect<OrderEvent, OrderState> onGetState(OrderState state, GetOrderState command) {
@@ -171,8 +182,8 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
     WalletAction action = state.phase() == Phase.LOCKING ? WalletAction.LOCK : WalletAction.DEDUCT;
     // The wallet APIs are synchronous. Retries reuse the order ID and persisted amounts.
     var operation = CompletableFuture.supplyAsync(() -> action == WalletAction.LOCK
-        ? walletService.lock(state.userId(), BigDecimal.valueOf(state.amount(), 2), orderId, "GPU_RENTAL", null)
-        : walletService.deduct(state.userId(), orderId, BigDecimal.valueOf(state.deductAmount(), 2), null),
+        ? walletService.lock(state.userId(), state.amount(), orderId, "GPU_RENTAL", null)
+        : walletService.deduct(state.userId(), orderId, state.deductAmount(), null),
         blockingExecutor).orTimeout(settings.requestTimeout().toMillis(), TimeUnit.MILLISECONDS);
     context.pipeToSelf(operation, (response, error) -> new WalletOperationCompleted(token, action,
         response == null ? null : response.isSuccess(),
@@ -207,7 +218,7 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
         .onEvent(OrderCreated.class,
             (state, event) -> state.created(event.userId(), event.leaseId(), event.intentId(), event.amount()))
         .onEvent(UnopenedOrderSettled.class,
-            (state, event) -> state.settledWithoutLock(event.userId(), event.leaseId(), event.intentId(), event.amount()))
+            (state, event) -> state.settledWithoutLock(event.userId(), event.leaseId(), event.intentId()))
         .onEvent(OrderLocked.class, (state, event) -> state.locked())
         .onEvent(OrderDeductionRequested.class, (state, event) -> state.deductionRequested(event.amount()))
         .onEvent(OrderDeducted.class, (state, event) -> state.deducted())

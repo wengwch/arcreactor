@@ -1,71 +1,76 @@
 package cn.veryai.arcreactor.web.api;
 
-import cn.veryai.arcreactor.actor.lease.command.ChangeRenewalPlan;
-import cn.veryai.arcreactor.actor.lease.command.ConfigureAutoRenew;
-import cn.veryai.arcreactor.actor.lease.command.RenewLease;
-import cn.veryai.arcreactor.actor.lease.command.TerminateLease;
-import cn.veryai.arcreactor.actor.lease.model.RentalPlan;
 import cn.veryai.arcreactor.service.LeaseService;
 import cn.veryai.arcreactor.vo.LeaseView;
 import cn.veryai.arcreactor.vo.RespWrapper;
+import cn.veryai.arcreactor.web.params.ChangeRenewalPlanParam;
+import cn.veryai.arcreactor.web.params.ConfigureAutoRenewParam;
 import cn.veryai.arcreactor.web.params.CreateLeaseParam;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/leases")
 @RequiredArgsConstructor
 public class LeaseController {
-    private final LeaseService service;
-
-    public record PlanChange(@Positive long targetPeriodSeq, @Positive long expectedPlanRevision,
-            @NotNull @Valid RentalPlan plan) {}
-    public record AutoRenew(boolean enabled) {}
+    private final LeaseService leaseService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public CompletionStage<LeaseView.Created> create(@Valid @RequestBody CreateLeaseParam param) {
-        return service.create(param);
+    public CompletionStage<LeaseView.Created> createLease(@Valid @RequestBody CreateLeaseParam param) {
+        return leaseService.create(param);
     }
 
-    @GetMapping("/{id}")
-    public CompletionStage<LeaseView> get(@PathVariable("id") String id) { return service.get(id); }
+    @GetMapping("/{leaseId}")
+    public CompletionStage<LeaseView> getLease(@PathVariable("leaseId") String leaseId) {
+        return leaseService.get(leaseId);
+    }
 
     @GetMapping
-    public List<LeaseView> list(@RequestParam("userId") String userId) { return service.list(userId); }
-
-    @PutMapping("/{id}/renewal-plan")
-    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> plan(@PathVariable("id") String id,
-            @Valid @RequestBody PlanChange param) {
-        return response(service.mutate(id, reply -> new ChangeRenewalPlan(param.targetPeriodSeq(),
-                param.expectedPlanRevision(), param.plan(), reply)));
+    public List<LeaseView> listLeases(@RequestParam("userId") String userId) {
+        return leaseService.list(userId);
     }
 
-    @PutMapping("/{id}/auto-renew")
-    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> autoRenew(@PathVariable("id") String id,
-            @RequestBody AutoRenew param) {
-        return response(service.mutate(id, reply -> new ConfigureAutoRenew(param.enabled(), reply)));
+    @PutMapping("/{leaseId}/renewal-plan")
+    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> changeRenewalPlan(
+            @PathVariable("leaseId") String leaseId, @Valid @RequestBody ChangeRenewalPlanParam param) {
+        return mutationResponse(leaseService.changeRenewalPlan(leaseId, param));
     }
 
-    @PostMapping("/{id}/renew")
-    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> renew(@PathVariable("id") String id) {
-        return response(service.mutate(id, RenewLease::new));
+    @PutMapping("/{leaseId}/auto-renew")
+    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> configureAutoRenew(
+            @PathVariable("leaseId") String leaseId, @Valid @RequestBody ConfigureAutoRenewParam param) {
+        return mutationResponse(leaseService.configureAutoRenew(leaseId, param));
     }
 
-    @PostMapping("/{id}/terminate")
-    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> terminate(@PathVariable("id") String id) {
-        return response(service.mutate(id, TerminateLease::new));
+    @PostMapping("/{leaseId}/renew")
+    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> renewLease(
+            @PathVariable("leaseId") String leaseId) {
+        return mutationResponse(leaseService.renew(leaseId));
     }
 
-    private CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> response(CompletionStage<LeaseView.Mutation> result) {
-        return result.thenApply(value -> ResponseEntity.status(value.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT)
-                .body(RespWrapper.success(value)));
+    @PostMapping("/{leaseId}/terminate")
+    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> terminateLease(
+            @PathVariable("leaseId") String leaseId) {
+        return mutationResponse(leaseService.terminate(leaseId));
+    }
+
+    private CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> mutationResponse(
+            CompletionStage<LeaseView.Mutation> mutation) {
+        return mutation.thenApply(result -> ResponseEntity.status(result.accepted() ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT)
+                .body(RespWrapper.success(result)));
     }
 }

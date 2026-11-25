@@ -1,7 +1,9 @@
 package cn.veryai.arcreactor.actor.lease.model;
 
 import cn.veryai.arcreactor.actor.instance.model.InstanceSpec;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.Instant;
 
 public record LeaseState(
@@ -25,7 +27,12 @@ public record LeaseState(
     String error) implements Serializable {
 
   public enum Phase { NEW, WAITING_LOCK, PROVISIONING, ACTIVE, EXPIRED, TERMINATING, TERMINATED }
-  public enum PurchasePhase { WAITING_SETTLEMENT, PRICING, CREATING_ORDER, LOCKING, WAITING_ACTIVATION }
+  public enum PurchasePhase {
+    WAITING_SETTLEMENT,
+    @JsonAlias("PRICING") CREATING_ORDER,
+    LOCKING,
+    WAITING_ACTIVATION
+  }
 
   public static LeaseState empty(String leaseId) {
     return new LeaseState(leaseId, null, null, null, null, Phase.NEW, 0, null, null, null, 0, false, null,
@@ -57,24 +64,12 @@ public record LeaseState(
         instanceCreationRequested, terminatedAt, nextActionAt, null);
   }
 
-  public LeaseState purchasePriced(String orderId, long amount) {
-    if (pendingRenewal == null || !pendingRenewal.orderId().equals(orderId)) {
-      return this;
-    }
-    return new LeaseState(leaseId, userId, requestId, fingerprint, instanceSpec, phase, periodSeq,
-        currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew, pendingRenewal.priced(amount),
-        pendingSettlement, instanceCreationRequested, terminatedAt, nextActionAt, null);
-  }
-
-  public LeaseState purchasePhaseChanged(String orderId, PurchasePhase nextPurchasePhase) {
-    if (pendingRenewal == null || !pendingRenewal.orderId().equals(orderId)) {
-      return this;
-    }
+  public LeaseState purchasePhaseChanged(PurchasePhase nextPurchasePhase, BigDecimal orderAmount) {
     Phase nextPhase = nextPurchasePhase == PurchasePhase.WAITING_ACTIVATION ? Phase.PROVISIONING : phase;
     return new LeaseState(leaseId, userId, requestId, fingerprint, instanceSpec, nextPhase, periodSeq,
         currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew,
-        pendingRenewal.withPhase(nextPurchasePhase), pendingSettlement, instanceCreationRequested,
-        terminatedAt, nextActionAt, error);
+        pendingRenewal.withPhase(nextPurchasePhase, orderAmount), pendingSettlement, instanceCreationRequested,
+        terminatedAt, nextActionAt, orderAmount == null ? error : null);
   }
 
   public LeaseState settlementRequested(LeaseSettlement settlement) {
@@ -83,10 +78,7 @@ public record LeaseState(
         instanceCreationRequested, terminatedAt, nextActionAt, error);
   }
 
-  public LeaseState settlementCompleted(String orderId) {
-    if (pendingSettlement == null || !pendingSettlement.orderId().equals(orderId)) {
-      return this;
-    }
+  public LeaseState settlementCompleted() {
     return new LeaseState(leaseId, userId, requestId, fingerprint, instanceSpec, phase, periodSeq,
         currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew, pendingRenewal, null,
         instanceCreationRequested, terminatedAt, nextActionAt, error);

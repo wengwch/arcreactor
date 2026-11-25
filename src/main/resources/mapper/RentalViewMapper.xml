@@ -22,7 +22,7 @@
                 javaType="cn.veryai.arcreactor.actor.lease.model.RentalPlan$Unit"
                 typeHandler="org.apache.ibatis.type.EnumTypeHandler"/>
         <result property="currentPlanQuantity" column="current_plan_quantity" jdbcType="INTEGER"/>
-        <result property="currentAmount" column="current_amount" jdbcType="BIGINT"/>
+        <result property="currentAmount" column="current_amount" jdbcType="DECIMAL"/>
         <result property="currentStartsAt" column="current_starts_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
                 typeHandler="org.apache.ibatis.type.InstantTypeHandler"/>
         <result property="currentEndsAt" column="current_ends_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
@@ -42,23 +42,20 @@
                 javaType="cn.veryai.arcreactor.actor.lease.model.RentalPlan$Unit"
                 typeHandler="org.apache.ibatis.type.EnumTypeHandler"/>
         <result property="pendingPlanQuantity" column="pending_plan_quantity" jdbcType="INTEGER"/>
-        <result property="pendingAmount" column="pending_amount" jdbcType="BIGINT"/>
+        <result property="pendingAmount" column="pending_amount" jdbcType="DECIMAL"/>
         <result property="pendingPlanRevision" column="pending_plan_revision" jdbcType="BIGINT"/>
         <result property="pendingPhase" column="pending_phase" jdbcType="VARCHAR"
                 javaType="cn.veryai.arcreactor.actor.lease.model.LeaseState$PurchasePhase"
                 typeHandler="org.apache.ibatis.type.EnumTypeHandler"/>
         <result property="settlementOrderId" column="settlement_order_id" jdbcType="VARCHAR"/>
         <result property="settlementIntentId" column="settlement_intent_id" jdbcType="VARCHAR"/>
-        <result property="settlementAmount" column="settlement_amount" jdbcType="BIGINT"/>
-        <result property="settlementDeductAmount" column="settlement_deduct_amount" jdbcType="BIGINT"/>
+        <result property="settlementAmount" column="settlement_amount" jdbcType="DECIMAL"/>
+        <result property="settlementDeductAmount" column="settlement_deduct_amount" jdbcType="DECIMAL"/>
         <result property="terminatedAt" column="terminated_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
                 typeHandler="org.apache.ibatis.type.InstantTypeHandler"/>
         <result property="nextActionAt" column="next_action_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
                 typeHandler="org.apache.ibatis.type.InstantTypeHandler"/>
         <result property="error" column="error" jdbcType="LONGVARCHAR"/>
-        <result property="workflowVersion" column="workflow_version" jdbcType="BIGINT"/>
-        <result property="updatedAt" column="updated_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
-                typeHandler="org.apache.ibatis.type.InstantTypeHandler"/>
     </resultMap>
 
     <sql id="leaseColumns">
@@ -69,7 +66,7 @@
         pending_order_id, pending_intent_id, pending_period_seq, pending_plan_unit,
         pending_plan_quantity, pending_amount, pending_plan_revision, pending_phase,
         settlement_order_id, settlement_intent_id, settlement_amount, settlement_deduct_amount,
-        terminated_at, next_action_at, error, workflow_version, updated_at
+        terminated_at, next_action_at, error
     </sql>
 
     <select id="findDueLeases" resultMap="dueEntry">

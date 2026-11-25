@@ -9,7 +9,6 @@ import cn.veryai.arcreactor.actor.order.event.OrderInsufficientFunds;
 import cn.veryai.arcreactor.actor.order.event.OrderLocked;
 import cn.veryai.arcreactor.actor.order.event.OrderOperationFailed;
 import cn.veryai.arcreactor.actor.order.event.UnopenedOrderSettled;
-import cn.veryai.arcreactor.actor.order.model.OrderState.Phase;
 import cn.veryai.arcreactor.actor.order.projection.mybatis.OrderProjectionMapper;
 import cn.veryai.arcreactor.actor.projection.RentalProjectionSession;
 import java.sql.Timestamp;
@@ -35,9 +34,9 @@ public final class OrderProjectionHandler extends JdbcHandler<EventEnvelope<Orde
         Timestamp updatedAt = Timestamp.from(Instant.ofEpochMilli(envelope.timestamp()));
         int written = switch (envelope.event()) {
             case OrderCreated created -> mapper.insertCreated(orderId, created.userId(), created.leaseId(),
-                    created.intentId(), created.amount(), Phase.LOCKING, null, version, updatedAt);
-            case UnopenedOrderSettled settled -> mapper.insertCreated(orderId, settled.userId(), settled.leaseId(),
-                    settled.intentId(), settled.amount(), Phase.SETTLED, 0L, version, updatedAt);
+                    created.intentId(), created.amount(), version, updatedAt);
+            case UnopenedOrderSettled settled -> mapper.insertUnopenedSettled(orderId, settled.userId(), settled.leaseId(),
+                    settled.intentId(), version, updatedAt);
             case OrderLocked ignored -> mapper.updateLocked(orderId, version, updatedAt);
             case OrderDeductionRequested requested ->
                     mapper.updateDeductionRequested(orderId, requested.amount(), version, updatedAt);

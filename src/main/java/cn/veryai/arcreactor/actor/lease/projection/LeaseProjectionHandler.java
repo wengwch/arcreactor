@@ -12,7 +12,6 @@ import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationRequested;
 import cn.veryai.arcreactor.actor.lease.event.PeriodEnded;
 import cn.veryai.arcreactor.actor.lease.event.PeriodStarted;
 import cn.veryai.arcreactor.actor.lease.event.PurchasePhaseChanged;
-import cn.veryai.arcreactor.actor.lease.event.PurchasePriced;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseRequested;
 import cn.veryai.arcreactor.actor.lease.event.RenewalPlanChanged;
 import cn.veryai.arcreactor.actor.lease.event.SettlementCompleted;
@@ -49,14 +48,12 @@ public final class LeaseProjectionHandler extends JdbcHandler<EventEnvelope<Leas
                     mapper.updateAutoRenew(leaseId, configured.enabled(), version, updatedAt);
             case PurchaseRequested requested ->
                     mapper.updatePurchaseRequested(leaseId, requested.purchase(), version, updatedAt);
-            case PurchasePriced priced ->
-                    mapper.updatePurchasePriced(leaseId, priced.orderId(), priced.amount(), version, updatedAt);
             case PurchasePhaseChanged changed ->
-                    mapper.updatePurchasePhase(leaseId, changed.orderId(), changed.phase(), version, updatedAt);
+                    mapper.updatePurchasePhase(leaseId, changed.phase(), changed.orderAmount(),
+                            version, updatedAt);
             case SettlementRequested requested ->
                     mapper.updateSettlementRequested(leaseId, requested.settlement(), version, updatedAt);
-            case SettlementCompleted completed ->
-                    mapper.updateSettlementCompleted(leaseId, completed.orderId(), version, updatedAt);
+            case SettlementCompleted ignored -> mapper.updateSettlementCompleted(leaseId, version, updatedAt);
             case PeriodEnded ended -> mapper.updatePeriodEnded(leaseId, ended.endsAt(), version, updatedAt);
             case PeriodStarted started -> mapper.updatePeriodStarted(leaseId, started.period(), version, updatedAt);
             case LeaseTerminationRequested requested -> mapper.updateTermination(leaseId, requested.terminatedAt(),
