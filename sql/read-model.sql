@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS instance_view (
   server_operation JSON,
   failure_code VARCHAR(128),
   failure_message TEXT,
+  failed_at TIMESTAMP(6) NULL,
+  deleted_at TIMESTAMP(6) NULL,
   workflow_version BIGINT NOT NULL,
   created_at TIMESTAMP(6),
   updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),

@@ -244,7 +244,7 @@ final class InstanceServerOperationWorkflow {
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> fail(InstanceWorkflowState state,
       String code, String detail, OpenStackClient.NovaServer.Status status) {
     return effects.persist(new InstanceServerOperationFailed(instanceId, state.serverOperation().failed(detail),
-        status, "NOVA_" + state.serverOperation().type().name() + "_" + code))
+        status, "NOVA_" + state.serverOperation().type().name() + "_" + code, clock.instant()))
         .thenRun(next -> timers.cancel(POLL_TIMER));
   }
 

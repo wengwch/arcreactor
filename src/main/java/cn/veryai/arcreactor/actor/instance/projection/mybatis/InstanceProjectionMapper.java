@@ -31,6 +31,13 @@ public interface InstanceProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateDeleted(
+            @Param("instanceId") String instanceId,
+            @Param("phase") InstancePhase phase,
+            @Param("deletedAt") Timestamp deletedAt,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updateDependencies(
             @Param("instanceId") String instanceId,
             @Param("phase") InstancePhase phase,
@@ -80,6 +87,7 @@ public interface InstanceProjectionMapper {
             @Param("novaStatus") String novaStatus,
             @Param("osImageId") String osImageId,
             @Param("failureCode") String failureCode,
+            @Param("failedAt") Timestamp failedAt,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -103,6 +111,7 @@ public interface InstanceProjectionMapper {
             @Param("phase") InstancePhase phase,
             @Param("failureCode") String failureCode,
             @Param("failureMessage") String failureMessage,
+            @Param("failedAt") Timestamp failedAt,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 }

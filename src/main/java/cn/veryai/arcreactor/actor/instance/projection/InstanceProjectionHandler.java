@@ -85,17 +85,18 @@ public final class InstanceProjectionHandler
             mapper.updateQos(instanceId, expired.resources(), version, timestamp);
         } else if (event instanceof InstanceServerOperationRequested requested) {
             mapper.updateServerOperation(instanceId, requested.operation().type().instancePhase(), requested.operation(),
-                    null, null, null, version, timestamp);
+                    null, null, null, null, version, timestamp);
         } else if (event instanceof InstanceServerOperationSubmitted submitted) {
             mapper.updateServerOperation(instanceId, submitted.operation().type().instancePhase(), submitted.operation(),
-                    null, null, null, version, timestamp);
+                    null, null, null, null, version, timestamp);
         } else if (event instanceof InstanceServerOperationCompleted completed) {
             mapper.updateServerOperation(instanceId, InstancePhase.ACTIVE, completed.operation(),
-                    "ACTIVE", completed.osImageId(), null, version, timestamp);
+                    "ACTIVE", completed.osImageId(), null, null, version, timestamp);
         } else if (event instanceof InstanceServerOperationFailed failed) {
             mapper.updateServerOperation(instanceId, InstancePhase.FAILED, failed.operation(),
                     failed.novaStatus() == null ? null : failed.novaStatus().name(), null,
-                    failed.failureCode(), version, timestamp);
+                    failed.failureCode(), failed.failedAt() == null ? timestamp : Timestamp.from(failed.failedAt()),
+                    version, timestamp);
         } else if (event instanceof HypervisorReservationStarted started) {
             mapper.updateHypervisor(instanceId, InstancePhase.RESERVING_RESOURCES, started.hypervisorId(),
                     started.hostname(), version, timestamp);
@@ -123,16 +124,16 @@ public final class InstanceProjectionHandler
             mapper.updatePhase(instanceId, InstancePhase.CANCELLING_RESERVATION, version, timestamp);
         } else if (event instanceof InstanceReservationCancelled) {
             mapper.updatePhase(instanceId, InstancePhase.RELEASING_ALLOCATION, version, timestamp);
-        } else if (event instanceof InstanceDeleted) {
-            mapper.updatePhase(instanceId, InstancePhase.DELETED, version, timestamp);
+        } else if (event instanceof InstanceDeleted deleted) {
+            mapper.updateDeleted(instanceId, InstancePhase.DELETED, Timestamp.from(deleted.deletedAt()), version, timestamp);
         } else if (event instanceof InstanceActivated) {
-            mapper.updateFailure(instanceId, InstancePhase.ACTIVE, null, null, version, timestamp);
+            mapper.updateFailure(instanceId, InstancePhase.ACTIVE, null, null, null, version, timestamp);
         } else if (event instanceof InstanceProvisioningFailed failed) {
             mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
-                    failed.failureMessage(), version, timestamp);
+                    failed.failureMessage(), Timestamp.from(failed.failedAt()), version, timestamp);
         } else if (event instanceof InstanceDeletionFailed failed) {
             mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
-                    failed.failureMessage(), version, timestamp);
+                    failed.failureMessage(), Timestamp.from(failed.failedAt()), version, timestamp);
         }
     }
 

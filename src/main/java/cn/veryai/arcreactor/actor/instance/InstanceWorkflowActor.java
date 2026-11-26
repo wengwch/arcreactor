@@ -987,14 +987,15 @@ public final class InstanceWorkflowActor
         .onEvent(InstanceQosExpiryFailed.class, (state, event) -> state.activeQosChanged(event.update()))
         .onEvent(InstanceQosExpired.class, (state, event) -> state.qosExpired(event.resources()))
         .onEvent(InstanceServerOperationRequested.class,
-            (state, event) -> state.serverOperationChanged(event.operation(), null, null, null))
+            (state, event) -> state.serverOperationChanged(event.operation(), null, null, null, null))
         .onEvent(InstanceServerOperationSubmitted.class,
-            (state, event) -> state.serverOperationChanged(event.operation(), null, null, null))
+            (state, event) -> state.serverOperationChanged(event.operation(), null, null, null, null))
         .onEvent(InstanceServerOperationCompleted.class,
             (state, event) -> state.serverOperationChanged(event.operation(), OpenStackClient.NovaServer.Status.ACTIVE,
-                event.osImageId(), null))
+                event.osImageId(), null, null))
         .onEvent(InstanceServerOperationFailed.class,
-            (state, event) -> state.serverOperationChanged(event.operation(), event.novaStatus(), null, event.failureCode()))
+            (state, event) -> state.serverOperationChanged(event.operation(), event.novaStatus(), null,
+                event.failureCode(), event.failedAt()))
         .onEvent(DependencyPreparationStarted.class, (state, event) -> state.preparingDependencies())
         .onEvent(DependenciesPrepared.class, (state, event) -> state.dependenciesPrepared(event.dependencies()))
         .onEvent(SecurityGroupPreparationStarted.class, (state, event) -> state.preparingSecurityGroup())
@@ -1024,12 +1025,13 @@ public final class InstanceWorkflowActor
         .onEvent(InstanceNetworkDeleted.class, (state, event) -> state.networkDeleted())
         .onEvent(InstanceSecurityGroupDeleted.class, (state, event) -> state.securityGroupDeleted())
         .onEvent(InstanceReservationCancelled.class, (state, event) -> state.reservationCancelled())
-        .onEvent(InstanceDeleted.class, (state, event) -> state.deleted())
-        .onEvent(InstanceDeletionFailed.class, (state, event) -> state.failed(event.failureCode(), event.failureMessage()))
+        .onEvent(InstanceDeleted.class, (state, event) -> state.deleted(event.deletedAt()))
+        .onEvent(InstanceDeletionFailed.class,
+            (state, event) -> state.failed(event.failureCode(), event.failureMessage(), event.failedAt()))
         .onEvent(InstanceActivated.class, (state, event) -> state.active())
         .onEvent(
             InstanceProvisioningFailed.class,
-            (state, event) -> state.failed(event.failureCode(), event.failureMessage()))
+            (state, event) -> state.failed(event.failureCode(), event.failureMessage(), event.failedAt()))
         .build();
   }
 

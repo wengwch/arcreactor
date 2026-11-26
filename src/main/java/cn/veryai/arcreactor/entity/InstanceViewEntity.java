@@ -60,6 +60,8 @@ public class InstanceViewEntity {
     private InstanceServerOperation serverOperation;
     private String failureCode;
     private String failureMessage;
+    private OffsetDateTime failedAt;
+    private OffsetDateTime deletedAt;
     private long workflowVersion;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;

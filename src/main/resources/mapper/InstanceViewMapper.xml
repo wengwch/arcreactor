@@ -52,6 +52,8 @@
         <result column="server_operation" property="serverOperation" typeHandler="cn.veryai.arcreactor.mapper.typehandler.InstanceServerOperationJsonTypeHandler"/>
         <result column="failure_code" property="failureCode"/>
         <result column="failure_message" property="failureMessage"/>
+        <result column="failed_at" property="failedAt"/>
+        <result column="deleted_at" property="deletedAt"/>
         <result column="workflow_version" property="workflowVersion"/>
         <result column="created_at" property="createdAt"/>
         <result column="updated_at" property="updatedAt"/>
@@ -70,7 +72,7 @@
         parent_max_burst_kbits, os_sub_port_id, sub_fixed_ip, os_sub_qos_policy_id,
         os_sub_qos_ingress_rule_id, os_sub_qos_egress_rule_id, sub_max_kbps, sub_max_burst_kbits,
         os_sub_floating_ip_id, sub_floating_ip_address, os_trunk_id,
-        server_operation, failure_code, failure_message, workflow_version,
+        server_operation, failure_code, failure_message, failed_at, deleted_at, workflow_version,
         created_at, updated_at
     </sql>
 
