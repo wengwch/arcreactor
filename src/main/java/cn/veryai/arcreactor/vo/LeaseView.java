@@ -23,17 +23,17 @@ public record LeaseView(String leaseId, String userId, LeaseState.Phase phase, l
 
     public static LeaseView from(LeaseViewEntity view) {
         LeasePeriod currentPeriod = view.getCurrentOrderId() == null ? null
-                : new LeasePeriod(view.getPeriodSeq(), view.getCurrentOrderId(), view.getCurrentIntentId(),
+                : new LeasePeriod(view.getPeriodSeq(), view.getCurrentOrderId(),
                         new RentalPlan(view.getCurrentPlanUnit(), view.getCurrentPlanQuantity()), view.getCurrentAmount(),
                         view.getCurrentStartsAt(), view.getCurrentEndsAt());
         RentalPlan renewalPlan = view.getRenewalPlanUnit() == null ? null
                 : new RentalPlan(view.getRenewalPlanUnit(), view.getRenewalPlanQuantity());
         LeasePurchase pendingRenewal = view.getPendingOrderId() == null ? null
-                : new LeasePurchase(view.getPendingOrderId(), view.getPendingIntentId(), view.getPendingPeriodSeq(),
+                : new LeasePurchase(view.getPendingOrderId(), view.getPendingPeriodSeq(),
                         new RentalPlan(view.getPendingPlanUnit(), view.getPendingPlanQuantity()), view.getPendingAmount(),
                         view.getPendingPlanRevision(), view.getPendingPhase());
         LeaseSettlement pendingSettlement = view.getSettlementOrderId() == null ? null
-                : new LeaseSettlement(view.getSettlementOrderId(), view.getSettlementIntentId(),
+                : new LeaseSettlement(view.getSettlementOrderId(),
                         view.getSettlementAmount(), view.getSettlementDeductAmount());
         boolean settled = (view.getPhase() == LeaseState.Phase.TERMINATING || view.getPhase() == LeaseState.Phase.TERMINATED)
                 && pendingRenewal == null && pendingSettlement == null;

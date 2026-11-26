@@ -1,7 +1,7 @@
 # 使用当前 sql/rentals.sql 建表；按 http/instances.http 准备实例资源配置。
 # 冻结和结算调用 FundWalletService；实例创建和删除复用现有工作流，操作真实 OpenStack 资源。
 # 续租先结算旧单再冻结新单，期间实例保持运行；明确余额不足则终止租约并删除实例，其他错误继续重试。
-# 各请求单独执行；创建重试保留 requestId 和原参数，新租用使用新的 requestId。
+# 各请求单独执行；同一用户和 requestId 重复创建返回原租约，新租用使用新的 requestId。
 @baseUrl = http://localhost:8080
 @userId = test-user-003
 @regionId = Test-SH-01
@@ -41,7 +41,8 @@ Accept: application/json
 ### 查询租约 Actor 状态
 # ACTIVE 表示当前租期已开始；currentPeriod 包含计费起止时间及 orderId。
 # lastPeriodEndsAt 保留最近租期的结束时间，作为续租起点；pendingSettlement 保存待结算订单。
-# pendingRenewal.phase=CREATING_ORDER 时先查询原订单，不存在才取价并创建；amount=0 表示价格未确认，订单可能已创建或冻结。
+# pendingRenewal.phase=WAITING_LOCK 时先完成 pendingSettlement，再查询原订单，不存在才取价并创建；amount=0 表示冻结尚未确认。
+# 报价先返回 LeaseActor 校验当前状态；已退租时丢弃报价，不再发送 CreateOrder。
 GET {{baseUrl}}/api/v1/leases/{{leaseId}}
 Accept: application/json
 
@@ -63,7 +64,7 @@ Accept: application/json
 }
 
 ### 关闭自动续租；只影响后续周期
-# 已有 pendingRenewal 继续推进，主动终止只能退租；到期旧单仍全额结算。
+# 已有 pendingRenewal 继续推进，购买和结算待办完成后才允许退租；到期旧单仍全额结算。
 # 没有待续租时实例保持运行，等待手动续租或退租。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/auto-renew
 Content-Type: application/json
@@ -78,15 +79,16 @@ POST {{baseUrl}}/api/v1/leases/{{leaseId}}/renew
 Accept: application/json
 
 ### 查询订单；orderId 来自 currentPeriod、pendingRenewal 或 pendingSettlement
-# WAITING_SETTLEMENT 时新订单尚未创建，查询返回资源不存在；可先查询 pendingSettlement.orderId。
-# LOCKING / DEDUCTING 表示冻结或扣款未确认；SETTLED 为结算终态（包含未创建订单的零额结算），INSUFFICIENT_FUNDS 表示余额不足。
+# 续租仍有 pendingSettlement 时新订单尚未创建，查询返回资源不存在；可先查询 pendingSettlement.orderId。
+# LOCKING / DEDUCTING 表示冻结或扣款未确认；SETTLED 表示结算完成，INSUFFICIENT_FUNDS 表示余额不足。
 GET {{baseUrl}}/api/v1/orders/{{orderId}}
 Accept: application/json
 
 ### 退租；固定计费截止时间，资源清理与钱包结算异步继续
+# pendingRenewal 或 pendingSettlement 非空时拒绝，返回 HTTP 409、result.error=ORDER_PENDING；待办完成后可重试。
+# 已受理退租的重复请求返回原状态，继续已有收尾。
 # 消费金额按已使用整分钟数占比计算，不足一分钟舍弃，最终金额四舍五入保留两位小数。
-# 待确认的续租也从上一期结束时间计算消费；首次实例交付前消费为零。
-# 通过 SettleOrder 统一处理：金额未知时，未创建订单保存零额终态，已有订单按原金额和固定截止时间结算。
+# 正常使用中的当前租期通过 SettleOrder 按实际消费金额结算。
 # TERMINATED 表示资源清理完成；settled 表示退租后资金待办已结束，扣款是否成功需查看订单阶段和 error。
 POST {{baseUrl}}/api/v1/leases/{{leaseId}}/terminate
 Accept: application/json

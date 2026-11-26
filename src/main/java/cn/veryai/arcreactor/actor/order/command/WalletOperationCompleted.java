@@ -1,6 +1,4 @@
 package cn.veryai.arcreactor.actor.order.command;
 
-import cn.veryai.arcreactor.actor.order.model.WalletAction;
-
-public record WalletOperationCompleted(String token, WalletAction action, Boolean success,
-    String error) implements OrderCommand {}
+/** success=null retries the operation; false means insufficient funds. */
+public record WalletOperationCompleted(String token, Boolean success, String error) implements OrderCommand {}

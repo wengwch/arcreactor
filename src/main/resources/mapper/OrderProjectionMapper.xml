@@ -19,25 +19,16 @@
 
     <insert id="insertCreated">
         INSERT INTO order_view
-          (order_id, user_id, lease_id, intent_id, amount, phase, deduct_amount, error, workflow_version, updated_at)
+          (order_id, user_id, lease_id, amount, phase, deduct_amount, error, workflow_version, updated_at)
         VALUES
           (#{orderId,jdbcType=VARCHAR}, #{userId,jdbcType=VARCHAR}, #{leaseId,jdbcType=VARCHAR},
-           #{intentId,jdbcType=VARCHAR}, #{amount,jdbcType=DECIMAL}, 'LOCKING', NULL, NULL,
-           #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
-    </insert>
-
-    <insert id="insertUnopenedSettled">
-        INSERT INTO order_view
-          (order_id, user_id, lease_id, intent_id, amount, phase, deduct_amount, error, workflow_version, updated_at)
-        VALUES
-          (#{orderId,jdbcType=VARCHAR}, #{userId,jdbcType=VARCHAR}, #{leaseId,jdbcType=VARCHAR},
-           #{intentId,jdbcType=VARCHAR}, 0, 'SETTLED', 0, NULL,
+           #{amount,jdbcType=DECIMAL}, 'LOCKING', NULL, NULL,
            #{version,jdbcType=BIGINT}, #{updatedAt,jdbcType=TIMESTAMP})
     </insert>
 
     <update id="updateLocked">
         UPDATE order_view
-        SET phase = IF(deduct_amount IS NULL, 'LOCKED', 'DEDUCTING'),
+        SET phase = 'LOCKED',
             error = NULL,
             <include refid="projectionMetadata"/>
         <include refid="previousVersion"/>
@@ -45,7 +36,7 @@
 
     <update id="updateDeductionRequested">
         UPDATE order_view
-        SET phase = IF(phase = 'LOCKED', 'DEDUCTING', phase),
+        SET phase = 'DEDUCTING',
             deduct_amount = #{deductAmount,jdbcType=DECIMAL},
             error = NULL,
             <include refid="projectionMetadata"/>

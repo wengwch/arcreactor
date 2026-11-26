@@ -3,7 +3,6 @@ package cn.veryai.arcreactor.actor.lease.projection.mybatis;
 import cn.veryai.arcreactor.actor.lease.model.LeasePeriod;
 import cn.veryai.arcreactor.actor.lease.model.LeasePurchase;
 import cn.veryai.arcreactor.actor.lease.model.LeaseSettlement;
-import cn.veryai.arcreactor.actor.lease.model.LeaseState.PurchasePhase;
 import cn.veryai.arcreactor.actor.lease.model.RentalPlan;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -43,10 +42,9 @@ public interface LeaseProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
-    int updatePurchasePhase(
+    int updatePurchaseLocked(
             @Param("leaseId") String leaseId,
-            @Param("phase") PurchasePhase phase,
-            @Param("orderAmount") BigDecimal orderAmount,
+            @Param("amount") BigDecimal amount,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

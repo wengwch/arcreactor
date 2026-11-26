@@ -3,7 +3,7 @@ package cn.veryai.arcreactor.actor.order;
 import cn.veryai.arcreactor.actor.order.command.CreateOrder;
 import cn.veryai.arcreactor.actor.order.command.GetOrderState;
 import cn.veryai.arcreactor.actor.order.command.OrderCommand;
-import cn.veryai.arcreactor.actor.order.command.PollOrderProgress;
+import cn.veryai.arcreactor.actor.order.command.RetryWalletOperation;
 import cn.veryai.arcreactor.actor.order.command.SettleOrder;
 import cn.veryai.arcreactor.actor.order.command.WalletOperationCompleted;
 import cn.veryai.arcreactor.actor.order.event.OrderCreated;
@@ -13,10 +13,8 @@ import cn.veryai.arcreactor.actor.order.event.OrderEvent;
 import cn.veryai.arcreactor.actor.order.event.OrderInsufficientFunds;
 import cn.veryai.arcreactor.actor.order.event.OrderLocked;
 import cn.veryai.arcreactor.actor.order.event.OrderOperationFailed;
-import cn.veryai.arcreactor.actor.order.event.UnopenedOrderSettled;
 import cn.veryai.arcreactor.actor.order.model.OrderState;
 import cn.veryai.arcreactor.actor.order.model.OrderState.Phase;
-import cn.veryai.arcreactor.actor.order.model.WalletAction;
 import cn.veryai.arcreactor.service.FundWalletService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -81,15 +79,15 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
         .onCommand(CreateOrder.class, this::onCreate)
         .onCommand(SettleOrder.class, this::onSettle)
         .onCommand(GetOrderState.class, this::onGetState)
-        .onCommand(PollOrderProgress.class, this::onPollProgress)
+        .onCommand(RetryWalletOperation.class, this::onRetryWalletOperation)
         .onCommand(WalletOperationCompleted.class, this::onWalletCompleted)
         .build();
   }
 
   private Effect<OrderEvent, OrderState> onCreate(OrderState state, CreateOrder command) {
-    if (!hasText(command.userId()) || !hasText(command.leaseId()) || !hasText(command.intentId())
+    if (!hasText(command.userId()) || !hasText(command.leaseId())
         || command.amount() == null || command.amount().signum() <= 0) {
-      return reject(state, command.replyTo(), "User, lease, intent and a positive amount are required");
+      return reject(state, command.replyTo(), "User, lease and a positive amount are required");
     }
     BigDecimal orderAmount = command.amount().setScale(2, RoundingMode.HALF_UP);
     if (orderAmount.signum() <= 0) {
@@ -97,61 +95,52 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
     }
     if (state.initialized()) {
       // Concurrent retries may quote again; the first persisted order keeps its price.
-      return matches(state, command.userId(), command.leaseId(), command.intentId())
+      return matches(state, command.userId(), command.leaseId())
           ? Effect().reply(command.replyTo(), state) : reject(state, command.replyTo(), "Order binding differs");
     }
-    return Effect().persist(new OrderCreated(command.userId(), command.leaseId(), command.intentId(),
-        orderAmount))
+    return Effect().persist(new OrderCreated(command.userId(), command.leaseId(), orderAmount))
         .thenRun(updated -> {
           command.replyTo().tell(updated);
-          retryWalletOperation(updated);
+          executeWalletOperation(updated);
         });
   }
 
   private Effect<OrderEvent, OrderState> onSettle(OrderState state, SettleOrder command) {
-    if (!hasText(command.userId()) || !hasText(command.leaseId()) || !hasText(command.intentId())
+    if (!hasText(command.userId()) || !hasText(command.leaseId())
         || command.amount() == null || command.deductAmount() == null
-        || command.amount().signum() < 0 || command.deductAmount().signum() < 0) {
+        || command.amount().signum() <= 0 || command.deductAmount().signum() < 0) {
       return reject(state, command.replyTo(), "Invalid order settlement");
     }
     BigDecimal orderAmount = command.amount().setScale(2, RoundingMode.HALF_UP);
     BigDecimal deductAmount = command.deductAmount().setScale(2, RoundingMode.HALF_UP);
-    if ((command.amount().signum() > 0 && orderAmount.signum() == 0) || deductAmount.compareTo(orderAmount) > 0) {
+    if (orderAmount.signum() == 0 || deductAmount.compareTo(orderAmount) > 0) {
       return reject(state, command.replyTo(), "Invalid order settlement");
     }
     if (!state.initialized()) {
-      if (orderAmount.signum() > 0) {
-        return reject(state, command.replyTo(), "Order has not been created");
-      }
-      // A termination arriving before create must prevent a delayed create from freezing funds.
-      return Effect().persist(new UnopenedOrderSettled(command.userId(), command.leaseId(), command.intentId()))
-          .thenRun(updated -> command.replyTo().tell(updated));
+      return reject(state, command.replyTo(), "Order has not been created");
     }
-    if (!matches(state, command.userId(), command.leaseId(), command.intentId())
-        || orderAmount.signum() > 0 && state.amount().compareTo(orderAmount) != 0) {
+    if (!matches(state, command.userId(), command.leaseId())
+        || state.amount().compareTo(orderAmount) != 0) {
       return reject(state, command.replyTo(), "Order binding differs");
     }
-    if (orderAmount.signum() == 0) {
-      // Return the persisted price so the lease can calculate consumption at its saved cutoff.
-      return Effect().reply(command.replyTo(), state);
+    if (state.phase() == Phase.LOCKING) {
+      return reject(state, command.replyTo(), "Order is not locked");
     }
-    if (state.deductAmount() != null) {
-      return state.deductAmount().compareTo(deductAmount) == 0 ? Effect().reply(command.replyTo(), state)
-          : reject(state, command.replyTo(), "Settlement amount differs from the original request");
+    if (state.deductAmount() != null && state.deductAmount().compareTo(deductAmount) != 0) {
+      return reject(state, command.replyTo(), "Settlement amount differs from the original request");
     }
-    if (state.phase() == Phase.INSUFFICIENT_FUNDS) {
+    if (state.deductAmount() != null || state.phase() == Phase.INSUFFICIENT_FUNDS) {
       return Effect().reply(command.replyTo(), state);
     }
     return Effect().persist(new OrderDeductionRequested(deductAmount))
         .thenRun(updated -> {
           command.replyTo().tell(updated);
-          retryWalletOperation(updated);
+          executeWalletOperation(updated);
         });
   }
 
-  private static boolean matches(OrderState state, String userId, String leaseId, String intentId) {
-    return Objects.equals(state.userId(), userId) && Objects.equals(state.leaseId(), leaseId)
-        && Objects.equals(state.intentId(), intentId);
+  private static boolean matches(OrderState state, String userId, String leaseId) {
+    return Objects.equals(state.userId(), userId) && Objects.equals(state.leaseId(), leaseId);
   }
 
   private static boolean hasText(String value) {
@@ -162,50 +151,48 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
     return Effect().reply(command.replyTo(), state);
   }
 
-  private Effect<OrderEvent, OrderState> onPollProgress(OrderState state, PollOrderProgress command) {
-    return Effect().none().thenRun(this::retryWalletOperation);
+  private Effect<OrderEvent, OrderState> onRetryWalletOperation(OrderState state, RetryWalletOperation command) {
+    return Effect().none().thenRun(this::executeWalletOperation);
   }
 
-  private void retryWalletOperation(OrderState state) {
-    if (!state.hasPendingWork()) {
-      timers.cancel(PollOrderProgress.class);
-      return;
-    }
-    if (!timers.isTimerActive(PollOrderProgress.class)) {
-      timers.startTimerWithFixedDelay(PollOrderProgress.class, new PollOrderProgress(), settings.retryInterval());
-    }
-    if (operationToken != null) {
+  private void executeWalletOperation(OrderState state) {
+    timers.cancel(RetryWalletOperation.class);
+    if (!state.hasPendingWork() || operationToken != null) {
       return;
     }
     String token = UUID.randomUUID().toString();
     operationToken = token;
-    WalletAction action = state.phase() == Phase.LOCKING ? WalletAction.LOCK : WalletAction.DEDUCT;
     // The wallet APIs are synchronous. Retries reuse the order ID and persisted amounts.
-    var operation = CompletableFuture.supplyAsync(() -> action == WalletAction.LOCK
+    var operation = CompletableFuture.supplyAsync(() -> state.phase() == Phase.LOCKING
         ? walletService.lock(state.userId(), state.amount(), orderId, "GPU_RENTAL", null)
         : walletService.deduct(state.userId(), orderId, state.deductAmount(), null),
         blockingExecutor).orTimeout(settings.requestTimeout().toMillis(), TimeUnit.MILLISECONDS);
-    context.pipeToSelf(operation, (response, error) -> new WalletOperationCompleted(token, action,
-        response == null ? null : response.isSuccess(),
-        error != null ? error.toString() : response == null ? "Fund service returned no result" : response.getMessage()));
+    context.pipeToSelf(operation, (response, error) -> {
+      if (error != null) {
+        return new WalletOperationCompleted(token, null, error.toString());
+      }
+      if (response == null) {
+        return new WalletOperationCompleted(token, null, "Fund service returned no result");
+      }
+      return new WalletOperationCompleted(token, response.isSuccess(), null);
+    });
   }
 
   private Effect<OrderEvent, OrderState> onWalletCompleted(OrderState state, WalletOperationCompleted command) {
-    if (!Objects.equals(operationToken, command.token())) {
+    if (operationToken == null || !operationToken.equals(command.token())) {
       return Effect().none();
     }
     operationToken = null;
     if (command.success() == null) {
-      if (Objects.equals(state.error(), command.error())) {
-        return Effect().none();
-      }
-      return Effect().persist(new OrderOperationFailed(command.error()));
+      timers.startSingleTimer(RetryWalletOperation.class, new RetryWalletOperation(), settings.retryInterval());
+      return Objects.equals(state.error(), command.error()) ? Effect().none()
+          : Effect().persist(new OrderOperationFailed(command.error()));
     }
     if (!command.success()) {
-      return Effect().persist(new OrderInsufficientFunds()).thenRun(this::retryWalletOperation);
+      return Effect().persist(new OrderInsufficientFunds());
     }
-    return Effect().persist(command.action() == WalletAction.LOCK ? new OrderLocked() : new OrderDeducted())
-        .thenRun(this::retryWalletOperation);
+    return Effect().persist(state.phase() == Phase.LOCKING ? new OrderLocked() : new OrderDeducted())
+        .thenRun(this::executeWalletOperation);
   }
 
   private Effect<OrderEvent, OrderState> reject(OrderState state, ActorRef<OrderState> replyTo, String reason) {
@@ -216,9 +203,7 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
   public EventHandler<OrderState, OrderEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
         .onEvent(OrderCreated.class,
-            (state, event) -> state.created(event.userId(), event.leaseId(), event.intentId(), event.amount()))
-        .onEvent(UnopenedOrderSettled.class,
-            (state, event) -> state.settledWithoutLock(event.userId(), event.leaseId(), event.intentId()))
+            (state, event) -> state.created(event.userId(), event.leaseId(), event.amount()))
         .onEvent(OrderLocked.class, (state, event) -> state.locked())
         .onEvent(OrderDeductionRequested.class, (state, event) -> state.deductionRequested(event.amount()))
         .onEvent(OrderDeducted.class, (state, event) -> state.deducted())
@@ -232,7 +217,7 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
     return newSignalHandlerBuilder()
         .onSignal(RecoveryCompleted.class, (state, signal) -> {
           operationToken = null;
-          retryWalletOperation(state);
+          executeWalletOperation(state);
         })
         .build();
   }

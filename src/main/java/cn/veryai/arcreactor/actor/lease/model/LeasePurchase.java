@@ -4,12 +4,12 @@ import cn.veryai.arcreactor.actor.lease.model.LeaseState.PurchasePhase;
 import java.io.Serializable;
 import java.math.BigDecimal;
 
-/** amount is zero until the order's persisted price is confirmed. */
-public record LeasePurchase(String orderId, String intentId, long periodSeq, RentalPlan plan,
+/** amount is zero until the order's lock is confirmed. */
+public record LeasePurchase(String orderId, long periodSeq, RentalPlan plan,
     BigDecimal amount, long planRevision, PurchasePhase phase) implements Serializable {
 
-  public LeasePurchase withPhase(PurchasePhase nextPhase, BigDecimal orderAmount) {
-    return new LeasePurchase(orderId, intentId, periodSeq, plan,
-        orderAmount == null ? amount : orderAmount, planRevision, nextPhase);
+  public LeasePurchase locked(BigDecimal orderAmount) {
+    return new LeasePurchase(orderId, periodSeq, plan,
+        orderAmount, planRevision, PurchasePhase.WAITING_ACTIVATION);
   }
 }

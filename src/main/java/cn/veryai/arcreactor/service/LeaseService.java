@@ -16,7 +16,6 @@ import cn.veryai.arcreactor.actor.order.model.OrderState;
 import cn.veryai.arcreactor.exceptions.BaseException;
 import cn.veryai.arcreactor.i18n.ErrorCode;
 import cn.veryai.arcreactor.repo.RentalViewRepo;
-import cn.veryai.arcreactor.util.JsonUtil;
 import cn.veryai.arcreactor.vo.LeaseView;
 import cn.veryai.arcreactor.web.params.ChangeRenewalPlanParam;
 import cn.veryai.arcreactor.web.params.ConfigureAutoRenewParam;
@@ -43,15 +42,16 @@ public class LeaseService {
         String userId = param.instance().getUserId();
         String leaseId = UUID.nameUUIDFromBytes((userId.length() + ":" + userId + param.requestId())
                 .getBytes(StandardCharsets.UTF_8)).toString();
-        String fingerprint = JsonUtil.toJson(param);
         return getState(leaseId).thenCompose(existing -> {
             if (existing.phase() != LeaseState.Phase.NEW) {
-                if (!fingerprint.equals(existing.fingerprint())) throw new BaseException(ErrorCode.CONFLICT);
+                if (!userId.equals(existing.userId()) || !param.requestId().equals(existing.requestId())) {
+                    throw new BaseException(ErrorCode.CONFLICT);
+                }
                 return CompletableFuture.completedFuture(existing);
             }
             var spec = instanceService.prepareSpec(param.instance());
             return AskPattern.<LeaseCommand, LeaseReply>ask(pekkoRuntime.leaseActor(leaseId), replyTo ->
-                            new CreateLease(param.requestId(), fingerprint, spec, param.plan(), param.autoRenew(), replyTo),
+                            new CreateLease(param.requestId(), spec, param.plan(), param.autoRenew(), replyTo),
                             pekkoRuntime.getConfig().getAskTimeout(), pekkoRuntime.getActorSystem().scheduler())
                     .thenApply(result -> {
                         if (!result.accepted()) throw new BaseException(ErrorCode.CONFLICT);

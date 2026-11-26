@@ -4,5 +4,5 @@ import cn.veryai.arcreactor.actor.order.model.OrderState;
 import java.math.BigDecimal;
 import org.apache.pekko.actor.typed.ActorRef;
 
-public record CreateOrder(String userId, String leaseId, String intentId, BigDecimal amount,
+public record CreateOrder(String userId, String leaseId, BigDecimal amount,
     ActorRef<OrderState> replyTo) implements OrderCommand {}

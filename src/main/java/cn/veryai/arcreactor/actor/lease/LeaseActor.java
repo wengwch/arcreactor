@@ -15,6 +15,7 @@ import cn.veryai.arcreactor.actor.lease.command.GetLeaseState;
 import cn.veryai.arcreactor.actor.lease.command.LeaseCommand;
 import cn.veryai.arcreactor.actor.lease.command.LeaseOperationCompleted;
 import cn.veryai.arcreactor.actor.lease.command.PollLeaseProgress;
+import cn.veryai.arcreactor.actor.lease.command.PriceQuoteCompleted;
 import cn.veryai.arcreactor.actor.lease.command.ReconcileLease;
 import cn.veryai.arcreactor.actor.lease.command.RenewLease;
 import cn.veryai.arcreactor.actor.lease.command.TerminateLease;
@@ -28,7 +29,7 @@ import cn.veryai.arcreactor.actor.lease.event.LeaseTerminated;
 import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationRequested;
 import cn.veryai.arcreactor.actor.lease.event.PeriodEnded;
 import cn.veryai.arcreactor.actor.lease.event.PeriodStarted;
-import cn.veryai.arcreactor.actor.lease.event.PurchasePhaseChanged;
+import cn.veryai.arcreactor.actor.lease.event.PurchaseLocked;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseRequested;
 import cn.veryai.arcreactor.actor.lease.event.RenewalPlanChanged;
 import cn.veryai.arcreactor.actor.lease.event.SettlementCompleted;
@@ -123,17 +124,20 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
         .onCommand(PollLeaseProgress.class, this::onPollProgress)
         .onCommand(ReconcileLease.class, this::onReconcile)
         .onCommand(LeaseOperationCompleted.class, this::onOperationCompleted)
+        .onCommand(PriceQuoteCompleted.class, this::onPriceQuoteCompleted)
         .build();
   }
 
   private Effect<LeaseEvent, LeaseState> onCreate(LeaseState state, CreateLease command) {
+    String userId = command.spec().share().userId();
     if (state.phase() != Phase.NEW) {
-      return reply(state, command.replyTo(),
-          Objects.equals(state.fingerprint(), command.fingerprint()) ? null : "REQUEST_CONFLICT");
+      boolean sameRequest = Objects.equals(state.userId(), userId)
+          && Objects.equals(state.requestId(), command.requestId());
+      return reply(state, command.replyTo(), sameRequest ? null : "REQUEST_CONFLICT");
     }
-    LeaseCreated created = new LeaseCreated(command.spec().share().userId(), command.requestId(), command.fingerprint(),
+    LeaseCreated created = new LeaseCreated(userId, command.requestId(),
         command.spec(), command.plan(), command.autoRenew());
-    return Effect().persist(List.of(created, purchaseRequested(command.plan(), 1, 1, false), retryScheduled()))
+    return Effect().persist(List.of(created, purchaseRequested(command.plan(), 1, 1), retryScheduled()))
         .thenRun(updated -> {
           command.replyTo().tell(LeaseReply.accepted(updated));
           pollLeaseProgress(updated);
@@ -186,15 +190,7 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     if (state.pendingRenewal() != null) {
       return reply(state, command.replyTo(), null);
     }
-    List<LeaseEvent> events = new ArrayList<>();
-    if (state.currentPeriod() != null) {
-      events.add(new SettlementRequested(settlement(state.currentPeriod(), state.currentPeriod().amount())));
-      events.add(new PeriodEnded(state.currentPeriod().endsAt()));
-    }
-    events.add(purchaseRequested(state.renewalPlan(), state.periodSeq() + 1, state.planRevision(),
-        state.currentPeriod() != null || state.pendingSettlement() != null));
-    events.add(retryScheduled());
-    return Effect().persist(events).thenRun(updated -> {
+    return Effect().persist(periodEndEvents(state, true)).thenRun(updated -> {
       command.replyTo().tell(LeaseReply.accepted(updated));
       pollLeaseProgress(updated);
     });
@@ -207,6 +203,9 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     if (state.terminating()) {
       return reply(state, command.replyTo(), null);
     }
+    if (state.pendingRenewal() != null || state.pendingSettlement() != null) {
+      return reply(state, command.replyTo(), "ORDER_PENDING");
+    }
     List<LeaseEvent> events = new ArrayList<>();
     addTerminationEvents(state, events, Instant.now(), null);
     events.add(retryScheduled());
@@ -216,41 +215,45 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     });
   }
 
-  private PurchaseRequested purchaseRequested(RentalPlan plan, long periodSeq, long planRevision,
-      boolean waitingForSettlement) {
+  private PurchaseRequested purchaseRequested(RentalPlan plan, long periodSeq, long planRevision) {
     String orderId = UUID.randomUUID().toString();
-    String intentId = leaseId + ":" + periodSeq + ":" + orderId;
-    return new PurchaseRequested(new LeasePurchase(orderId, intentId, periodSeq, plan,
-        BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), planRevision,
-        waitingForSettlement ? PurchasePhase.WAITING_SETTLEMENT : PurchasePhase.CREATING_ORDER));
+    return new PurchaseRequested(new LeasePurchase(orderId, periodSeq, plan,
+        BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), planRevision, PurchasePhase.WAITING_LOCK));
+  }
+
+  private List<LeaseEvent> periodEndEvents(LeaseState state, boolean renew) {
+    List<LeaseEvent> events = new ArrayList<>();
+    if (state.currentPeriod() != null) {
+      events.add(new SettlementRequested(settlement(state.currentPeriod(), state.currentPeriod().amount())));
+      events.add(new PeriodEnded(state.currentPeriod().endsAt()));
+    }
+    if (renew) {
+      events.add(purchaseRequested(state.renewalPlan(), state.periodSeq() + 1, state.planRevision()));
+    }
+    events.add(retryScheduled());
+    return events;
   }
 
   private LeaseSettlement settlement(LeasePeriod period, BigDecimal deductAmount) {
-    return new LeaseSettlement(period.orderId(), period.intentId(), period.amount(), deductAmount);
+    return new LeaseSettlement(period.orderId(), period.amount(), deductAmount);
   }
 
-  private LeaseSettlement purchaseSettlement(LeaseState state, String orderId, String intentId,
-      BigDecimal amount, Instant cutoff) {
+  private LeaseSettlement purchaseSettlement(LeaseState state, LeasePurchase purchase, Instant cutoff) {
     BigDecimal deductAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
-    if (amount.signum() > 0 && state.periodSeq() > 0) {
+    if (state.periodSeq() > 0) {
       Instant start = Objects.requireNonNull(state.lastPeriodEndsAt());
-      RentalPlan plan = state.renewalPlan();
-      deductAmount = new LeasePeriod(state.periodSeq() + 1, orderId, intentId,
-          plan, amount, start, start.plus(plan.duration())).deductAt(cutoff);
+      deductAmount = new LeasePeriod(purchase.periodSeq(), purchase.orderId(), purchase.plan(),
+          purchase.amount(), start, start.plus(purchase.plan().duration())).deductAt(cutoff);
     }
-    return new LeaseSettlement(orderId, intentId, amount, deductAmount);
+    return new LeaseSettlement(purchase.orderId(), purchase.amount(), deductAmount);
   }
 
   private void addTerminationEvents(LeaseState state, List<LeaseEvent> events, Instant cutoff, String reason) {
     if (state.currentPeriod() != null) {
       events.add(new SettlementRequested(settlement(state.currentPeriod(), state.currentPeriod().deductAt(cutoff))));
-    } else if (state.pendingSettlement() == null && state.pendingRenewal() != null) {
-      LeasePurchase purchase = state.pendingRenewal();
-      if (purchase.phase() != PurchasePhase.WAITING_SETTLEMENT) {
-        // Creation may have reached the order even when its reply and amount are still unknown.
-        events.add(new SettlementRequested(purchaseSettlement(
-            state, purchase.orderId(), purchase.intentId(), purchase.amount(), cutoff)));
-      }
+    } else if (state.pendingSettlement() == null && state.pendingRenewal() != null
+        && state.pendingRenewal().phase() == PurchasePhase.WAITING_ACTIVATION) {
+      events.add(new SettlementRequested(purchaseSettlement(state, state.pendingRenewal(), cutoff)));
     }
     events.add(new LeaseTerminationRequested(cutoff, reason));
     if (!state.instanceCreationRequested()) {
@@ -263,19 +266,10 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     if (state.phase() == Phase.NEW || state.nextActionAt() == null || now.isBefore(state.nextActionAt())) {
       return Effect().none();
     }
-    if (state.currentPeriod() != null && !now.isBefore(state.currentPeriod().endsAt())) {
-      List<LeaseEvent> events = new ArrayList<>();
-      events.add(new SettlementRequested(settlement(state.currentPeriod(), state.currentPeriod().amount())));
-      events.add(new PeriodEnded(state.currentPeriod().endsAt()));
-      if (state.autoRenew()) {
-        events.add(purchaseRequested(state.renewalPlan(), state.periodSeq() + 1, state.planRevision(), true));
-      }
-      events.add(retryScheduled());
-      return Effect().persist(events).thenRun(this::pollLeaseProgress);
-    }
-    if (state.phase() == Phase.EXPIRED && state.pendingRenewal() == null && state.autoRenew()) {
-      return Effect().persist(List.of(purchaseRequested(state.renewalPlan(), state.periodSeq() + 1,
-          state.planRevision(), state.pendingSettlement() != null), retryScheduled()))
+    boolean periodDue = state.currentPeriod() != null && !now.isBefore(state.currentPeriod().endsAt());
+    boolean renewalDue = state.phase() == Phase.EXPIRED && state.pendingRenewal() == null && state.autoRenew();
+    if (periodDue || renewalDue) {
+      return Effect().persist(periodEndEvents(state, state.autoRenew()))
           .thenRun(this::pollLeaseProgress);
     }
     return Effect().persist(reconciliationScheduled(state, state.autoRenew())).thenRun(this::pollLeaseProgress);
@@ -286,36 +280,25 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
   }
 
   private void pollLeaseProgress(LeaseState state) {
+    LeaseSettlement pendingSettlement = state.pendingSettlement();
+    LeasePurchase pendingRenewal = state.pendingRenewal();
     boolean instancePending = !state.resourceDeleted()
         && (state.phase() == Phase.PROVISIONING || state.terminating() && state.instanceCreationRequested());
-    if (state.pendingRenewal() == null && state.pendingSettlement() == null && !instancePending) {
+    if (pendingRenewal == null && pendingSettlement == null && !instancePending) {
       timers.cancel(PollLeaseProgress.class);
       return;
     }
     if (!timers.isTimerActive(PollLeaseProgress.class)) {
       timers.startTimerWithFixedDelay(PollLeaseProgress.class, new PollLeaseProgress(), settings.retryInterval());
     }
-    if (state.pendingSettlement() != null) {
-      pollPendingSettlement(state, state.pendingSettlement());
-    } else if (state.pendingRenewal() != null) {
-      pollPendingRenewal(state, state.pendingRenewal());
+    if (pendingSettlement != null) {
+      askOrder(pendingSettlement.orderId(), replyTo -> new SettleOrder(state.userId(), leaseId,
+          pendingSettlement.amount(), pendingSettlement.deductAmount(), replyTo));
+    } else if (pendingRenewal != null && pendingRenewal.phase() == PurchasePhase.WAITING_LOCK) {
+      askOrder(pendingRenewal.orderId(), GetOrderState::new);
     }
     if (instancePending) {
       queryInstance();
-    }
-  }
-
-  private void pollPendingSettlement(LeaseState state, LeaseSettlement pendingSettlement) {
-    askOrder(pendingSettlement.orderId(), replyTo ->
-        new SettleOrder(state.userId(), leaseId, pendingSettlement.intentId(), pendingSettlement.amount(),
-            pendingSettlement.deductAmount(), replyTo));
-  }
-
-  private void pollPendingRenewal(LeaseState state, LeasePurchase pendingRenewal) {
-    switch (pendingRenewal.phase()) {
-      case CREATING_ORDER -> createOrder(state, pendingRenewal);
-      case LOCKING -> askOrder(pendingRenewal.orderId(), GetOrderState::new);
-      case WAITING_SETTLEMENT, WAITING_ACTIVATION -> { }
     }
   }
 
@@ -336,7 +319,7 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     if (!order.initialized()) {
       return recordRetryFailure(state, "ORDER_NOT_FOUND");
     }
-    if (!matches(state, order, pendingSettlement.intentId(), pendingSettlement.amount())) {
+    if (!matches(state, order, pendingSettlement.amount())) {
       return recordRetryFailure(state, "ORDER_BINDING_CONFLICT");
     }
     if (order.phase() == OrderState.Phase.INSUFFICIENT_FUNDS) {
@@ -350,21 +333,12 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
       events.add(retryScheduled());
       return Effect().persist(events).thenRun(this::pollLeaseProgress);
     }
-    if (pendingSettlement.amount().signum() == 0 && order.amount().signum() > 0) {
-      return Effect().persist(new SettlementRequested(purchaseSettlement(state, order.orderId(), order.intentId(),
-          order.amount(), state.terminatedAt()))).thenRun(this::pollLeaseProgress);
-    }
     if (order.deductAmount() != null && order.deductAmount().compareTo(pendingSettlement.deductAmount()) != 0) {
       return recordRetryFailure(state, "ORDER_SETTLEMENT_CONFLICT");
     }
     if (order.phase() == OrderState.Phase.SETTLED) {
-      List<LeaseEvent> events = new ArrayList<>();
-      events.add(new SettlementCompleted(order.orderId()));
-      if (state.pendingRenewal() != null && state.pendingRenewal().phase() == PurchasePhase.WAITING_SETTLEMENT) {
-        events.add(new PurchasePhaseChanged(state.pendingRenewal().orderId(), PurchasePhase.CREATING_ORDER));
-      }
-      events.add(retryScheduled());
-      return Effect().persist(events).thenRun(this::pollLeaseProgress);
+      return Effect().persist(List.of(new SettlementCompleted(order.orderId()), retryScheduled()))
+          .thenRun(this::pollLeaseProgress);
     }
     return Effect().none();
   }
@@ -372,9 +346,10 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
   private Effect<LeaseEvent, LeaseState> observeRenewalOrder(LeaseState state, LeasePurchase pendingRenewal,
       OrderState order) {
     if (!order.initialized()) {
-      return recordRetryFailure(state, "ORDER_NOT_FOUND");
+      createOrder(state, pendingRenewal);
+      return Effect().none();
     }
-    if (!matches(state, order, pendingRenewal.intentId(), pendingRenewal.amount())) {
+    if (!matches(state, order, pendingRenewal.amount())) {
       return recordRetryFailure(state, "ORDER_BINDING_CONFLICT");
     }
     if (order.phase() == OrderState.Phase.INSUFFICIENT_FUNDS) {
@@ -386,21 +361,16 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     if (order.deductAmount() != null) {
       return recordRetryFailure(state, "ORDER_ALREADY_SETTLING");
     }
-    if (order.phase() == OrderState.Phase.LOCKED && pendingRenewal.phase() != PurchasePhase.WAITING_ACTIVATION) {
-      return Effect().persist(List.of(
-          new PurchasePhaseChanged(pendingRenewal.orderId(), PurchasePhase.WAITING_ACTIVATION, order.amount()), retryScheduled()))
-          .thenRun(this::pollLeaseProgress);
-    }
-    if (order.phase() == OrderState.Phase.LOCKING && pendingRenewal.phase() == PurchasePhase.CREATING_ORDER) {
-      return Effect().persist(new PurchasePhaseChanged(pendingRenewal.orderId(), PurchasePhase.LOCKING, order.amount()))
+    if (order.phase() == OrderState.Phase.LOCKED && pendingRenewal.phase() == PurchasePhase.WAITING_LOCK) {
+      return Effect().persist(List.of(new PurchaseLocked(order.orderId(), order.amount()), retryScheduled()))
           .thenRun(this::pollLeaseProgress);
     }
     return Effect().none();
   }
 
-  private boolean matches(LeaseState state, OrderState order, String intentId, BigDecimal amount) {
+  private boolean matches(LeaseState state, OrderState order, BigDecimal amount) {
     return leaseId.equals(order.leaseId()) && Objects.equals(state.userId(), order.userId())
-        && intentId.equals(order.intentId()) && (amount.signum() == 0 || amount.compareTo(order.amount()) == 0);
+        && (amount.signum() == 0 || amount.compareTo(order.amount()) == 0);
   }
 
   private Effect<LeaseEvent, LeaseState> recordRetryFailure(LeaseState state, String error) {
@@ -414,24 +384,28 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     }
     String token = UUID.randomUUID().toString();
     operationTokens.put(key, token);
-    var orderActor = runtime.orderActor(purchase.orderId());
-    var timeout = runtime.getConfig().getAskTimeout();
-    var scheduler = context.getSystem().scheduler();
-    CompletionStage<OrderState> call = AskPattern.<OrderCommand, OrderState>ask(
-        orderActor, GetOrderState::new, timeout, scheduler).thenCompose(order -> {
-          if (order.initialized()) {
-            return CompletableFuture.completedFuture(order);
-          }
-          // OrderCreated fixes the price; a lost create reply must not trigger a new quote.
-          return CompletableFuture.supplyAsync(
-              () -> priceService.quote(state.instanceSpec().hypervisorType(), purchase.plan()),
-              runtime.getBlockingExecutor()).orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS)
-              .thenCompose(amount -> AskPattern.<OrderCommand, OrderState>ask(orderActor,
-                  replyTo -> new CreateOrder(state.userId(), leaseId, purchase.intentId(), amount, replyTo),
-                  timeout, scheduler));
-        });
-    context.pipeToSelf(call, (order, error) ->
-        new LeaseOperationCompleted(key, token, order, null, describe(error)));
+    // Return the quote to the mailbox before deciding whether to create the order.
+    CompletionStage<BigDecimal> quote = CompletableFuture.supplyAsync(
+        () -> priceService.quote(state.instanceSpec().hypervisorType(), purchase.plan()),
+        runtime.getBlockingExecutor()).orTimeout(runtime.getConfig().getAskTimeout().toMillis(), TimeUnit.MILLISECONDS);
+    context.pipeToSelf(quote, (amount, error) ->
+        new PriceQuoteCompleted(purchase.orderId(), token, amount, describe(error)));
+  }
+
+  private Effect<LeaseEvent, LeaseState> onPriceQuoteCompleted(LeaseState state, PriceQuoteCompleted command) {
+    if (!operationTokens.remove("order:" + command.orderId(), command.token())) {
+      return Effect().none();
+    }
+    LeasePurchase purchase = state.pendingRenewal();
+    if (state.terminating() || state.pendingSettlement() != null || purchase == null
+        || !purchase.orderId().equals(command.orderId()) || purchase.phase() != PurchasePhase.WAITING_LOCK) {
+      return Effect().none().thenRun(this::pollLeaseProgress);
+    }
+    if (command.error() != null) {
+      return recordRetryFailure(state, command.error());
+    }
+    askOrder(purchase.orderId(), replyTo -> new CreateOrder(state.userId(), leaseId, command.amount(), replyTo));
+    return Effect().none();
   }
 
   private void askOrder(String orderId, Function<ActorRef<OrderState>, OrderCommand> commandFactory) {
@@ -506,16 +480,16 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
       }
       return Effect().none();
     }
+    LeasePurchase purchase = state.pendingRenewal();
+    if (purchase == null || purchase.phase() != PurchasePhase.WAITING_ACTIVATION) {
+      return Effect().none();
+    }
     if (instance.phase() == InstancePhase.DELETED || instance.phase().isDeleting()
         || instance.phase() == InstancePhase.FAILED && state.periodSeq() == 0) {
       List<LeaseEvent> events = new ArrayList<>();
       addTerminationEvents(state, events, Instant.now(), "INSTANCE_UNAVAILABLE");
       events.add(retryScheduled());
       return Effect().persist(events).thenRun(this::pollLeaseProgress);
-    }
-    LeasePurchase purchase = state.pendingRenewal();
-    if (purchase == null || purchase.phase() != PurchasePhase.WAITING_ACTIVATION) {
-      return Effect().none();
     }
     if (instance.phase() == InstancePhase.NEW) {
       if (!state.instanceCreationRequested()) {
@@ -524,7 +498,7 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
       createInstance(state);
     } else if (instance.phase() == InstancePhase.ACTIVE) {
       Instant start = state.periodSeq() == 0 ? Instant.now() : Objects.requireNonNull(state.lastPeriodEndsAt());
-      LeasePeriod period = new LeasePeriod(purchase.periodSeq(), purchase.orderId(), purchase.intentId(), purchase.plan(),
+      LeasePeriod period = new LeasePeriod(purchase.periodSeq(), purchase.orderId(), purchase.plan(),
           purchase.amount(), start, start.plus(purchase.plan().duration()));
       return Effect().persist(List.of(new PeriodStarted(period), new LeaseReconciliationScheduled(period.endsAt())))
           .thenRun(this::pollLeaseProgress);
@@ -567,12 +541,11 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
   public EventHandler<LeaseState, LeaseEvent> eventHandler() {
     return newEventHandlerBuilder().forAnyState()
         .onEvent(LeaseCreated.class, (state, event) -> state.created(event.userId(), event.requestId(),
-            event.fingerprint(), event.instanceSpec(), event.plan(), event.autoRenew()))
+            event.instanceSpec(), event.plan(), event.autoRenew()))
         .onEvent(RenewalPlanChanged.class, (state, event) -> state.renewalPlanChanged(event.plan(), event.planRevision()))
         .onEvent(AutoRenewConfigured.class, (state, event) -> state.autoRenewConfigured(event.enabled()))
         .onEvent(PurchaseRequested.class, (state, event) -> state.purchaseRequested(event.purchase()))
-        .onEvent(PurchasePhaseChanged.class,
-            (state, event) -> state.purchasePhaseChanged(event.phase(), event.orderAmount()))
+        .onEvent(PurchaseLocked.class, (state, event) -> state.purchaseLocked(event.amount()))
         .onEvent(SettlementRequested.class, (state, event) -> state.settlementRequested(event.settlement()))
         .onEvent(SettlementCompleted.class, (state, event) -> state.settlementCompleted())
         .onEvent(PeriodEnded.class, (state, event) -> state.periodEnded(event.endsAt()))

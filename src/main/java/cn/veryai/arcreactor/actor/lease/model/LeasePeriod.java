@@ -6,7 +6,7 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 
-public record LeasePeriod(long periodSeq, String orderId, String intentId, RentalPlan plan, BigDecimal amount,
+public record LeasePeriod(long periodSeq, String orderId, RentalPlan plan, BigDecimal amount,
     Instant startsAt, Instant endsAt) implements Serializable {
 
   public BigDecimal deductAt(Instant cutoff) {

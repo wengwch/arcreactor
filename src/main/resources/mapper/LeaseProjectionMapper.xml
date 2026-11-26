@@ -20,7 +20,6 @@
 
     <sql id="clearCurrentPeriod">
         current_order_id = NULL,
-        current_intent_id = NULL,
         current_plan_unit = NULL,
         current_plan_quantity = NULL,
         current_amount = NULL,
@@ -30,7 +29,6 @@
 
     <sql id="clearPendingPurchase">
         pending_order_id = NULL,
-        pending_intent_id = NULL,
         pending_period_seq = NULL,
         pending_plan_unit = NULL,
         pending_plan_quantity = NULL,
@@ -68,7 +66,6 @@
     <update id="updatePurchaseRequested">
         UPDATE lease_view
         SET pending_order_id = #{purchase.orderId,jdbcType=VARCHAR},
-            pending_intent_id = #{purchase.intentId,jdbcType=VARCHAR},
             pending_period_seq = #{purchase.periodSeq,jdbcType=BIGINT},
             pending_plan_unit = #{purchase.plan.unit,jdbcType=VARCHAR},
             pending_plan_quantity = #{purchase.plan.quantity,jdbcType=INTEGER},
@@ -89,12 +86,12 @@
         <include refid="expectedVersion"/>
     </update>
 
-    <update id="updatePurchasePhase">
+    <update id="updatePurchaseLocked">
         UPDATE lease_view
-        SET phase = IF(#{phase,jdbcType=VARCHAR} = 'WAITING_ACTIVATION', 'PROVISIONING', phase),
-            pending_phase = #{phase,jdbcType=VARCHAR},
-            pending_amount = COALESCE(#{orderAmount,jdbcType=DECIMAL}, pending_amount),
-            error = IF(#{orderAmount,jdbcType=DECIMAL} IS NOT NULL, NULL, error),
+        SET phase = 'PROVISIONING',
+            pending_phase = 'WAITING_ACTIVATION',
+            pending_amount = #{amount,jdbcType=DECIMAL},
+            error = NULL,
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
     </update>
@@ -102,7 +99,6 @@
     <update id="updateSettlementRequested">
         UPDATE lease_view
         SET settlement_order_id = #{settlement.orderId,jdbcType=VARCHAR},
-            settlement_intent_id = #{settlement.intentId,jdbcType=VARCHAR},
             settlement_amount = #{settlement.amount,jdbcType=DECIMAL},
             settlement_deduct_amount = #{settlement.deductAmount,jdbcType=DECIMAL},
             <include refid="advanceVersion"/>
@@ -112,7 +108,6 @@
     <update id="updateSettlementCompleted">
         UPDATE lease_view
         SET settlement_order_id = NULL,
-            settlement_intent_id = NULL,
             settlement_amount = NULL,
             settlement_deduct_amount = NULL,
             <include refid="advanceVersion"/>
@@ -142,7 +137,6 @@
         UPDATE lease_view
         SET period_seq = #{period.periodSeq,jdbcType=BIGINT},
             current_order_id = #{period.orderId,jdbcType=VARCHAR},
-            current_intent_id = #{period.intentId,jdbcType=VARCHAR},
             current_plan_unit = #{period.plan.unit,jdbcType=VARCHAR},
             current_plan_quantity = #{period.plan.quantity,jdbcType=INTEGER},
             current_amount = #{period.amount,jdbcType=DECIMAL},

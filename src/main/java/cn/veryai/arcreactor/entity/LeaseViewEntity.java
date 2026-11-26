@@ -15,7 +15,6 @@ public class LeaseViewEntity {
     private Phase phase;
     private long periodSeq;
     private String currentOrderId;
-    private String currentIntentId;
     private Unit currentPlanUnit;
     private Integer currentPlanQuantity;
     private BigDecimal currentAmount;
@@ -27,7 +26,6 @@ public class LeaseViewEntity {
     private long planRevision;
     private boolean autoRenew;
     private String pendingOrderId;
-    private String pendingIntentId;
     private Long pendingPeriodSeq;
     private Unit pendingPlanUnit;
     private Integer pendingPlanQuantity;
@@ -35,7 +33,6 @@ public class LeaseViewEntity {
     private Long pendingPlanRevision;
     private PurchasePhase pendingPhase;
     private String settlementOrderId;
-    private String settlementIntentId;
     private BigDecimal settlementAmount;
     private BigDecimal settlementDeductAmount;
     private Instant terminatedAt;

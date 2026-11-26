@@ -17,7 +17,6 @@
                 typeHandler="org.apache.ibatis.type.EnumTypeHandler"/>
         <result property="periodSeq" column="period_seq" jdbcType="BIGINT"/>
         <result property="currentOrderId" column="current_order_id" jdbcType="VARCHAR"/>
-        <result property="currentIntentId" column="current_intent_id" jdbcType="VARCHAR"/>
         <result property="currentPlanUnit" column="current_plan_unit" jdbcType="VARCHAR"
                 javaType="cn.veryai.arcreactor.actor.lease.model.RentalPlan$Unit"
                 typeHandler="org.apache.ibatis.type.EnumTypeHandler"/>
@@ -36,7 +35,6 @@
         <result property="planRevision" column="plan_revision" jdbcType="BIGINT"/>
         <result property="autoRenew" column="auto_renew" jdbcType="BOOLEAN"/>
         <result property="pendingOrderId" column="pending_order_id" jdbcType="VARCHAR"/>
-        <result property="pendingIntentId" column="pending_intent_id" jdbcType="VARCHAR"/>
         <result property="pendingPeriodSeq" column="pending_period_seq" jdbcType="BIGINT"/>
         <result property="pendingPlanUnit" column="pending_plan_unit" jdbcType="VARCHAR"
                 javaType="cn.veryai.arcreactor.actor.lease.model.RentalPlan$Unit"
@@ -48,7 +46,6 @@
                 javaType="cn.veryai.arcreactor.actor.lease.model.LeaseState$PurchasePhase"
                 typeHandler="org.apache.ibatis.type.EnumTypeHandler"/>
         <result property="settlementOrderId" column="settlement_order_id" jdbcType="VARCHAR"/>
-        <result property="settlementIntentId" column="settlement_intent_id" jdbcType="VARCHAR"/>
         <result property="settlementAmount" column="settlement_amount" jdbcType="DECIMAL"/>
         <result property="settlementDeductAmount" column="settlement_deduct_amount" jdbcType="DECIMAL"/>
         <result property="terminatedAt" column="terminated_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
@@ -60,12 +57,12 @@
 
     <sql id="leaseColumns">
         lease_id, user_id, phase, period_seq,
-        current_order_id, current_intent_id, current_plan_unit, current_plan_quantity, current_amount,
+        current_order_id, current_plan_unit, current_plan_quantity, current_amount,
         current_starts_at, current_ends_at, last_period_ends_at,
         renewal_plan_unit, renewal_plan_quantity, plan_revision, auto_renew,
-        pending_order_id, pending_intent_id, pending_period_seq, pending_plan_unit,
+        pending_order_id, pending_period_seq, pending_plan_unit,
         pending_plan_quantity, pending_amount, pending_plan_revision, pending_phase,
-        settlement_order_id, settlement_intent_id, settlement_amount, settlement_deduct_amount,
+        settlement_order_id, settlement_amount, settlement_deduct_amount,
         terminated_at, next_action_at, error
     </sql>
 
