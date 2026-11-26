@@ -41,8 +41,8 @@ Accept: application/json
 ### 查询租约 Actor 状态
 # ACTIVE 表示当前租期已开始；currentPeriod 包含计费起止时间及 orderId。
 # lastPeriodEndsAt 保留最近租期的结束时间，作为续租起点；pendingSettlement 保存待结算订单。
-# pendingRenewal.phase=WAITING_LOCK 时先完成 pendingSettlement，再查询原订单，不存在才取价并创建；amount=0 表示冻结尚未确认。
-# 报价先返回 LeaseActor 校验当前状态；已退租时丢弃报价，不再发送 CreateOrder。
+# pendingRenewal.phase=WAITING_LOCK 时先完成 pendingSettlement，再查询原订单；amount=0 表示尚未保存报价。
+# 报价返回 LeaseActor 校验后，通过 PurchasePriced 保存金额再创建订单；重试复用已保存报价，已退租时丢弃报价回调。
 GET {{baseUrl}}/api/v1/leases/{{leaseId}}
 Accept: application/json
 

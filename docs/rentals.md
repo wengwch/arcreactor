@@ -50,18 +50,18 @@ LeaseState 的阶段为 `NEW / WAITING_LOCK / PROVISIONING / ACTIVE / EXPIRED / 
 `currentPeriod` 保存订单、方案、金额和起止时间；`lastPeriodEndsAt` 保存最近租期的结束时间，
 到期清空 currentPeriod 后仍保留，作为续租起点。
 
-- `pendingRenewal`：首期或续租的待购买租期，保存订单 ID、期号、方案、方案版本、已确认金额和阶段。
-- 购买阶段为 `WAITING_LOCK / WAITING_ACTIVATION`；冻结确认前 amount=0，订单可能已经创建或冻结。
+- `pendingRenewal`：首期或续租的待购买租期，保存订单 ID、期号、方案、方案版本、报价金额和阶段。
+- 购买阶段为 `WAITING_LOCK / WAITING_ACTIVATION`；amount=0 表示尚未保存报价，报价成功后立即保存金额，冻结阶段仍为 WAITING_LOCK。
 - `pendingSettlement`：待结算订单，保存订单 ID、已确认的原金额和固定消费金额。
 
 先推进 pendingSettlement，完成后再推进 pendingRenewal，不单独保存等待旧单结算的购买阶段。
-WAITING_LOCK 内统一查询原订单、按需取价创建及等待冻结；确认 LOCKED 后保存金额，进入 WAITING_ACTIVATION。
+WAITING_LOCK 内统一查询原订单、按需取价创建及等待冻结；确认 LOCKED 后进入 WAITING_ACTIVATION，金额保持不变。
 
 业务命令为 `CreateLease`、`GetLeaseState`、`ChangeRenewalPlan`、`ConfigureAutoRenew`、`RenewLease` 和 `TerminateLease`。
 外部扫描发送 `ReconcileLease` 触发到期和自动续租；内部 `PollLeaseProgress` 推进已有订单及实例待办，
 订单和实例异步操作通过 `LeaseOperationCompleted` 返回结果，报价通过 `PriceQuoteCompleted` 返回。
 
-事件为 `LeaseCreated`、`RenewalPlanChanged`、`AutoRenewConfigured`、`PurchaseRequested`、`PurchaseLocked`、
+事件为 `LeaseCreated`、`RenewalPlanChanged`、`AutoRenewConfigured`、`PurchaseRequested`、`PurchasePriced`、`PurchaseLocked`、
 `SettlementRequested`、`SettlementCompleted`、`PeriodStarted`、`PeriodEnded`、`InstanceCreationRequested`、
 `LeaseTerminationRequested`、`LeaseTerminated`、`LeaseRetryScheduled` 和 `LeaseReconciliationScheduled`。
 两个 Actor 均直接持久化具体事件，由各自 eventHandler 更新状态。
@@ -72,23 +72,24 @@ WAITING_LOCK 内统一查询原订单、按需取价创建及等待冻结；确�
 
 ```text
 保存 pendingRenewal（WAITING_LOCK）→ 查询原订单 → 不存在时异步取价
-→ 报价返回 LeaseActor，确认租约和待购买订单仍有效 → CreateOrder、lock
+→ 报价返回 LeaseActor，确认租约和待购买订单仍有效
+→ 保存 PurchasePriced，更新 pendingRenewal.amount → CreateOrder、lock
 → Lease 查询到 LOCKED，保存 PurchaseLocked（WAITING_ACTIVATION）
 → 创建实例 → 查询到 ACTIVE → 开始首期
 ```
 
-首次租期从实例交付确认时开始。每次重试先查询原订单，已存在则复用，不存在才异步取价。
-报价结果通过内部命令回到 LeaseActor；核对请求 token、订单 ID、购买阶段，且未退租、没有待结算订单后才创建。
-退租后或恢复前的旧报价直接丢弃；报价不持久化，不增加租约阶段，未创建时重试可重新取价。
-`OrderCreated` 固定首次保存的订单金额，
-Lease 通过 `PurchaseLocked` 保存冻结确认和订单金额，不再同步 OrderActor 的中间阶段。
+首次租期从实例交付确认时开始。每次重试先查询原订单，已存在则复用；不存在时，有已保存报价就直接创建，否则异步取价。
+报价结果通过内部命令回到 LeaseActor；核对请求 token、订单 ID、购买阶段，且未退租、没有待结算订单后，
+先持久化 PurchasePriced，再使用保存的金额创建订单。退租后或恢复前的旧报价回调直接丢弃。
+报价保存后，重试和恢复均复用同一金额；报价尚未保存时可以重新取价，不增加租约阶段。
+`OrderCreated` 保存订单金额，Lease 查询订单时核对金额一致；`PurchaseLocked` 只保存冻结确认并推进购买阶段。
 
 到期续租流程：
 
 ```text
 保存旧单全额 pendingSettlement、PeriodEnded 和下期 pendingRenewal（WAITING_LOCK）
 → SettleOrder、deduct → 确认旧单 SETTLED
-→ 查询下期订单，不存在时取价，结果返回 LeaseActor 确认后 CreateOrder、lock
+→ 查询下期订单，不存在时取价并保存 PurchasePriced，再 CreateOrder、lock；重试复用已保存报价
 → 确认 LOCKED 和实例 ACTIVE → 开始下一期
 ```
 
@@ -138,7 +139,7 @@ pendingRenewal 不可单独取消；用户需等待购买和结算待办完成�
 周期固定为 HOUR=1 小时、DAY=24 小时、WEEK=7 天、MONTH=30 天，再乘以正整数 quantity。
 RentalPriceService 通过现有 HypervisorTypeRepo / MyBatis 查询 hypervisor_type，
 按周期优先使用 `discount_*_pay_price`，未设置时取对应 `original_*_pay_price`。
-元单价乘以 quantity，使用 HALF_UP 保留两位小数；每期按创建订单时的价格计费。
+元单价乘以 quantity，使用 HALF_UP 保留两位小数；每期按已保存的报价计费。
 
 - `cloud.ask-timeout`：Actor 请求、取价和钱包调用的等待时间。
 - `cloud.rental.retry-interval`：订单钱包重试及租约待办轮询间隔。
@@ -155,7 +156,7 @@ LeaseActor 没有待办时停止内部轮询；OrderActor 仅对异常、超时�
 
 租约和订单投影消费具体事件，通过 MyBatis Mapper 更新 lease_view / order_view 的具体列。
 lease_view 保存当前租期、续租/结算待办和 next_action_at；order_view 保存订单金额、资金阶段和消费金额。
-购买冻结确认事件同时更新阶段和金额，订单投影从 OrderCreated 开始建立。
+PurchasePriced 更新待购买金额，PurchaseLocked 更新冻结后的阶段；订单投影从 OrderCreated 开始建立。
 
 投影使用 workflow_version 检查事件顺序并去重，字段更新与 offset 在同一事务提交，不调用 Actor。
 RentalViewRepo 通过 MyBatis 查询用户列表和到期租约；LeaseView 从查询字段组装租期、待办和 settled。

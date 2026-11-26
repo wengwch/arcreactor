@@ -12,6 +12,7 @@ import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationRequested;
 import cn.veryai.arcreactor.actor.lease.event.PeriodEnded;
 import cn.veryai.arcreactor.actor.lease.event.PeriodStarted;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseLocked;
+import cn.veryai.arcreactor.actor.lease.event.PurchasePriced;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseRequested;
 import cn.veryai.arcreactor.actor.lease.event.RenewalPlanChanged;
 import cn.veryai.arcreactor.actor.lease.event.SettlementCompleted;
@@ -48,7 +49,8 @@ public final class LeaseProjectionHandler extends JdbcHandler<EventEnvelope<Leas
                     mapper.updateAutoRenew(leaseId, configured.enabled(), version, updatedAt);
             case PurchaseRequested requested ->
                     mapper.updatePurchaseRequested(leaseId, requested.purchase(), version, updatedAt);
-            case PurchaseLocked locked -> mapper.updatePurchaseLocked(leaseId, locked.amount(), version, updatedAt);
+            case PurchasePriced priced -> mapper.updatePurchasePriced(leaseId, priced.amount(), version, updatedAt);
+            case PurchaseLocked ignored -> mapper.updatePurchaseLocked(leaseId, version, updatedAt);
             case SettlementRequested requested ->
                     mapper.updateSettlementRequested(leaseId, requested.settlement(), version, updatedAt);
             case SettlementCompleted ignored -> mapper.updateSettlementCompleted(leaseId, version, updatedAt);

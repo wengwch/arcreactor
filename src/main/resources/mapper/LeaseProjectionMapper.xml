@@ -86,11 +86,18 @@
         <include refid="expectedVersion"/>
     </update>
 
+    <update id="updatePurchasePriced">
+        UPDATE lease_view
+        SET pending_amount = #{amount,jdbcType=DECIMAL},
+            error = NULL,
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
     <update id="updatePurchaseLocked">
         UPDATE lease_view
         SET phase = 'PROVISIONING',
             pending_phase = 'WAITING_ACTIVATION',
-            pending_amount = #{amount,jdbcType=DECIMAL},
             error = NULL,
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>

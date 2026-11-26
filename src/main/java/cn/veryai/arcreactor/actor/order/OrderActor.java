@@ -94,7 +94,7 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
       return reject(state, command.replyTo(), "Order amount must be at least one cent");
     }
     if (state.initialized()) {
-      // Concurrent retries may quote again; the first persisted order keeps its price.
+      // Repeated creation returns the original order without changing its price.
       return matches(state, command.userId(), command.leaseId())
           ? Effect().reply(command.replyTo(), state) : reject(state, command.replyTo(), "Order binding differs");
     }

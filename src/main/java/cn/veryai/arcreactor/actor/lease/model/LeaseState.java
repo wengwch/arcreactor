@@ -57,10 +57,17 @@ public record LeaseState(
         instanceCreationRequested, terminatedAt, nextActionAt, null);
   }
 
-  public LeaseState purchaseLocked(BigDecimal amount) {
+  public LeaseState purchasePriced(BigDecimal amount) {
+    return new LeaseState(leaseId, userId, requestId, instanceSpec, phase, periodSeq,
+        currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew,
+        pendingRenewal.priced(amount), pendingSettlement, instanceCreationRequested,
+        terminatedAt, nextActionAt, null);
+  }
+
+  public LeaseState purchaseLocked() {
     return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.PROVISIONING, periodSeq,
         currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew,
-        pendingRenewal.locked(amount), pendingSettlement, instanceCreationRequested,
+        pendingRenewal.locked(), pendingSettlement, instanceCreationRequested,
         terminatedAt, nextActionAt, null);
   }
 

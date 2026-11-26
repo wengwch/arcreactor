@@ -30,6 +30,7 @@ import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationRequested;
 import cn.veryai.arcreactor.actor.lease.event.PeriodEnded;
 import cn.veryai.arcreactor.actor.lease.event.PeriodStarted;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseLocked;
+import cn.veryai.arcreactor.actor.lease.event.PurchasePriced;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseRequested;
 import cn.veryai.arcreactor.actor.lease.event.RenewalPlanChanged;
 import cn.veryai.arcreactor.actor.lease.event.SettlementCompleted;
@@ -362,7 +363,7 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
       return recordRetryFailure(state, "ORDER_ALREADY_SETTLING");
     }
     if (order.phase() == OrderState.Phase.LOCKED && pendingRenewal.phase() == PurchasePhase.WAITING_LOCK) {
-      return Effect().persist(List.of(new PurchaseLocked(order.orderId(), order.amount()), retryScheduled()))
+      return Effect().persist(List.of(new PurchaseLocked(order.orderId()), retryScheduled()))
           .thenRun(this::pollLeaseProgress);
     }
     return Effect().none();
@@ -370,7 +371,7 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
 
   private boolean matches(LeaseState state, OrderState order, BigDecimal amount) {
     return leaseId.equals(order.leaseId()) && Objects.equals(state.userId(), order.userId())
-        && (amount.signum() == 0 || amount.compareTo(order.amount()) == 0);
+        && amount.compareTo(order.amount()) == 0;
   }
 
   private Effect<LeaseEvent, LeaseState> recordRetryFailure(LeaseState state, String error) {
@@ -378,6 +379,10 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
   }
 
   private void createOrder(LeaseState state, LeasePurchase purchase) {
+    if (purchase.amount().signum() > 0) {
+      askOrder(purchase.orderId(), replyTo -> new CreateOrder(state.userId(), leaseId, purchase.amount(), replyTo));
+      return;
+    }
     String key = "order:" + purchase.orderId();
     if (operationTokens.containsKey(key)) {
       return;
@@ -404,8 +409,11 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
     if (command.error() != null) {
       return recordRetryFailure(state, command.error());
     }
-    askOrder(purchase.orderId(), replyTo -> new CreateOrder(state.userId(), leaseId, command.amount(), replyTo));
-    return Effect().none();
+    return Effect().persist(new PurchasePriced(purchase.orderId(), command.amount()))
+        .thenRun(updated -> {
+          createOrder(updated, updated.pendingRenewal());
+          pollLeaseProgress(updated);
+        });
   }
 
   private void askOrder(String orderId, Function<ActorRef<OrderState>, OrderCommand> commandFactory) {
@@ -545,7 +553,8 @@ public final class LeaseActor extends EventSourcedBehavior<LeaseCommand, LeaseEv
         .onEvent(RenewalPlanChanged.class, (state, event) -> state.renewalPlanChanged(event.plan(), event.planRevision()))
         .onEvent(AutoRenewConfigured.class, (state, event) -> state.autoRenewConfigured(event.enabled()))
         .onEvent(PurchaseRequested.class, (state, event) -> state.purchaseRequested(event.purchase()))
-        .onEvent(PurchaseLocked.class, (state, event) -> state.purchaseLocked(event.amount()))
+        .onEvent(PurchasePriced.class, (state, event) -> state.purchasePriced(event.amount()))
+        .onEvent(PurchaseLocked.class, (state, event) -> state.purchaseLocked())
         .onEvent(SettlementRequested.class, (state, event) -> state.settlementRequested(event.settlement()))
         .onEvent(SettlementCompleted.class, (state, event) -> state.settlementCompleted())
         .onEvent(PeriodEnded.class, (state, event) -> state.periodEnded(event.endsAt()))

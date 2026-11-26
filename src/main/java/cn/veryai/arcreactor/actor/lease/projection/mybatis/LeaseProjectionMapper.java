@@ -42,9 +42,14 @@ public interface LeaseProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
-    int updatePurchaseLocked(
+    int updatePurchasePriced(
             @Param("leaseId") String leaseId,
             @Param("amount") BigDecimal amount,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updatePurchaseLocked(
+            @Param("leaseId") String leaseId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
