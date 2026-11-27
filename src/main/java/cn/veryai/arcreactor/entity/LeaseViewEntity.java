@@ -1,7 +1,6 @@
 package cn.veryai.arcreactor.entity;
 
 import cn.veryai.arcreactor.actor.lease.model.LeaseState.Phase;
-import cn.veryai.arcreactor.actor.lease.model.LeaseState.PurchasePhase;
 import cn.veryai.arcreactor.actor.lease.model.RentalPlan.Unit;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -26,12 +25,7 @@ public class LeaseViewEntity {
     private long planRevision;
     private boolean autoRenew;
     private String pendingOrderId;
-    private Long pendingPeriodSeq;
-    private Unit pendingPlanUnit;
-    private Integer pendingPlanQuantity;
     private BigDecimal pendingAmount;
-    private Long pendingPlanRevision;
-    private PurchasePhase pendingPhase;
     private String settlementOrderId;
     private BigDecimal settlementAmount;
     private BigDecimal settlementDeductAmount;

@@ -1,4 +1,4 @@
 package cn.veryai.arcreactor.actor.instance.command;
 
-/** Rechecks persisted forwarding state and advances the current instance lifecycle stage. */
-public record ReconcileInstanceForwardings(long generation) implements WorkflowCommand {}
+/** Advances forwarding work only while the originating lifecycle generation and state version still match. */
+public record ReconcileInstanceForwardings(long generation, long version) implements WorkflowCommand {}

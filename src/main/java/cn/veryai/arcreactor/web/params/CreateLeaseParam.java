@@ -8,4 +8,4 @@ import jakarta.validation.constraints.Size;
 
 public record CreateLeaseParam(@NotBlank @Size(max = 128) String requestId,
         @NotNull @Valid CreateInstanceParam instance,
-        @NotNull @Valid RentalPlan plan, boolean autoRenew) {}
+        @NotNull RentalPlan plan, boolean autoRenew) {}

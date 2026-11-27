@@ -41,7 +41,10 @@ Accept: application/json
 ### 查询租约 Actor 状态
 # ACTIVE 表示当前租期已开始；currentPeriod 包含计费起止时间及 orderId。
 # lastPeriodEndsAt 保留最近租期的结束时间，作为续租起点；pendingSettlement 保存待结算订单。
-# pendingRenewal.phase=WAITING_LOCK 时先完成 pendingSettlement，再查询原订单；amount=0 表示尚未保存报价。
+# phase=RENEWING 表示续租已受理；先检查实例并结算旧单，再检查实例、创建 pendingRenewal。
+# pendingSettlement 和 pendingRenewal 互斥；RENEWING 即使两者都为空，恢复后仍会继续续租。
+# phase=WAITING_LOCK 时查询原订单、按需取价及冻结；pendingRenewal.amount=0 表示尚未保存报价。
+# phase=PROVISIONING 表示新单已冻结，等待实例可用；pendingRenewal 不再包含 phase。
 # 报价返回 LeaseActor 校验后，通过 PurchasePriced 保存金额再创建订单；重试复用已保存报价，已退租时丢弃报价回调。
 GET {{baseUrl}}/api/v1/leases/{{leaseId}}
 Accept: application/json
@@ -51,7 +54,7 @@ GET {{baseUrl}}/api/v1/leases?userId={{userId}}
 Accept: application/json
 
 ### 修改下期方案；先将 targetPeriodSeq 设为 periodSeq + 1，expectedPlanRevision 设为当前 planRevision
-# 当前租期不变；pendingRenewal 非空时返回 HTTP 409，result.error=RENEWAL_PENDING，相同 plan 也拒绝。
+# 当前租期不变；RENEWING 或 pendingRenewal 非空时返回 HTTP 409，result.error=RENEWAL_PENDING，相同 plan 也拒绝。
 # 修改方案、配置自动续租、续租和退租：HTTP 202/409 表示受理/拒绝，查看 result.accepted、result.error、result.lease。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/renewal-plan
 Content-Type: application/json
@@ -64,7 +67,7 @@ Accept: application/json
 }
 
 ### 关闭自动续租；只影响后续周期
-# 已有 pendingRenewal 继续推进，购买和结算待办完成后才允许退租；到期旧单仍全额结算。
+# 已受理的 RENEWING 或 pendingRenewal 继续推进，本次续租完成后才允许退租；到期旧单先检查实例再结算。
 # 没有待续租时实例保持运行，等待手动续租或退租。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/auto-renew
 Content-Type: application/json
@@ -72,23 +75,31 @@ Accept: application/json
 
 {"enabled": false}
 
-### 到期后手动续租；当前期尚未结束时会拒绝
+### 到期后手动续租；重复请求返回正在进行的续租状态
+# 当前期尚未结束且没有进行中的续租时，返回 HTTP 409、result.error=CURRENT_PERIOD_NOT_ENDED。
+# RENEWING（即使两个待办都为空）或购买待办期间重复请求返回 HTTP 202 和当前状态。
+# 沿用进行中的到期实例查询或旧单结算；结算完成后检查实例，正常才购买下一期。
+# 检查到 FAILED、DELETE_FAILED、删除中或 DELETED 时终止租约；过渡状态或查询失败继续等待重查。
 # 一次购买一期；例如 10:00 到期、10:20 续租一小时，新期为 10:00–11:00。
 # 开启自动续租时，延迟跨越多个周期会按连续边界逐期购买补齐。
 POST {{baseUrl}}/api/v1/leases/{{leaseId}}/renew
 Accept: application/json
 
 ### 查询订单；orderId 来自 currentPeriod、pendingRenewal 或 pendingSettlement
-# 续租仍有 pendingSettlement 时新订单尚未创建，查询返回资源不存在；可先查询 pendingSettlement.orderId。
+# RENEWING 期间尚未分配新一期 orderId，有 pendingSettlement 时先查询旧单；进入 WAITING_LOCK 后才有 pendingRenewal.orderId。
+# 已分配的新订单 ID 在 CreateOrder 前查询仍返回资源不存在。
 # LOCKING / DEDUCTING 表示冻结或扣款未确认；SETTLED 表示结算完成，INSUFFICIENT_FUNDS 表示余额不足。
 GET {{baseUrl}}/api/v1/orders/{{orderId}}
 Accept: application/json
 
-### 退租；固定计费截止时间，资源清理与钱包结算异步继续
-# pendingRenewal 或 pendingSettlement 非空时拒绝，返回 HTTP 409、result.error=ORDER_PENDING；待办完成后可重试。
+### 退租；固定终止时间，按需生成结算后清理实例
+# RENEWING（即使两个待办都为空）或有任一待办时拒绝，返回 HTTP 409、result.error=ORDER_PENDING；完成后可重试。
 # 已受理退租的重复请求返回原状态，继续已有收尾。
+# terminatedAt 为首次受理时间；currentPeriod 非空时查询实例，按 failedAt 与 terminatedAt 的较小值计算消费，无 failedAt 则取 terminatedAt。
+# 生成结算时清空 currentPeriod，金额保存在 pendingSettlement.deductAmount，恢复和重试不重新计费。
+# TERMINATING 中仍有 currentPeriod 时 settled=false；当前租期和待办均为空时无需结算，直接清理实例。
 # 消费金额按已使用整分钟数占比计算，不足一分钟舍弃，最终金额四舍五入保留两位小数。
 # 正常使用中的当前租期通过 SettleOrder 按实际消费金额结算。
-# TERMINATED 表示资源清理完成；settled 表示退租后资金待办已结束，扣款是否成功需查看订单阶段和 error。
+# TERMINATED 表示资源清理完成；settled 表示租约正在终止或已终止，且当前租期和两个待办均为空，扣款是否成功需查看订单阶段和 error。
 POST {{baseUrl}}/api/v1/leases/{{leaseId}}/terminate
 Accept: application/json

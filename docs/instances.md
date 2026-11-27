@@ -386,9 +386,10 @@ SCHEDULING → RESERVING_RESOURCES → PREPARING_DEPENDENCIES → PREPARING_SECU
   → PREPARING_NETWORK
   → PREPARING_FORWARDING → PROVISIONING → CONFIRMING → ACTIVE
 任一创建阶段失败 → FAILED
-FAILED → 人工发送 DeleteInstance → DELETING_NOVA → DELETING_FORWARDINGS
+ACTIVE / FAILED / DELETE_FAILED → 外部发送 DeleteInstance → DELETING_NOVA → DELETING_FORWARDINGS
   → DELETING_NETWORK → DELETING_SECURITY_GROUP → CANCELLING_RESERVATION
   → RELEASING_ALLOCATION → DELETED
+任一删除阶段检查次数耗尽 → DELETE_FAILED
 ```
 
 HTTP 创建流程在网络就绪后进入 `PREPARING_FORWARDING`，依次完成 22、8888 两个内部端口的映射。
@@ -411,7 +412,8 @@ FIP 返回有效的 `READY` 后，处理器补建该内部端口缺失的 TCP、
 创建或查询 FIP claim 的 ask 同步异常、异步失败保留原始异常类型和信息，通过 `ForwardingStatusCompleted.failure` 传回并记录日志。
 这类异常表示结果不确定，继续查询当前浮动 IP 上的原 claim，不据此记录创建失败或切换候选；查询明确返回 `NOT_FOUND` 时仍使用原 claim ID 和规格重提创建。
 转发结果校验和安全组规则操作继续按原有规则区分明确失败与可重试异常。
-转发结果持久化后同样发送 `ReconcileInstanceForwardings`，由实例主流程校验 generation 后重新检查并推进当前阶段。
+转发创建结果或删除成功持久化后发送 `ReconcileInstanceForwardings`，命令携带当时的 generation 和状态 version；实例主流程校验两者仍一致后再推进。
+转发删除失败只持久化结果并取消该转发的查询定时器，由主流程已有的 `CheckDeletion` 安排后续重试，不发送立即推进命令。
 系统端口全部 `READY` 后才持久化 `NovaCreationStarted` 并进入 `PROVISIONING`；系统端口失败由主流程记录实例创建失败。
 用户端口创建完成或失败只更新转发状态。
 实例状态只保存以 `claimId` 为键的 `forwardingStates`，每个 `InstanceForwardingState` 同时保存生命周期和可空的 `InstanceForwardingResources resources`。
@@ -690,8 +692,8 @@ Trunk、QoS、子端口浮动 IP 和端口转发等已创建资源；端口创�
 已提交到其他 Actor 或 OpenStack 的请求可能继续完成，实例失败不会取消用户级项目、Share 或网络准备。
 不再提供创建失败后自动清理的配置开关，也不会因为修改配置或重启应用而启动清理。
 
-运行中的实例或处于 `FAILED` 的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
-该入口允许对 `ACTIVE`、`FAILED` 实例开始删除；创建中的实例会拒绝，业务错误码为 `11721`。
+运行中的实例或处于 `FAILED`、`DELETE_FAILED` 的实例，可通过 `DELETE /api/v1/instances/{instanceId}` 删除，服务层发送 `DeleteInstance`。
+该入口允许对 `ACTIVE`、`FAILED` 实例开始删除，并允许 `DELETE_FAILED` 实例重试删除；创建中的实例会拒绝，业务错误码为 `11721`。
 用户转发创建、删除、QoS 修改、重启或重建尚在进行时也拒绝实例删除，避免管理请求与资源清理同时执行。
 `InstanceDeletionStarted` 持久化后进入 `DELETING_NOVA` 并返回 HTTP `202`，所有删除阶段及 `DELETED` 下的重复删除请求均幂等受理。
 删除按以下六个阶段执行，当前阶段完成后先持久化明确的完成事件，再执行下一阶段：
@@ -718,8 +720,10 @@ Nova 删除提交与查询、网络删除、安全组删除、取消预留和释
 每阶段最初的清理动作不计数，后续 `CheckDeletion` 携带从 1 开始的 attempt；Actor 在内存中记录当前次数，不写入事件或持久化状态。
 非转发阶段等待在途请求时沿用同一次检查，不递增次数。
 进入新阶段、Actor 恢复和外部再次发起删除时从 0 重新计数；同阶段的 `NovaDeletionAccepted` 不重置次数。
-最后一次检查完成清理时照常推进；达到上限仍未完成时持久化 `InstanceDeletionFailed`，失败码为 `DELETION_POLL_EXHAUSTED`，进入 `FAILED`、停止定时器并保留剩余资源。
+最后一次检查完成清理时照常推进；达到上限仍未完成时持久化 `InstanceDeletionFailed`，失败码为 `DELETION_POLL_EXHAUSTED`，进入 `DELETE_FAILED`、停止定时器并保留剩余资源。
+`DELETE_FAILED` 不属于 `isDeleting()`，保留失败码、原因和 `failedAt`，并拒绝重启、重建。
 删除失败后重启不会自动重试；再次发送 `DeleteInstance` 从 Nova 阶段重新按幂等语义检查整条删除链，已不存在的资源按成功处理。
+新的 `InstanceDeletionStarted` 会将 `novaDeletionAccepted` 重置为 `false`，允许新一轮删除重新提交 Nova 请求；普通 Actor 恢复保留持久化的受理标记。
 
 `onDelete` 持久化删除意图后，已有 Nova 实例 ID 时直接调用 `requestNovaDeletion()` 提交删除；
 缺少服务器 ID 但 `provisioningStartedAt` 非空时，先按固定名称查询实例；未记录创建意图时记录 `NovaServerDeleted` 并推进。
@@ -734,9 +738,10 @@ Nova 删除提交与查询、网络删除、安全组删除、取消预留和释
 `DELETING_FORWARDINGS` 通过内部 `ReconcileInstanceForwardings` 调用 `deleteInstanceForwardings()`，与准备转发一样逐条推进。
 删除方法统一处理等待、失败重试和阶段完成，按 claim ID 顺序选择一条剩余记录，委托 `InstanceForwardingWorkflow.delete()` 删除。
 存在 `DELETING` 记录时先等待其完成，结果持久化并移除记录后再处理下一条；恢复出的多条在途删除也先等待完成，不继续启动其他记录。
-当前记录为 `DELETE_FAILED` 时等待定时重试；用户的单条删除命令仍独立校验和回复。
+进入或恢复转发清理阶段时，以及上一条转发删除成功后，发送带 generation 和状态 version 的推进命令，立即处理下一条记录，包括此前的 `DELETE_FAILED`；因此检查上限为 `1` 时，失败转发也能先获得一次实际删除机会。
+本次转发删除再次失败时只记录结果，不发送推进命令，等待主流程的 `CheckDeletion`；失败事件会更新状态 version，排队中的旧推进命令因版本不匹配而失效。用户的单条删除命令仍独立校验和回复。
 `CheckDeletion` 校验 generation、检查次数及上限后调用同一清理方法，允许重试 `DELETE_FAILED`；
-对于失败记录，转发结果通知只安排定时重试；已有检查定时器不会因结果通知而延期。
+已有检查定时器不会因转发结果通知而延期。
 每条转发先持久化 `ForwardingDeletionRequested`，再通过 `requestDeletion()` 提交删除或查询状态。
 删除返回 `DELETED` 后清理该内部端口的专属安全组规则，两步完成才记录 `ForwardingDeleted`；
 `IN_PROGRESS` 表示已受理，随后通过 `get` 等待最终状态。结果通知到达后，实例主流程确认转发集合为空，
@@ -780,7 +785,7 @@ FIP Actor 对执行中的删除返回当前进度，对已删除的 claim 返回
 该清理不影响进行中的预留和分配。拒绝记录只保存预留 ID 和终态时间，不增加资源占用；
 对应投影只推进 `resource_version`，不修改容量、预留或已用计数。
 用户级项目、Share 和网络由多个实例复用，实例删除不会删除这些资源。
-查询接口及 `instance_view` 投影展示当前具体删除阶段，保留已知资源 ID 和失败原因供排查；删除次数耗尽时显示 `FAILED` 及新的删除失败信息。
+查询接口及 `instance_view` 投影展示当前具体删除阶段，保留已知资源 ID 和失败原因供排查；删除次数耗尽时显示 `DELETE_FAILED` 及新的删除失败信息。
 删除接口等待受理超时返回 `11719`，未能确认受理返回 `11720`；这些错误不等于删除已撤销，应先查询实例状态。
 
 ## 返回值
@@ -819,7 +824,7 @@ ask 和底层 HTTP 的通信超时继续保留，不作为实例工作流的整�
 | `GET /api/v1/users/{userId}/instances` | 可选 `regionId`、`phase`，返回实例列表 |
 | `GET /api/v1/users/{userId}/instances/{instanceId}` | 返回该用户的单个实例；记录不存在或不属于该用户时返回业务 `code = 404` |
 
-`phase` 使用 `InstancePhase` 的枚举名称，例如 `ACTIVE`、`FAILED`、`DELETED`，大小写须一致。
+`phase` 使用 `InstancePhase` 的枚举名称，例如 `ACTIVE`、`FAILED`、`DELETE_FAILED`、`DELETED`，大小写须一致。
 省略 `phase` 时包含所有阶段，包括已删除的记录。列表按 `created_at DESC, instance_id ASC` 排序，
 一次返回符合条件的全部记录，无匹配项时 `result` 为 `[]`。
 
@@ -932,6 +937,7 @@ cloud-init 数据，不重新调度或创建实例。成功后更新 Actor 和�
 
 首次操作要求实例为 `ACTIVE`，且没有进行中的用户转发、QoS、重启或重建操作。
 重启或重建失败后，可在 `FAILED` 状态显式重试这两类操作或删除实例；创建失败的实例仍沿用原处理流程。
+删除进行中、`DELETE_FAILED` 和 `DELETED` 状态均拒绝重启、重建；重试资格依据实例阶段和已保存的操作状态判断，不依赖失败码前缀。
 调用 OpenStack 前还会检查实例项目归属，要求远端没有正在执行的任务，状态为 `ACTIVE` 或 `ERROR`。
 进行中的相同操作（重建时目标镜像也相同）返回已有 `operationId`，不重复提交；其他管理操作和删除等待其完成。
 
@@ -1336,7 +1342,7 @@ QoS 删列迁移保留已有速率、独立 QoS 表、事件日志和投影偏�
 `InstanceDeletionStarted` 将实例投影置为 `DELETING_NOVA`；各资源清理完成事件分别推进到上表中的下一删除阶段。
 `NovaDeletionAccepted` 保存服务器 ID 并保持 `DELETING_NOVA`，只有 `InstanceDeleted` 才将投影置为 `DELETED`。
 删除阶段切换保留已有资源 ID 和失败信息，便于查询进度及排查。
-`InstanceDeletionFailed` 复用失败字段更新，将投影置为 `FAILED` 并写入删除失败码和详情，保留已有资源 ID。
+`InstanceDeletionFailed` 复用失败字段更新，将投影置为 `DELETE_FAILED` 并写入删除失败码、详情和 `failed_at`，保留已有资源 ID。
 实例阶段更新和实例投影偏移量在同一个 JDBC 事务内提交。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。

@@ -292,7 +292,13 @@ public record InstanceWorkflowState(
     }
 
     public InstanceWorkflowState deleting() {
-        return withDeletionPhase(InstancePhase.DELETING_NOVA);
+        // A new persisted deletion intent may resubmit Nova deletion; recovery keeps the saved flag.
+        return new InstanceWorkflowState(instanceId, userId, requestId, InstancePhase.DELETING_NOVA, spec,
+                hypervisorId, hostname, reservationId, osNovaServerId, novaStatus, provisioningStartedAt,
+                pollingGeneration + 1, failureCode, failureMessage, version + 1,
+                forwardingStates, networkPreparation, dependencies, securityGroupPreparation,
+                false, remainingHypervisors, activeQos, pendingQos, osImageId, serverOperation,
+                failedAt, deletedAt);
     }
 
     public InstanceWorkflowState novaDeletionAccepted(String osServerId) {
@@ -355,6 +361,12 @@ public record InstanceWorkflowState(
 
     public InstanceWorkflowState failed(String code, String message, Instant failureTime) {
         return copy(requestId, InstancePhase.FAILED, spec, hypervisorId, reservationId,
+                osNovaServerId, novaStatus, provisioningStartedAt,
+                pollingGeneration + 1, code, message, failureTime, deletedAt);
+    }
+
+    public InstanceWorkflowState deletionFailed(String code, String message, Instant failureTime) {
+        return copy(requestId, InstancePhase.DELETE_FAILED, spec, hypervisorId, reservationId,
                 osNovaServerId, novaStatus, provisioningStartedAt,
                 pollingGeneration + 1, code, message, failureTime, deletedAt);
     }

@@ -3,7 +3,7 @@ package cn.veryai.arcreactor.actor.lease.event;
 import java.io.Serializable;
 
 public sealed interface LeaseEvent extends Serializable permits LeaseCreated, RenewalPlanChanged,
-    AutoRenewConfigured, PurchaseRequested, PurchasePriced, PurchaseLocked,
+    AutoRenewConfigured, RenewalStarted, PurchaseRequested, PurchasePriced, PurchaseLocked,
     SettlementRequested, SettlementCompleted, PeriodEnded, PeriodStarted,
-    LeaseTerminationRequested, LeaseTerminated, InstanceCreationRequested,
+    LeaseTerminationStarted, LeaseTerminationPrepared, LeaseTerminated, InstanceCreationRequested,
     LeaseRetryScheduled, LeaseReconciliationScheduled {}

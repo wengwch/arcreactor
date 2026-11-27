@@ -8,7 +8,7 @@ ALTER TABLE lease_view
   CHANGE COLUMN current_paid_amount current_amount BIGINT,
   CHANGE COLUMN paid_through last_period_ends_at TIMESTAMP(6) NULL,
   DROP COLUMN pending_valid,
-  ADD COLUMN settlement_order_id VARCHAR(255) AFTER pending_phase,
+  ADD COLUMN settlement_order_id VARCHAR(255),
   ADD COLUMN settlement_intent_id VARCHAR(255) AFTER settlement_order_id,
   ADD COLUMN settlement_amount BIGINT AFTER settlement_intent_id,
   ADD COLUMN settlement_deduct_amount BIGINT AFTER settlement_amount;

@@ -333,7 +333,10 @@ final class InstanceForwardingWorkflow {
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> completed(InstanceForwardingEvent event) {
     return effects.persist(event).thenRun(next -> {
       timers.cancel(timerKey(event.forwarding()));
-      context.getSelf().tell(new ReconcileInstanceForwardings(next.pollingGeneration()));
+      // Deletion failures wait for CheckDeletion; creation outcomes still need lifecycle reconciliation.
+      if (!(event instanceof ForwardingDeletionFailed)) {
+        context.getSelf().tell(new ReconcileInstanceForwardings(next.pollingGeneration(), next.version()));
+      }
     });
   }
 

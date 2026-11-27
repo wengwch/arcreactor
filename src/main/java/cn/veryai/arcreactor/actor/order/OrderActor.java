@@ -16,13 +16,15 @@ import cn.veryai.arcreactor.actor.order.event.OrderOperationFailed;
 import cn.veryai.arcreactor.actor.order.model.OrderState;
 import cn.veryai.arcreactor.actor.order.model.OrderState.Phase;
 import cn.veryai.arcreactor.service.FundWalletService;
+import cn.veryai.arcreactor.service.FundWalletService.FundSystemResponse;
+import cn.veryai.arcreactor.service.FundWalletService.FundWalletLockData;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
 import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.Behavior;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
@@ -49,6 +51,7 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
   private final FundWalletService walletService;
   private final Executor blockingExecutor;
   private final OrderSettings settings;
+  // Only the current request may complete an operation, including after recovery.
   private String operationToken;
 
   public static Behavior<OrderCommand> create(String orderId, FundWalletService walletService,
@@ -156,17 +159,24 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
   }
 
   private void executeWalletOperation(OrderState state) {
+    if (operationToken != null) {
+      return;
+    }
     timers.cancel(RetryWalletOperation.class);
-    if (!state.hasPendingWork() || operationToken != null) {
+    if (!state.hasPendingWork()) {
       return;
     }
     String token = UUID.randomUUID().toString();
     operationToken = token;
-    // The wallet APIs are synchronous. Retries reuse the order ID and persisted amounts.
-    var operation = CompletableFuture.supplyAsync(() -> state.phase() == Phase.LOCKING
-        ? walletService.lock(state.userId(), state.amount(), orderId, "GPU_RENTAL", null)
-        : walletService.deduct(state.userId(), orderId, state.deductAmount(), null),
-        blockingExecutor).orTimeout(settings.requestTimeout().toMillis(), TimeUnit.MILLISECONDS);
+    // HTTP timeouts end the synchronous call before a retry can start.
+    CompletionStage<FundSystemResponse<FundWalletLockData>> operation;
+    try {
+      operation = CompletableFuture.supplyAsync(() -> state.phase() == Phase.LOCKING
+          ? walletService.lock(state.userId(), state.amount(), orderId, "GPU_RENTAL", null)
+          : walletService.deduct(state.userId(), orderId, state.deductAmount(), null), blockingExecutor);
+    } catch (RuntimeException error) {
+      operation = CompletableFuture.failedFuture(error);
+    }
     context.pipeToSelf(operation, (response, error) -> {
       if (error != null) {
         return new WalletOperationCompleted(token, null, error.toString());
@@ -184,15 +194,15 @@ public final class OrderActor extends EventSourcedBehavior<OrderCommand, OrderEv
     }
     operationToken = null;
     if (command.success() == null) {
-      timers.startSingleTimer(RetryWalletOperation.class, new RetryWalletOperation(), settings.retryInterval());
-      return Objects.equals(state.error(), command.error()) ? Effect().none()
-          : Effect().persist(new OrderOperationFailed(command.error()));
+      return (Objects.equals(state.error(), command.error()) ? Effect().none()
+          : Effect().persist(new OrderOperationFailed(command.error())))
+          .thenRun(() -> timers.startSingleTimer(
+              RetryWalletOperation.class, new RetryWalletOperation(), settings.retryInterval()));
     }
     if (!command.success()) {
       return Effect().persist(new OrderInsufficientFunds());
     }
-    return Effect().persist(state.phase() == Phase.LOCKING ? new OrderLocked() : new OrderDeducted())
-        .thenRun(this::executeWalletOperation);
+    return Effect().persist(state.phase() == Phase.LOCKING ? new OrderLocked() : new OrderDeducted());
   }
 
   private Effect<OrderEvent, OrderState> reject(OrderState state, ActorRef<OrderState> replyTo, String reason) {

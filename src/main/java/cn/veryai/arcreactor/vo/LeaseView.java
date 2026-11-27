@@ -17,8 +17,8 @@ public record LeaseView(String leaseId, String userId, LeaseState.Phase phase, l
     public static LeaseView from(LeaseState state) {
         return new LeaseView(state.leaseId(), state.userId(), state.phase(), state.periodSeq(), state.currentPeriod(),
                 state.lastPeriodEndsAt(), state.renewalPlan(), state.planRevision(), state.autoRenew(),
-                state.pendingRenewal(), state.pendingSettlement(), state.terminatedAt(), state.nextActionAt(),
-                state.settled(), state.error());
+                state.pendingRenewal(), state.pendingSettlement(), state.terminatedAt(),
+                state.nextActionAt(), state.settled(), state.error());
     }
 
     public static LeaseView from(LeaseViewEntity view) {
@@ -26,17 +26,16 @@ public record LeaseView(String leaseId, String userId, LeaseState.Phase phase, l
                 : new LeasePeriod(view.getPeriodSeq(), view.getCurrentOrderId(),
                         new RentalPlan(view.getCurrentPlanUnit(), view.getCurrentPlanQuantity()), view.getCurrentAmount(),
                         view.getCurrentStartsAt(), view.getCurrentEndsAt());
-        RentalPlan renewalPlan = view.getRenewalPlanUnit() == null ? null
-                : new RentalPlan(view.getRenewalPlanUnit(), view.getRenewalPlanQuantity());
+        RentalPlan renewalPlan = new RentalPlan(view.getRenewalPlanUnit(), view.getRenewalPlanQuantity());
+        // The renewal plan and revision cannot change while a purchase is pending.
         LeasePurchase pendingRenewal = view.getPendingOrderId() == null ? null
-                : new LeasePurchase(view.getPendingOrderId(), view.getPendingPeriodSeq(),
-                        new RentalPlan(view.getPendingPlanUnit(), view.getPendingPlanQuantity()), view.getPendingAmount(),
-                        view.getPendingPlanRevision(), view.getPendingPhase());
+                : new LeasePurchase(view.getPendingOrderId(), view.getPeriodSeq() + 1,
+                        renewalPlan, view.getPendingAmount(), view.getPlanRevision());
         LeaseSettlement pendingSettlement = view.getSettlementOrderId() == null ? null
                 : new LeaseSettlement(view.getSettlementOrderId(),
                         view.getSettlementAmount(), view.getSettlementDeductAmount());
         boolean settled = (view.getPhase() == LeaseState.Phase.TERMINATING || view.getPhase() == LeaseState.Phase.TERMINATED)
-                && pendingRenewal == null && pendingSettlement == null;
+                && currentPeriod == null && pendingRenewal == null && pendingSettlement == null;
         return new LeaseView(view.getLeaseId(), view.getUserId(), view.getPhase(), view.getPeriodSeq(),
                 currentPeriod, view.getLastPeriodEndsAt(), renewalPlan, view.getPlanRevision(),
                 view.isAutoRenew(), pendingRenewal, pendingSettlement, view.getTerminatedAt(),

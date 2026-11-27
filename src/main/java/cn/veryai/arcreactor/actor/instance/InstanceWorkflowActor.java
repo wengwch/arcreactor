@@ -304,8 +304,7 @@ public final class InstanceWorkflowActor
     return Effect().persist(new NovaCreationStarted(instanceId, clock.instant())).thenRun(this::requestNovaCreation);
   }
 
-  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> deleteInstanceForwardings(
-      InstanceWorkflowState state, boolean retryFailed) {
+  private Effect<InstanceWorkflowEvent, InstanceWorkflowState> deleteInstanceForwardings(InstanceWorkflowState state) {
     var remaining = state.forwardingStates().values();
     // Recovery can restore several deletions already in progress; finish them before starting another.
     if (remaining.stream().anyMatch(forwarding -> forwarding.phase() == Phase.DELETING)) {
@@ -314,9 +313,6 @@ public final class InstanceWorkflowActor
     InstanceForwardingState forwarding = remaining.stream()
         .min(java.util.Comparator.comparing(InstanceForwardingState::claimId)).orElse(null);
     if (forwarding != null) {
-      if (forwarding.phase() == Phase.DELETE_FAILED && !retryFailed) {
-        return retryDeletionStage(state, forwarding.failure());
-      }
       return forwardings.delete(forwarding);
     }
     return Effect().persist(new InstanceForwardingsDeleted(instanceId, clock.instant()))
@@ -325,9 +321,11 @@ public final class InstanceWorkflowActor
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onReconcileInstanceForwardings(
       InstanceWorkflowState state, ReconcileInstanceForwardings command) {
-    if (state.pollingGeneration() != command.generation()) return Effect().none();
+    if (state.pollingGeneration() != command.generation() || state.version() != command.version()) return Effect().none();
     if (state.phase() == InstancePhase.PREPARING_FORWARDING) return prepareInstanceForwardings(state);
-    if (state.phase() == InstancePhase.DELETING_FORWARDINGS) return deleteInstanceForwardings(state, false);
+    if (state.phase() == InstancePhase.DELETING_FORWARDINGS) {
+      return deleteInstanceForwardings(state);
+    }
     return Effect().none();
   }
 
@@ -424,7 +422,7 @@ public final class InstanceWorkflowActor
   }
 
   private void reconcileInstanceForwardings(InstanceWorkflowState state) {
-    context.getSelf().tell(new ReconcileInstanceForwardings(state.pollingGeneration()));
+    context.getSelf().tell(new ReconcileInstanceForwardings(state.pollingGeneration(), state.version()));
   }
 
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onSchedulingCompleted(
@@ -660,8 +658,9 @@ public final class InstanceWorkflowActor
       command.replyTo().tell(InstanceReply.accepted(true));
       return Effect().none();
     }
-    if (state.phase() != InstancePhase.FAILED && state.phase() != InstancePhase.ACTIVE) {
-      command.replyTo().tell(InstanceReply.rejected("Only ACTIVE or FAILED instances can start deletion"));
+    if (state.phase() != InstancePhase.FAILED && state.phase() != InstancePhase.ACTIVE
+        && state.phase() != InstancePhase.DELETE_FAILED) {
+      command.replyTo().tell(InstanceReply.rejected("Only ACTIVE, FAILED or DELETE_FAILED instances can start deletion"));
       return Effect().none();
     }
     if (state.hasPendingOperation()) {
@@ -744,7 +743,7 @@ public final class InstanceWorkflowActor
       return Effect().none();
     }
     boolean deletingForwardings = state.phase() == InstancePhase.DELETING_FORWARDINGS;
-    if (deletingForwardings && state.forwardingStates().isEmpty()) return deleteInstanceForwardings(state, false);
+    if (deletingForwardings && state.forwardingStates().isEmpty()) return deleteInstanceForwardings(state);
     if (command.attempt() > settings.maxDeletionPollAttempts()
         || (deletingForwardings && command.attempt() == settings.maxDeletionPollAttempts())) {
       return failDeletion(state);
@@ -754,7 +753,7 @@ public final class InstanceWorkflowActor
       case DELETING_NOVA -> requestNovaDeletionStatus(state);
       case DELETING_FORWARDINGS -> {
         scheduleDeletionCheck(state);
-        return deleteInstanceForwardings(state, true);
+        return deleteInstanceForwardings(state);
       }
       default -> startDeletionStage(state, command.attempt());
     }
@@ -846,6 +845,7 @@ public final class InstanceWorkflowActor
         }
       }
       case DELETING_FORWARDINGS -> {
+        // Start cleanup before the first progress check, even when the first claim previously failed.
         reconcileInstanceForwardings(state);
         scheduleDeletionCheck(state);
       }
@@ -1027,7 +1027,7 @@ public final class InstanceWorkflowActor
         .onEvent(InstanceReservationCancelled.class, (state, event) -> state.reservationCancelled())
         .onEvent(InstanceDeleted.class, (state, event) -> state.deleted(event.deletedAt()))
         .onEvent(InstanceDeletionFailed.class,
-            (state, event) -> state.failed(event.failureCode(), event.failureMessage(), event.failedAt()))
+            (state, event) -> state.deletionFailed(event.failureCode(), event.failureMessage(), event.failedAt()))
         .onEvent(InstanceActivated.class, (state, event) -> state.active())
         .onEvent(
             InstanceProvisioningFailed.class,

@@ -31,6 +31,7 @@ import org.apache.pekko.actor.typed.javadsl.AskPattern;
 import org.apache.pekko.japi.function.Function;
 import org.springframework.stereotype.Service;
 
+/** Adapts rental requests and replies; lifecycle checks belong to LeaseActor. */
 @Service
 @RequiredArgsConstructor
 public class LeaseService {
@@ -47,6 +48,7 @@ public class LeaseService {
                 if (!userId.equals(existing.userId()) || !param.requestId().equals(existing.requestId())) {
                     throw new BaseException(ErrorCode.CONFLICT);
                 }
+                // Duplicate creation reuses the persisted specification and credentials.
                 return CompletableFuture.completedFuture(existing);
             }
             var spec = instanceService.prepareSpec(param.instance());

@@ -8,13 +8,15 @@ import cn.veryai.arcreactor.actor.lease.event.LeaseEvent;
 import cn.veryai.arcreactor.actor.lease.event.LeaseReconciliationScheduled;
 import cn.veryai.arcreactor.actor.lease.event.LeaseRetryScheduled;
 import cn.veryai.arcreactor.actor.lease.event.LeaseTerminated;
-import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationRequested;
+import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationPrepared;
+import cn.veryai.arcreactor.actor.lease.event.LeaseTerminationStarted;
 import cn.veryai.arcreactor.actor.lease.event.PeriodEnded;
 import cn.veryai.arcreactor.actor.lease.event.PeriodStarted;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseLocked;
 import cn.veryai.arcreactor.actor.lease.event.PurchasePriced;
 import cn.veryai.arcreactor.actor.lease.event.PurchaseRequested;
 import cn.veryai.arcreactor.actor.lease.event.RenewalPlanChanged;
+import cn.veryai.arcreactor.actor.lease.event.RenewalStarted;
 import cn.veryai.arcreactor.actor.lease.event.SettlementCompleted;
 import cn.veryai.arcreactor.actor.lease.event.SettlementRequested;
 import cn.veryai.arcreactor.actor.lease.projection.mybatis.LeaseProjectionMapper;
@@ -47,8 +49,9 @@ public final class LeaseProjectionHandler extends JdbcHandler<EventEnvelope<Leas
                     changed.planRevision(), version, updatedAt);
             case AutoRenewConfigured configured ->
                     mapper.updateAutoRenew(leaseId, configured.enabled(), version, updatedAt);
-            case PurchaseRequested requested ->
-                    mapper.updatePurchaseRequested(leaseId, requested.purchase(), version, updatedAt);
+            case RenewalStarted ignored -> mapper.updateRenewalStarted(leaseId, version, updatedAt);
+            case PurchaseRequested requested -> mapper.updatePurchaseRequested(leaseId,
+                    requested.purchase().orderId(), requested.purchase().amount(), version, updatedAt);
             case PurchasePriced priced -> mapper.updatePurchasePriced(leaseId, priced.amount(), version, updatedAt);
             case PurchaseLocked ignored -> mapper.updatePurchaseLocked(leaseId, version, updatedAt);
             case SettlementRequested requested ->
@@ -56,8 +59,10 @@ public final class LeaseProjectionHandler extends JdbcHandler<EventEnvelope<Leas
             case SettlementCompleted ignored -> mapper.updateSettlementCompleted(leaseId, version, updatedAt);
             case PeriodEnded ended -> mapper.updatePeriodEnded(leaseId, ended.endsAt(), version, updatedAt);
             case PeriodStarted started -> mapper.updatePeriodStarted(leaseId, started.period(), version, updatedAt);
-            case LeaseTerminationRequested requested -> mapper.updateTermination(leaseId, requested.terminatedAt(),
-                    requested.reason(), version, updatedAt);
+            case LeaseTerminationStarted started ->
+                    mapper.updateTerminationStarted(leaseId, started.terminatedAt(), version, updatedAt);
+            case LeaseTerminationPrepared prepared -> mapper.updateTerminationPrepared(leaseId,
+                    prepared.terminatedAt(), prepared.reason(), version, updatedAt);
             case LeaseTerminated ignored -> mapper.updateTerminated(leaseId, version, updatedAt);
             case InstanceCreationRequested ignored -> mapper.updateVersion(leaseId, version, updatedAt);
             case LeaseRetryScheduled retry -> mapper.updateError(leaseId, retry.error(), version, updatedAt);

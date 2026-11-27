@@ -52,7 +52,7 @@ public class LeaseController {
 
     @PutMapping("/{leaseId}/auto-renew")
     public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> configureAutoRenew(
-            @PathVariable("leaseId") String leaseId, @Valid @RequestBody ConfigureAutoRenewParam param) {
+            @PathVariable("leaseId") String leaseId, @RequestBody ConfigureAutoRenewParam param) {
         return mutationResponse(leaseService.configureAutoRenew(leaseId, param));
     }
 

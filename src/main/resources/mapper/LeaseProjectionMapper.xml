@@ -29,12 +29,7 @@
 
     <sql id="clearPendingPurchase">
         pending_order_id = NULL,
-        pending_period_seq = NULL,
-        pending_plan_unit = NULL,
-        pending_plan_quantity = NULL,
         pending_amount = NULL,
-        pending_plan_revision = NULL,
-        pending_phase = NULL,
     </sql>
 
     <insert id="insertCreated">
@@ -63,15 +58,19 @@
         <include refid="expectedVersion"/>
     </update>
 
+    <update id="updateRenewalStarted">
+        UPDATE lease_view
+        SET phase = 'RENEWING',
+            error = NULL,
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
     <update id="updatePurchaseRequested">
         UPDATE lease_view
-        SET pending_order_id = #{purchase.orderId,jdbcType=VARCHAR},
-            pending_period_seq = #{purchase.periodSeq,jdbcType=BIGINT},
-            pending_plan_unit = #{purchase.plan.unit,jdbcType=VARCHAR},
-            pending_plan_quantity = #{purchase.plan.quantity,jdbcType=INTEGER},
-            pending_amount = #{purchase.amount,jdbcType=DECIMAL},
-            pending_plan_revision = #{purchase.planRevision,jdbcType=BIGINT},
-            pending_phase = #{purchase.phase,jdbcType=VARCHAR},
+        SET phase = 'WAITING_LOCK',
+            pending_order_id = #{orderId,jdbcType=VARCHAR},
+            pending_amount = #{amount,jdbcType=DECIMAL},
             error = NULL,
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
@@ -79,8 +78,9 @@
 
     <update id="updatePeriodEnded">
         UPDATE lease_view
-        SET phase = 'EXPIRED',
+        SET phase = CASE WHEN phase = 'RENEWING' THEN 'RENEWING' ELSE 'EXPIRED' END,
             last_period_ends_at = #{endsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            error = NULL,
             <include refid="clearCurrentPeriod"/>
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
@@ -97,7 +97,6 @@
     <update id="updatePurchaseLocked">
         UPDATE lease_view
         SET phase = 'PROVISIONING',
-            pending_phase = 'WAITING_ACTIVATION',
             error = NULL,
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
@@ -121,7 +120,17 @@
         <include refid="expectedVersion"/>
     </update>
 
-    <update id="updateTermination">
+    <update id="updateTerminationStarted">
+        UPDATE lease_view
+        SET phase = 'TERMINATING',
+            terminated_at = #{terminatedAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
+            auto_renew = FALSE,
+            error = NULL,
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateTerminationPrepared">
         UPDATE lease_view
         SET phase = 'TERMINATING',
             terminated_at = #{terminatedAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},

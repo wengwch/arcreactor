@@ -132,7 +132,7 @@ public final class InstanceProjectionHandler
             mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
                     failed.failureMessage(), Timestamp.from(failed.failedAt()), version, timestamp);
         } else if (event instanceof InstanceDeletionFailed failed) {
-            mapper.updateFailure(instanceId, InstancePhase.FAILED, failed.failureCode(),
+            mapper.updateFailure(instanceId, InstancePhase.DELETE_FAILED, failed.failureCode(),
                     failed.failureMessage(), Timestamp.from(failed.failedAt()), version, timestamp);
         }
     }

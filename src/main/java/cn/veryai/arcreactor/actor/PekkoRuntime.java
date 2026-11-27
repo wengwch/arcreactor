@@ -114,7 +114,7 @@ public final class PekkoRuntime {
       LeaseSettings leaseSettings = new LeaseSettings(config.getRentalRetryInterval());
       sharding.init(Entity.of(LeaseActor.TYPE_KEY,
           context -> LeaseActor.create(context.getEntityId(), this, leaseSettings, rentalPriceService)));
-      OrderSettings orderSettings = new OrderSettings(config.getRentalRetryInterval(), config.getAskTimeout());
+      OrderSettings orderSettings = new OrderSettings(config.getRentalRetryInterval());
       sharding.init(Entity.of(OrderActor.TYPE_KEY,
           context -> OrderActor.create(context.getEntityId(), fundWalletService, getBlockingExecutor(), orderSettings)));
       if (config.isProjectionEnabled()) {

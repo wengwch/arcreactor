@@ -71,6 +71,11 @@ final class InstanceServerOperationWorkflow {
   private Effect<InstanceWorkflowEvent, InstanceWorkflowState> onOperation(
       InstanceWorkflowState state, InstanceServerOperation.Type type, String osImageId,
       ActorRef<InstanceMutationReply> replyTo) {
+    if (state.phase().isDeleting() || state.phase() == InstancePhase.DELETE_FAILED
+        || state.phase() == InstancePhase.DELETED) {
+      replyTo.tell(InstanceMutationReply.rejected("Cannot reboot or rebuild an instance during or after deletion"));
+      return effects.none();
+    }
     InstanceServerOperation previous = state.serverOperation();
     if (previous != null && matches(state, previous.operationId())
         && previous.type() == type && Objects.equals(previous.osImageId(), osImageId)) {

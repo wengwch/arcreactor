@@ -14,8 +14,10 @@ OrderActor 使用 `FundWalletService` 冻结本期资金，并按已保存的消
 - 重试复用订单 ID 和持久化金额，依赖钱包按订单 ID 幂等；结算金额受理后不可修改。
 
 钱包调用是同步 HTTP，请求在现有阻塞任务线程池中执行，通过异步消息返回 Actor。
+连接、读取超时由 RestClient 执行，OrderActor 等调用返回或抛出异常后才释放当前请求标记，避免仅 Future 超时就重复发起请求。
 服务没有按订单查询钱包结果的接口，因此 OrderActor 重试原幂等操作；LeaseActor 轮询 OrderActor 的状态。
-钱包需保留已结算订单的幂等结果，避免迟到冻结重开订单。本版不处理剩余冻结款的自动释放。
+HTTP 超时或恢复时，资金端可能仍在处理旧请求；钱包需保留已结算订单的幂等结果，避免迟到冻结重开订单。
+本版不处理剩余冻结款的自动释放。
 
 ## OrderActor
 
@@ -37,33 +39,37 @@ LOCKING / DEDUCTING → INSUFFICIENT_FUNDS
 | `RetryWalletOperation` | 延迟重试未确认的冻结或扣款 |
 | `WalletOperationCompleted` | 接收当前钱包请求的结果 |
 
-创建订单或受理结算后立即执行对应资金操作；异常、超时或空响应后才安排一次延迟重试，
-等待钱包响应期间不启动重试定时器。冻结成功后进入 LOCKED，等待结算命令。
-钱包操作由当前订单阶段决定，回调通过请求 token 排除过期结果。
+创建订单或受理结算后立即执行对应资金操作；异常、HTTP 超时、空响应或任务提交失败后，先保存错误，再安排一次延迟重试。
+相同错误不重复写事件，但仍继续重试；等待钱包响应期间不启动重试定时器，重复创建或结算命令只返回原状态。
+冻结成功后进入 LOCKED，等待结算命令；结算成功或余额不足后不再执行资金请求。
+恢复时仅重试 LOCKING / DEDUCTING，使用新的请求 token；旧回调不会修改状态、清除新请求标记或启动重试。
 
 订单事件分别为 `OrderCreated`、`OrderLocked`、
 `OrderDeductionRequested`、`OrderDeducted`、`OrderInsufficientFunds`、`OrderOperationFailed`。
 
 ## LeaseActor
 
-LeaseState 的阶段为 `NEW / WAITING_LOCK / PROVISIONING / ACTIVE / EXPIRED / TERMINATING / TERMINATED`。
+LeaseState 的阶段为 `NEW / WAITING_LOCK / PROVISIONING / ACTIVE / RENEWING / EXPIRED / TERMINATING / TERMINATED`。
 `currentPeriod` 保存订单、方案、金额和起止时间；`lastPeriodEndsAt` 保存最近租期的结束时间，
 到期清空 currentPeriod 后仍保留，作为续租起点。
 
-- `pendingRenewal`：首期或续租的待购买租期，保存订单 ID、期号、方案、方案版本、报价金额和阶段。
-- 购买阶段为 `WAITING_LOCK / WAITING_ACTIVATION`；amount=0 表示尚未保存报价，报价成功后立即保存金额，冻结阶段仍为 WAITING_LOCK。
+- `pendingRenewal`：首期或续租的待购买租期，保存订单 ID、期号、方案、方案版本和报价金额，不再保存独立阶段。
+- amount=0 表示尚未保存报价，报价成功后立即保存金额，冻结阶段仍为 WAITING_LOCK。
 - `pendingSettlement`：待结算订单，保存订单 ID、已确认的原金额和固定消费金额。
+- `terminatedAt` 保存业务终止时间；退租时保留 currentPeriod 表示还需生成结算待办，生成后清空。
 
-先推进 pendingSettlement，完成后再推进 pendingRenewal，不单独保存等待旧单结算的购买阶段。
-WAITING_LOCK 内统一查询原订单、按需取价创建及等待冻结；确认 LOCKED 后进入 WAITING_ACTIVATION，金额保持不变。
+两个待办互斥。RENEWING 保存已受理的续租意图，期间先检查实例、结算旧单，确认结算完成并再次检查实例后才创建 pendingRenewal。
+RENEWING 即使两个待办都为空也有工作要继续，不依赖 autoRenew 决定是否恢复。
+WAITING_LOCK 内查询原订单、按需取价创建及等待冻结；确认 LOCKED 后进入 PROVISIONING，等待实例可用，金额保持不变。
 
 业务命令为 `CreateLease`、`GetLeaseState`、`ChangeRenewalPlan`、`ConfigureAutoRenew`、`RenewLease` 和 `TerminateLease`。
 外部扫描发送 `ReconcileLease` 触发到期和自动续租；内部 `PollLeaseProgress` 推进已有订单及实例待办，
-订单和实例异步操作通过 `LeaseOperationCompleted` 返回结果，报价通过 `PriceQuoteCompleted` 返回。
+订单请求通过 `OrderOperationCompleted` 返回，实例查询和创建/删除分别通过 `InstanceQueryCompleted`、
+`InstanceOperationCompleted` 返回，报价通过 `PriceQuoteCompleted` 返回。
 
-事件为 `LeaseCreated`、`RenewalPlanChanged`、`AutoRenewConfigured`、`PurchaseRequested`、`PurchasePriced`、`PurchaseLocked`、
+事件为 `LeaseCreated`、`RenewalPlanChanged`、`AutoRenewConfigured`、`RenewalStarted`、`PurchaseRequested`、`PurchasePriced`、`PurchaseLocked`、
 `SettlementRequested`、`SettlementCompleted`、`PeriodStarted`、`PeriodEnded`、`InstanceCreationRequested`、
-`LeaseTerminationRequested`、`LeaseTerminated`、`LeaseRetryScheduled` 和 `LeaseReconciliationScheduled`。
+`LeaseTerminationStarted`、`LeaseTerminationPrepared`、`LeaseTerminated`、`LeaseRetryScheduled` 和 `LeaseReconciliationScheduled`。
 两个 Actor 均直接持久化具体事件，由各自 eventHandler 更新状态。
 
 ## 创建与连续续租
@@ -71,31 +77,38 @@ WAITING_LOCK 内统一查询原订单、按需取价创建及等待冻结；确�
 首次购买流程：
 
 ```text
-保存 pendingRenewal（WAITING_LOCK）→ 查询原订单 → 不存在时异步取价
-→ 报价返回 LeaseActor，确认租约和待购买订单仍有效
+保存 pendingRenewal，租约进入 WAITING_LOCK → 查询原订单 → 不存在时异步取价
+→ 报价返回 LeaseActor，校验当前 pollId
 → 保存 PurchasePriced，更新 pendingRenewal.amount → CreateOrder、lock
-→ Lease 查询到 LOCKED，保存 PurchaseLocked（WAITING_ACTIVATION）
+→ Lease 查询到 LOCKED，保存 PurchaseLocked，租约进入 PROVISIONING
 → 创建实例 → 查询到 ACTIVE → 开始首期
 ```
 
 首次租期从实例交付确认时开始。每次重试先查询原订单，已存在则复用；不存在时，有已保存报价就直接创建，否则异步取价。
-报价结果通过内部命令回到 LeaseActor；核对请求 token、订单 ID、购买阶段，且未退租、没有待结算订单后，
+报价结果通过内部命令回到 LeaseActor；只处理当前轮次的结果，
 先持久化 PurchasePriced，再使用保存的金额创建订单。退租后或恢复前的旧报价回调直接丢弃。
 报价保存后，重试和恢复均复用同一金额；报价尚未保存时可以重新取价，不增加租约阶段。
-`OrderCreated` 保存订单金额，Lease 查询订单时核对金额一致；`PurchaseLocked` 只保存冻结确认并推进购买阶段。
+`OrderCreated` 保存订单金额，Lease 查询订单时核对金额一致；`PurchaseLocked` 保存冻结确认并推进租约阶段。
 
 到期续租流程：
 
 ```text
-保存旧单全额 pendingSettlement、PeriodEnded 和下期 pendingRenewal（WAITING_LOCK）
-→ SettleOrder、deduct → 确认旧单 SETTLED
-→ 查询下期订单，不存在时取价并保存 PurchasePriced，再 CreateOrder、lock；重试复用已保存报价
-→ 确认 LOCKED 和实例 ACTIVE → 开始下一期
+RenewalStarted → RENEWING，保留当前租期 → 查询实例
+→ 确认 ACTIVE，保存旧单全额 pendingSettlement、PeriodEnded，保持 RENEWING
+→ SettleOrder、deduct → 确认旧单 SETTLED → SettlementCompleted，清空 pendingSettlement
+→ 再查询实例，确认 ACTIVE → PurchaseRequested，创建 pendingRenewal，进入 WAITING_LOCK
+→ 查询新订单，不存在时取价并保存 PurchasePriced，再 CreateOrder、lock
+→ 确认 LOCKED，进入 PROVISIONING → 实例仍为 ACTIVE 才开始下一期，清空 pendingRenewal
 ```
 
-旧单结果未知时，新订单不会冻结。旧单扣款或新单冻结明确余额不足时，终止租约并删除实例；
+检查到 FAILED、DELETE_FAILED、删除中或 DELETED 时终止租约，不生成新租期；尚未提交结算的当前租期按异常时间与终止时间的较小值结算。
+重启、重建等过渡状态等待后重查；查询异常或超时保留待办重试，不视为实例故障。
+恢复 RENEWING 时，已有 pendingSettlement 就继续结算；没有待办时查询实例，按 currentPeriod 是否存在决定结算旧单或开始购买新一期。
+手动续租可以接入已有旧单结算，只记录续租意图并沿用该结算，完成后再检查实例。重复续租返回当前状态。
+旧单结果未知时，不创建 pendingRenewal 或新订单。旧单扣款或新单冻结明确余额不足时，终止租约并删除实例；
 其他错误保留实例运行、保留同一待办并重试。
-关闭自动续租后，已到期的旧单仍会全额结算；已有 pendingRenewal 继续推进，没有待续租时实例保持运行，等待手动续租或退租。
+关闭自动续租后，外部到期检查仍先查询实例：ACTIVE 时旧单全额结算，异常时按截止时间结算并终止；过渡状态和查询失败由后续扫描重试。
+已经受理的 RENEWING 或 pendingRenewal 继续推进，没有待续租且实例正常时保持运行，等待手动续租或退租。
 
 下一期始终从上一期结束时间开始。例如上一期 10:00 到期，新单 10:20 才冻结成功，
 一小时的新租期仍为 10:00–11:00。开启自动续租时，已过期的续租周期由后续到期检查逐期结算、续接。
@@ -105,43 +118,51 @@ WAITING_LOCK 内统一查询原订单、按需取价创建及等待冻结；确�
 
 ## 退租
 
-用户发起退租时，pendingRenewal 和 pendingSettlement 必须均为空；否则返回 HTTP 409、`error=ORDER_PENDING`，不进入退租流程。
-这包含首期或续租的取价、冻结、等待实例交付，以及尚未完成的结算。正常使用中的当前租期可以退租。
+用户发起退租时，租约不能处于 RENEWING，且 pendingRenewal 和 pendingSettlement 必须均为空；否则返回 HTTP 409、`error=ORDER_PENDING`，不进入退租流程。
+这包含续租前的实例检查、首期或续租的取价、冻结、等待实例交付，以及尚未完成的结算。正常使用中的当前租期可以退租。
 已经受理退租的重复请求返回原状态，继续已有收尾。余额不足或实例故障触发的自动终止不受上述入口限制。
 
-首次受理退租时固定 `terminatedAt`，有订单需要结算时同时固定消费金额。
-消费金额保存后，重复请求及恢复不重新计费。
+手动退租先持久化 LeaseTerminationStarted，固定 `terminatedAt`、关闭自动续租并进入 TERMINATING；保留当前租期等待实例查询。
+查询成功后，仅在 currentPeriod 非空时生成当前租期的结算：局部计算 `cutoff = min(instance.failedAt, terminatedAt)`，failedAt 为空时取 terminatedAt。
+LeaseTerminationPrepared 保存终止时间和原因，清空当前租期及购买待办；同批持久化 SettlementRequested，保存固定的消费金额，始终保持待办互斥。
+之后才提交钱包结算和实例删除。当前租期已经清空，恢复和重试直接复用 pendingSettlement.deductAmount，不再计算截止时间或金额。
+退租时若当前租期和待办均为空，则无需生成结算，直接推进实例删除。
+实例异常或余额不足触发自动终止时，可以直接保存 LeaseTerminationPrepared；实例异常使用本次查询到的 failedAt 计算当前租期的消费。
+没有失败时间时使用终止时间，不把删除完成时间当作故障时间；等待查询、重复退租或恢复均不改变已保存的 terminatedAt。
 当前租期按 `订单金额 × 已使用整分钟数 ÷ 租期总分钟数` 计算消费，不足一分钟的部分舍弃。
 全程使用 BigDecimal 计算，最终消费金额使用 HALF_UP 四舍五入保留两位小数。
 金额单位为元，截止时间限制在租期起止范围内，消费在零到订单金额之间。
+沿用现有 deductAt 的首尾 5 分钟处理规则：开始不足 5 分钟按零消费，结束前不足 5 分钟按全额消费。
 
 - 当前租期已开始：按实际使用金额结算当前订单。
 - 新单冻结明确余额不足：终止待购买租期，无需再结算该失败订单。
 - 旧单扣款明确余额不足：结束该结算待办并终止租约，不再创建下期订单。
-- 冻结成功后实例不可用：首期按零消费结算，续租从 `lastPeriodEndsAt` 起计算消费。
+- 冻结成功后、尚未生成 PeriodStarted 时实例不可用：首期和续租均按零消费结算，全额退还新订单冻结款。
 
 统一通过 `SettleOrder` 提交已确认的订单原金额和固定消费金额，不使用零原金额占位或补查金额。
 订单不存在时拒绝结算并保留待办重试，SettleOrder 不补建或冻结新订单。
+冻结结果未知期间保留原 pendingRenewal，待明确结果后再处理；不直接清除在途订单。
+已经提交的结算金额不可更改；若结算后才获知更早的异常时间，差额退款需要独立处理，本版不自动补偿。
 
 退租时停止新增续租，实例删除与已保存的结算待办独立推进。
-尚未发起实例创建时直接完成资源收尾；创建回复丢失时用原 requestId 和规格确认创建结果，
-等待现有实例工作流进入 ACTIVE/FAILED 且无在途管理操作后，再调用既有删除接口。
-`TERMINATED` 表示资源清理完成，资金待办仍可继续重试；`settled` 表示退租后的资金待办已结束。
+尚未发起实例创建时直接完成资源收尾；已经创建的实例等待工作流进入 ACTIVE/FAILED/DELETE_FAILED 且无在途管理操作后，
+调用既有删除接口，DELETE_FAILED 会触发删除重试。退租流程不再补发实例创建请求。
+`TERMINATED` 表示资源清理完成，资金待办仍可继续重试；`settled` 表示租约处于 TERMINATING 或 TERMINATED，且当前租期和两个待办均为空。
 余额不足通过订单阶段和租约 error 展示，settled 不等同于扣款成功。
 
 ## 方案、价格与配置
 
 当前租期方案保持不变，修改只影响下一期。
 `targetPeriodSeq` 必须为下一期，`expectedPlanRevision` 必须匹配当前方案版本。
-存在 pendingRenewal 时不允许修改方案，相同方案也拒绝。关闭自动续租只影响后续周期；
-pendingRenewal 不可单独取消；用户需等待购买和结算待办完成后再退租。
+RENEWING 或存在 pendingRenewal 时不允许修改方案，相同方案也拒绝，保证本次续租使用受理时的方案和版本。
+关闭自动续租只影响后续周期，不取消已经受理的续租；用户需等待本次续租、购买和结算完成后再退租。
 
 周期固定为 HOUR=1 小时、DAY=24 小时、WEEK=7 天、MONTH=30 天，再乘以正整数 quantity。
 RentalPriceService 通过现有 HypervisorTypeRepo / MyBatis 查询 hypervisor_type，
 按周期优先使用 `discount_*_pay_price`，未设置时取对应 `original_*_pay_price`。
 元单价乘以 quantity，使用 HALF_UP 保留两位小数；每期按已保存的报价计费。
 
-- `cloud.ask-timeout`：Actor 请求、取价和钱包调用的等待时间。
+- `cloud.ask-timeout`：Actor 请求、取价的等待时间，以及钱包 HTTP 连接和读取的超时时间。
 - `cloud.rental.retry-interval`：订单钱包重试及租约待办轮询间隔。
 - `cloud.rental.scan-interval`：外部租约到期/续租扫描间隔。
 - `cloud.projection.enabled`：启用查询投影和外部租约扫描。
@@ -149,14 +170,23 @@ RentalPriceService 通过现有 HypervisorTypeRepo / MyBatis 查询 hypervisor_t
 
 Actor 配置继续通过 PekkoRuntime.Config getter 读取，资金服务配置沿用 FundWalletService。
 两个 Actor 在 RecoveryCompleted 时清除内存请求标记，按持久化中间状态立即恢复已有待办。
-LeaseActor 没有待办时停止内部轮询；OrderActor 仅对异常、超时或空响应安排延迟重试。
+LeaseActor 每轮依次推进订单和实例请求，等待响应期间不启动下一轮定时器；本轮完成或失败后，仍有进行中的续租、订单或资源清理才安排一次延迟轮询。
+RENEWING 期间等待旧单结算确认后再检查实例；TERMINATING 期间即使结算尚未完成或失败，仍推进实例检查和删除。
+实例创建、删除被拒绝时保存拒绝原因，下一轮先查询实例状态，再决定是否重试操作。
+外部扫描不会打断进行中的轮询或跳过重试间隔。LeaseActor 只在内存中保存当前 `pollId`；
+退租和恢复使旧轮次失效，旧回调不会改变状态或调度下一轮。手动续租沿用进行中的到期实例查询或旧单结算，完成后按 RENEWING 继续推进。
+OrderActor 对异常、HTTP 超时、空响应或任务提交失败安排延迟重试。
 到期和自动续租由外部检查触发。
 
 ## 投影与查询
 
 租约和订单投影消费具体事件，通过 MyBatis Mapper 更新 lease_view / order_view 的具体列。
-lease_view 保存当前租期、续租/结算待办和 next_action_at；order_view 保存订单金额、资金阶段和消费金额。
-PurchasePriced 更新待购买金额，PurchaseLocked 更新冻结后的阶段；订单投影从 OrderCreated 开始建立。
+lease_view 保存当前租期、续租/结算待办、terminated_at 和 next_action_at；order_view 保存订单金额、资金阶段和消费金额。
+RenewalStarted 写入 RENEWING，PeriodEnded 保留已受理的续租阶段；PurchaseRequested 写入 WAITING_LOCK，PurchaseLocked 写入 PROVISIONING。
+PurchasePriced 更新待购买金额；查询直接使用租约 phase，不另存购买子阶段。订单投影从 OrderCreated 开始建立。
+待购买期只单独保存订单 ID 和金额，期号按 periodSeq + 1 组装，方案和版本复用续租字段；购买期间这些字段不可修改。
+结算完成只清空结算待办，保留 RENEWING；到期查询按 next_action_at 扫描，两个待办均为空的 RENEWING 也会被选中。
+LeaseTerminationStarted 保留当前租期；LeaseTerminationPrepared 清空当前租期和购买待办，SettlementRequested 写入结算金额。查询按当前租期及两个待办是否为空计算 settled。
 
 投影使用 workflow_version 检查事件顺序并去重，字段更新与 offset 在同一事务提交，不调用 Actor。
 RentalViewRepo 通过 MyBatis 查询用户列表和到期租约；LeaseView 从查询字段组装租期、待办和 settled。
@@ -176,16 +206,18 @@ RentalViewRepo 通过 MyBatis 查询用户列表和到期租约；LeaseView 从�
 | PUT /api/v1/leases/{leaseId}/renewal-plan | 修改下期方案 |
 | PUT /api/v1/leases/{leaseId}/auto-renew | 配置后续自动续租 |
 | POST /api/v1/leases/{leaseId}/renew | 到期后手动续租 |
-| POST /api/v1/leases/{leaseId}/terminate | 无未完成订单时退租并结算 |
+| POST /api/v1/leases/{leaseId}/terminate | 无进行中的续租和订单待办时退租并结算 |
 
 创建参数沿用 [实例接口](instances.md) 的 instance 对象，加 requestId、plan 和 autoRenew。
 `instance.flavorId` 用于解析实例规格，`instance.hypervisorType` 用于取价。
 同一用户和 requestId 标识同一次创建，重复请求返回原租约，保留已有规格和配置；创建新租约需使用新的 requestId。
-控制器通过 LeaseService 提交业务命令。
+控制器通过 LeaseService 直接提交业务命令，由 LeaseActor 串行判断是否受理，不根据列表投影预判。
+RENEWING 即使两个待办都为空，修改方案仍返回 RENEWAL_PENDING，退租仍返回 ORDER_PENDING；重复续租返回当前状态。
+配置 autoRenew 只影响后续周期，不取消已受理的续租。方案修改仍需携带 targetPeriodSeq 和 expectedPlanRevision，避免过期请求修改后续周期。
 
 响应数据在 `result` 中。创建成功返回 HTTP 202，result 包含 lease、username、password 和 jupyterToken，受理不代表实例已交付。
 修改方案、配置自动续租、续租和退租受理时返回 HTTP 202，拒绝时返回 HTTP 409；result 包含 accepted、error 和 lease。
 上述受理/拒绝响应的 code 均为 200，应根据 HTTP 状态和 result.accepted 判断是否受理。
-公开租约视图包含 pendingRenewal、pendingSettlement、lastPeriodEndsAt 和 settled，不包含 instanceSpec。
+公开租约视图包含 pendingRenewal、pendingSettlement、lastPeriodEndsAt、terminatedAt 和 settled，不包含 instanceSpec。
 
 请求示例见 [http/rentals.http](../http/rentals.http)。

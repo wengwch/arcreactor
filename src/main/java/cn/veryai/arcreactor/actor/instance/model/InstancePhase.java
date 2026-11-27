@@ -20,8 +20,10 @@ public enum InstancePhase {
     CANCELLING_RESERVATION,
     RELEASING_ALLOCATION,
     DELETED,
+    DELETE_FAILED,
     FAILED;
 
+    /** Cleanup is in progress; DELETE_FAILED waits for a new deletion request. */
     public boolean isDeleting() {
         return switch (this) {
             case DELETING_NOVA, DELETING_FORWARDINGS, DELETING_NETWORK,

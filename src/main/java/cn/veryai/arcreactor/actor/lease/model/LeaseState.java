@@ -24,8 +24,13 @@ public record LeaseState(
     Instant nextActionAt,
     String error) implements Serializable {
 
-  public enum Phase { NEW, WAITING_LOCK, PROVISIONING, ACTIVE, EXPIRED, TERMINATING, TERMINATED }
-  public enum PurchasePhase { WAITING_LOCK, WAITING_ACTIVATION }
+  public enum Phase { NEW, WAITING_LOCK, PROVISIONING, ACTIVE, RENEWING, EXPIRED, TERMINATING, TERMINATED }
+
+  public LeaseState {
+    if (pendingRenewal != null && pendingSettlement != null) {
+      throw new IllegalArgumentException("Purchase and settlement cannot be pending together");
+    }
+  }
 
   public static LeaseState empty(String leaseId) {
     return new LeaseState(leaseId, null, null, null, Phase.NEW, 0, null, null, null, 0, false, null,
@@ -51,8 +56,14 @@ public record LeaseState(
         instanceCreationRequested, terminatedAt, nextActionAt, error);
   }
 
+  public LeaseState renewalStarted() {
+    return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.RENEWING, periodSeq,
+        currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew, pendingRenewal, pendingSettlement,
+        instanceCreationRequested, terminatedAt, nextActionAt, null);
+  }
+
   public LeaseState purchaseRequested(LeasePurchase purchase) {
-    return new LeaseState(leaseId, userId, requestId, instanceSpec, phase, periodSeq,
+    return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.WAITING_LOCK, periodSeq,
         currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew, purchase, pendingSettlement,
         instanceCreationRequested, terminatedAt, nextActionAt, null);
   }
@@ -66,9 +77,8 @@ public record LeaseState(
 
   public LeaseState purchaseLocked() {
     return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.PROVISIONING, periodSeq,
-        currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew,
-        pendingRenewal.locked(), pendingSettlement, instanceCreationRequested,
-        terminatedAt, nextActionAt, null);
+        currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew, pendingRenewal, pendingSettlement,
+        instanceCreationRequested, terminatedAt, nextActionAt, null);
   }
 
   public LeaseState settlementRequested(LeaseSettlement settlement) {
@@ -84,9 +94,10 @@ public record LeaseState(
   }
 
   public LeaseState periodEnded(Instant endsAt) {
-    return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.EXPIRED, periodSeq,
+    Phase nextPhase = phase == Phase.RENEWING ? Phase.RENEWING : Phase.EXPIRED;
+    return new LeaseState(leaseId, userId, requestId, instanceSpec, nextPhase, periodSeq,
         null, endsAt, renewalPlan, planRevision, autoRenew, pendingRenewal, pendingSettlement,
-        instanceCreationRequested, terminatedAt, nextActionAt, error);
+        instanceCreationRequested, terminatedAt, nextActionAt, null);
   }
 
   public LeaseState periodStarted(LeasePeriod period) {
@@ -95,10 +106,17 @@ public record LeaseState(
         pendingSettlement, instanceCreationRequested, terminatedAt, nextActionAt, null);
   }
 
-  public LeaseState terminationRequested(Instant cutoff, String reason) {
+  public LeaseState terminationStarted(Instant terminationTime) {
+    return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.TERMINATING, periodSeq,
+        currentPeriod, lastPeriodEndsAt, renewalPlan, planRevision, false, pendingRenewal, pendingSettlement,
+        instanceCreationRequested, terminationTime, nextActionAt, null);
+  }
+
+  /** Clearing the current period prevents settlement from being generated again after recovery. */
+  public LeaseState terminationPrepared(Instant terminationTime, String reason) {
     return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.TERMINATING, periodSeq,
         null, lastPeriodEndsAt, renewalPlan, planRevision, false, null, pendingSettlement,
-        instanceCreationRequested, cutoff, nextActionAt, reason);
+        instanceCreationRequested, terminationTime, nextActionAt, reason);
   }
 
   public LeaseState terminated() {
@@ -129,11 +147,20 @@ public record LeaseState(
     return phase == Phase.TERMINATING || phase == Phase.TERMINATED;
   }
 
-  public boolean resourceDeleted() {
-    return phase == Phase.TERMINATED;
+  public boolean periodDue(Instant now) {
+    return !terminating() && currentPeriod != null && !now.isBefore(currentPeriod.endsAt());
+  }
+
+  /** Includes accepted renewal before the next purchase exists. */
+  public boolean hasPendingRenewal() {
+    return phase == Phase.RENEWING || pendingRenewal != null;
+  }
+
+  public boolean hasPendingWork() {
+    return hasPendingRenewal() || pendingSettlement != null || phase == Phase.TERMINATING;
   }
 
   public boolean settled() {
-    return terminating() && pendingRenewal == null && pendingSettlement == null;
+    return terminating() && currentPeriod == null && pendingRenewal == null && pendingSettlement == null;
   }
 }

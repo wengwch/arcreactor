@@ -1,7 +1,6 @@
 package cn.veryai.arcreactor.actor.lease.projection.mybatis;
 
 import cn.veryai.arcreactor.actor.lease.model.LeasePeriod;
-import cn.veryai.arcreactor.actor.lease.model.LeasePurchase;
 import cn.veryai.arcreactor.actor.lease.model.LeaseSettlement;
 import cn.veryai.arcreactor.actor.lease.model.RentalPlan;
 import java.math.BigDecimal;
@@ -36,9 +35,15 @@ public interface LeaseProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
+    int updateRenewalStarted(
+            @Param("leaseId") String leaseId,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
     int updatePurchaseRequested(
             @Param("leaseId") String leaseId,
-            @Param("purchase") LeasePurchase purchase,
+            @Param("orderId") String orderId,
+            @Param("amount") BigDecimal amount,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -76,7 +81,13 @@ public interface LeaseProjectionMapper {
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
-    int updateTermination(
+    int updateTerminationStarted(
+            @Param("leaseId") String leaseId,
+            @Param("terminatedAt") Instant terminatedAt,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateTerminationPrepared(
             @Param("leaseId") String leaseId,
             @Param("terminatedAt") Instant terminatedAt,
             @Param("error") String error,
