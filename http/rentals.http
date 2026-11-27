@@ -1,6 +1,7 @@
 # 使用当前 sql/rentals.sql 建表；按 http/instances.http 准备实例资源配置。
 # 冻结和结算调用 FundWalletService；实例创建和删除复用现有工作流，操作真实 OpenStack 资源。
 # 续租先结算旧单再冻结新单，期间实例保持运行；明确余额不足则终止租约并删除实例，其他错误继续重试。
+# 实例 FAILED 时停止计费、结算已用金额并保留实例，修复后显式调用 resume 才恢复购买。
 # 各请求单独执行；同一用户和 requestId 重复创建返回原租约，新租用使用新的 requestId。
 @baseUrl = http://localhost:8080
 @userId = test-user-003
@@ -45,6 +46,9 @@ Accept: application/json
 # pendingSettlement 和 pendingRenewal 互斥；RENEWING 即使两者都为空，恢复后仍会继续续租。
 # phase=WAITING_LOCK 时查询原订单、按需取价及冻结；pendingRenewal.amount=0 表示尚未保存报价。
 # phase=PROVISIONING 表示新单已冻结，等待实例可用；pendingRenewal 不再包含 phase。
+# pendingRenewal.startsAt：普通续租为上一期结束时间；首期和恢复购买为空，冻结后确认实例可用时才确定起点。
+# phase=SUSPENDED 表示停止计费但保留实例；有 pendingSettlement 时继续结算，settled 仍为 false。
+# 使用中的租约由外部扫描定期检查实例状态，FAILED 不必等到租期结束才处理。
 # 报价返回 LeaseActor 校验后，通过 PurchasePriced 保存金额再创建订单；重试复用已保存报价，已退租时丢弃报价回调。
 GET {{baseUrl}}/api/v1/leases/{{leaseId}}
 Accept: application/json
@@ -55,7 +59,7 @@ Accept: application/json
 
 ### 修改下期方案；先将 targetPeriodSeq 设为 periodSeq + 1，expectedPlanRevision 设为当前 planRevision
 # 当前租期不变；RENEWING 或 pendingRenewal 非空时返回 HTTP 409，result.error=RENEWAL_PENDING，相同 plan 也拒绝。
-# 修改方案、配置自动续租、续租和退租：HTTP 202/409 表示受理/拒绝，查看 result.accepted、result.error、result.lease。
+# 修改方案、配置自动续租、续租、恢复和退租：HTTP 202/409 表示受理/拒绝，查看 result.accepted、result.error、result.lease。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/renewal-plan
 Content-Type: application/json
 Accept: application/json
@@ -69,6 +73,7 @@ Accept: application/json
 ### 关闭自动续租；只影响后续周期
 # 已受理的 RENEWING 或 pendingRenewal 继续推进，本次续租完成后才允许退租；到期旧单先检查实例再结算。
 # 没有待续租时实例保持运行，等待手动续租或退租。
+# SUSPENDED 下修改 autoRenew 不会恢复购买或计费，只影响显式恢复后的普通续租。
 PUT {{baseUrl}}/api/v1/leases/{{leaseId}}/auto-renew
 Content-Type: application/json
 Accept: application/json
@@ -79,10 +84,21 @@ Accept: application/json
 # 当前期尚未结束且没有进行中的续租时，返回 HTTP 409、result.error=CURRENT_PERIOD_NOT_ENDED。
 # RENEWING（即使两个待办都为空）或购买待办期间重复请求返回 HTTP 202 和当前状态。
 # 沿用进行中的到期实例查询或旧单结算；结算完成后检查实例，正常才购买下一期。
-# 检查到 FAILED、DELETE_FAILED、删除中或 DELETED 时终止租约；过渡状态或查询失败继续等待重查。
+# 检查到 FAILED 时进入 SUSPENDED 并保留实例；DELETE_FAILED、删除中或 DELETED 仍终止租约。
+# SUSPENDED 返回 HTTP 409、result.error=LEASE_SUSPENDED，需恢复后调用 resume。
 # 一次购买一期；例如 10:00 到期、10:20 续租一小时，新期为 10:00–11:00。
 # 开启自动续租时，延迟跨越多个周期会按连续边界逐期购买补齐。
 POST {{baseUrl}}/api/v1/leases/{{leaseId}}/renew
+Accept: application/json
+
+### 暂停后恢复；先通过现有管理流程恢复实例 ACTIVE，并等待旧单结算完成
+# 只接受 SUSPENDED；pendingSettlement 非空返回 ORDER_PENDING，实例未恢复 ACTIVE 返回 INSTANCE_NOT_ACTIVE。
+# 已有恢复检查在途返回 LEASE_BUSY；查询失败仍保持 SUSPENDED，可重试。
+# 确认实例 ACTIVE 并保存 startsAt=null 的购买待办后返回 HTTP 202，后台取价、冻结、再次检查实例。
+# 新一期从冻结后确认 ACTIVE 的时间开始，例如 12:00 确认可用则一小时租期为 12:00–13:00，不补计暂停时间。
+# 受理后重复调用返回 LEASE_NOT_SUSPENDED，查询已有 pendingRenewal 的进度即可；autoRenew=true 也不会自动恢复暂停租约。
+# resume 不执行实例修复，不创建新实例；尚未受理时退租会使检查结果失效，返回 RESUME_SUPERSEDED。
+POST {{baseUrl}}/api/v1/leases/{{leaseId}}/resume
 Accept: application/json
 
 ### 查询订单；orderId 来自 currentPeriod、pendingRenewal 或 pendingSettlement
@@ -95,6 +111,7 @@ Accept: application/json
 ### 退租；固定终止时间，按需生成结算后清理实例
 # RENEWING（即使两个待办都为空）或有任一待办时拒绝，返回 HTTP 409、result.error=ORDER_PENDING；完成后可重试。
 # 已受理退租的重复请求返回原状态，继续已有收尾。
+# SUSPENDED 在结算完成后可退租，直接删除保留的实例，不重复结算已清空的租期。
 # terminatedAt 为首次受理时间；currentPeriod 非空时查询实例，按 failedAt 与 terminatedAt 的较小值计算消费，无 failedAt 则取 terminatedAt。
 # 生成结算时清空 currentPeriod，金额保存在 pendingSettlement.deductAmount，恢复和重试不重新计费。
 # TERMINATING 中仍有 currentPeriod 时 settled=false；当前租期和待办均为空时无需结算，直接清理实例。

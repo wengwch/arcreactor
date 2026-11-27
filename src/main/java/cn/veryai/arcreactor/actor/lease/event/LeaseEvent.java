@@ -4,6 +4,6 @@ import java.io.Serializable;
 
 public sealed interface LeaseEvent extends Serializable permits LeaseCreated, RenewalPlanChanged,
     AutoRenewConfigured, RenewalStarted, PurchaseRequested, PurchasePriced, PurchaseLocked,
-    SettlementRequested, SettlementCompleted, PeriodEnded, PeriodStarted,
+    SettlementRequested, SettlementCompleted, PeriodEnded, PeriodStarted, LeaseSuspended,
     LeaseTerminationStarted, LeaseTerminationPrepared, LeaseTerminated, InstanceCreationRequested,
     LeaseRetryScheduled, LeaseReconciliationScheduled {}

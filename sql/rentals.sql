@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS lease_view (
   auto_renew BOOLEAN NOT NULL DEFAULT FALSE,
   pending_order_id VARCHAR(255),
   pending_amount DECIMAL(19,2),
+  pending_starts_at TIMESTAMP(6) NULL,
   settlement_order_id VARCHAR(255),
   settlement_amount DECIMAL(19,2),
   settlement_deduct_amount DECIMAL(19,2),

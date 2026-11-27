@@ -44,6 +44,7 @@ public interface LeaseProjectionMapper {
             @Param("leaseId") String leaseId,
             @Param("orderId") String orderId,
             @Param("amount") BigDecimal amount,
+            @Param("startsAt") Instant startsAt,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 
@@ -78,6 +79,11 @@ public interface LeaseProjectionMapper {
     int updatePeriodStarted(
             @Param("leaseId") String leaseId,
             @Param("period") LeasePeriod period,
+            @Param("version") long version,
+            @Param("updatedAt") Timestamp updatedAt);
+
+    int updateSuspended(
+            @Param("leaseId") String leaseId,
             @Param("version") long version,
             @Param("updatedAt") Timestamp updatedAt);
 

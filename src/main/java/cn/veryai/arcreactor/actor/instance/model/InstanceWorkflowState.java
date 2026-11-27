@@ -91,13 +91,18 @@ public record InstanceWorkflowState(
             case SUCCEEDED -> InstancePhase.ACTIVE;
             case FAILED -> InstancePhase.FAILED;
         };
+        Instant nextFailedAt = switch (operation.phase()) {
+            case SUBMITTING, RUNNING -> failedAt;
+            case SUCCEEDED -> null;
+            case FAILED -> failedAt == null ? failureTime : failedAt;
+        };
         String nextImageId = observedImageId == null || observedImageId.isBlank() ? osImageId : observedImageId;
         return new InstanceWorkflowState(instanceId, userId, requestId, nextPhase, spec, hypervisorId, hostname,
                 reservationId, osNovaServerId, status == null ? novaStatus : status,
                 provisioningStartedAt, pollingGeneration + 1, code, operation.failure(), version + 1,
                 forwardingStates, networkPreparation, dependencies, securityGroupPreparation,
                 novaDeletionAccepted, remainingHypervisors, activeQos, pendingQos, nextImageId, operation,
-                operation.phase() == InstanceServerOperation.Phase.FAILED ? failureTime : null, deletedAt);
+                nextFailedAt, deletedAt);
     }
 
     private InstanceWorkflowState withUpdatedResources(Map<String, InstanceForwardingState> nextForwardings,
@@ -362,13 +367,13 @@ public record InstanceWorkflowState(
     public InstanceWorkflowState failed(String code, String message, Instant failureTime) {
         return copy(requestId, InstancePhase.FAILED, spec, hypervisorId, reservationId,
                 osNovaServerId, novaStatus, provisioningStartedAt,
-                pollingGeneration + 1, code, message, failureTime, deletedAt);
+                pollingGeneration + 1, code, message, failedAt == null ? failureTime : failedAt, deletedAt);
     }
 
     public InstanceWorkflowState deletionFailed(String code, String message, Instant failureTime) {
         return copy(requestId, InstancePhase.DELETE_FAILED, spec, hypervisorId, reservationId,
                 osNovaServerId, novaStatus, provisioningStartedAt,
-                pollingGeneration + 1, code, message, failureTime, deletedAt);
+                pollingGeneration + 1, code, message, failedAt == null ? failureTime : failedAt, deletedAt);
     }
 
     public InstanceWorkflowState touch() {

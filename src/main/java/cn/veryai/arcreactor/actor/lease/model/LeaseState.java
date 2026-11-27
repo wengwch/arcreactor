@@ -24,7 +24,7 @@ public record LeaseState(
     Instant nextActionAt,
     String error) implements Serializable {
 
-  public enum Phase { NEW, WAITING_LOCK, PROVISIONING, ACTIVE, RENEWING, EXPIRED, TERMINATING, TERMINATED }
+  public enum Phase { NEW, WAITING_LOCK, PROVISIONING, ACTIVE, RENEWING, EXPIRED, SUSPENDED, TERMINATING, TERMINATED }
 
   public LeaseState {
     if (pendingRenewal != null && pendingSettlement != null) {
@@ -104,6 +104,12 @@ public record LeaseState(
     return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.ACTIVE,
         period.periodSeq(), period, period.endsAt(), renewalPlan, planRevision, autoRenew, null,
         pendingSettlement, instanceCreationRequested, terminatedAt, nextActionAt, null);
+  }
+
+  public LeaseState suspended() {
+    return new LeaseState(leaseId, userId, requestId, instanceSpec, Phase.SUSPENDED, periodSeq,
+        null, lastPeriodEndsAt, renewalPlan, planRevision, autoRenew, null, pendingSettlement,
+        instanceCreationRequested, terminatedAt, nextActionAt, "INSTANCE_FAILED");
   }
 
   public LeaseState terminationStarted(Instant terminationTime) {

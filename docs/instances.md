@@ -945,6 +945,7 @@ cloud-init 数据，不重新调度或创建实例。成功后更新 Actor 和�
 通过实例查询或用户实例读模型的 `serverOperation` 查看 `operationId`、`type`（`REBOOT` / `REBUILD`）、
 `phase`（`SUBMITTING` / `RUNNING` / `SUCCEEDED` / `FAILED`）、目标 `osImageId`、请求时间和失败信息。
 实例生命周期依次为 `REBOOTING` 或 `REBUILDING` → `ACTIVE`；失败进入 `FAILED`。
+`failedAt` 仅在为空时写入异常时间；操作开始、执行中和再次失败均保留已有值，实例恢复 `ACTIVE` 时清空。
 Nova 恢复 `ACTIVE`、没有在途任务且原 SSH 映射连通后才完成；重建还会确认目标镜像。
 失败代码使用 `NOVA_REBOOT_...`、`NOVA_REBUILD_...` 前缀。接口拒绝、受理超时和受理未确认沿用管理操作错误码。
 
@@ -1332,6 +1333,7 @@ QoS 更新与过期重置的请求和失败事件只推进实例投影版本及�
 网络准备完成时也写入父子端口请求的目标限速值；这些管理事件不改变实例的 `ACTIVE` 阶段。
 重启、重建的请求、Nova 受理、完成和失败事件写入 `server_operation` JSON，并同步实例生命周期阶段；
 完成事件更新已确认的 `os_image_id` 和 Nova 状态，失败事件保存失败代码及原因。
+请求和受理事件保留 `failed_at`，失败事件仅在其为空时写入异常时间；完成事件和 `InstanceActivated` 在实例进入 `ACTIVE` 时清空 `failed_at`。
 新库使用 `sql/read-model.sql`，已有 `instance_view` 可执行
 `sql/migrations/add-instance-network-management.sql` 增加两列 JSON 和四列限速值，不转换旧事件或快照。
 该历史脚本中的 `user_forwardings`、`qos_update` JSON 均已停用，部署不再读写这些列的代码后，分别执行
@@ -1342,7 +1344,7 @@ QoS 删列迁移保留已有速率、独立 QoS 表、事件日志和投影偏�
 `InstanceDeletionStarted` 将实例投影置为 `DELETING_NOVA`；各资源清理完成事件分别推进到上表中的下一删除阶段。
 `NovaDeletionAccepted` 保存服务器 ID 并保持 `DELETING_NOVA`，只有 `InstanceDeleted` 才将投影置为 `DELETED`。
 删除阶段切换保留已有资源 ID 和失败信息，便于查询进度及排查。
-`InstanceDeletionFailed` 复用失败字段更新，将投影置为 `DELETE_FAILED` 并写入删除失败码、详情和 `failed_at`，保留已有资源 ID。
+`InstanceDeletionFailed` 复用失败字段更新，将投影置为 `DELETE_FAILED` 并写入删除失败码和详情，仅在 `failed_at` 为空时记录异常时间，保留已有资源 ID。
 实例阶段更新和实例投影偏移量在同一个 JDBC 事务内提交。
 `os_project_id`、`os_image_id`、`os_flavor_id`、网络、子网、端口及共享存储 ID
 来自事件中的 OpenStack 资源，`hypervisor_type` 是应用中的宿主机类型 ID。

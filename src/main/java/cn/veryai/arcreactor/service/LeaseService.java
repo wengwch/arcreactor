@@ -7,6 +7,7 @@ import cn.veryai.arcreactor.actor.lease.command.CreateLease;
 import cn.veryai.arcreactor.actor.lease.command.GetLeaseState;
 import cn.veryai.arcreactor.actor.lease.command.LeaseCommand;
 import cn.veryai.arcreactor.actor.lease.command.RenewLease;
+import cn.veryai.arcreactor.actor.lease.command.ResumeLease;
 import cn.veryai.arcreactor.actor.lease.command.TerminateLease;
 import cn.veryai.arcreactor.actor.lease.model.LeaseState;
 import cn.veryai.arcreactor.actor.lease.reply.LeaseReply;
@@ -88,6 +89,10 @@ public class LeaseService {
 
     public CompletionStage<LeaseView.Mutation> renew(String leaseId) {
         return submitMutation(leaseId, RenewLease::new);
+    }
+
+    public CompletionStage<LeaseView.Mutation> resume(String leaseId) {
+        return submitMutation(leaseId, ResumeLease::new);
     }
 
     public CompletionStage<LeaseView.Mutation> terminate(String leaseId) {

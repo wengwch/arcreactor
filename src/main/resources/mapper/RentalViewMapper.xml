@@ -36,6 +36,8 @@
         <result property="autoRenew" column="auto_renew" jdbcType="BOOLEAN"/>
         <result property="pendingOrderId" column="pending_order_id" jdbcType="VARCHAR"/>
         <result property="pendingAmount" column="pending_amount" jdbcType="DECIMAL"/>
+        <result property="pendingStartsAt" column="pending_starts_at" javaType="java.time.Instant" jdbcType="TIMESTAMP"
+                typeHandler="org.apache.ibatis.type.InstantTypeHandler"/>
         <result property="settlementOrderId" column="settlement_order_id" jdbcType="VARCHAR"/>
         <result property="settlementAmount" column="settlement_amount" jdbcType="DECIMAL"/>
         <result property="settlementDeductAmount" column="settlement_deduct_amount" jdbcType="DECIMAL"/>
@@ -51,7 +53,7 @@
         current_order_id, current_plan_unit, current_plan_quantity, current_amount,
         current_starts_at, current_ends_at, last_period_ends_at,
         renewal_plan_unit, renewal_plan_quantity, plan_revision, auto_renew,
-        pending_order_id, pending_amount,
+        pending_order_id, pending_amount, pending_starts_at,
         settlement_order_id, settlement_amount, settlement_deduct_amount,
         terminated_at, next_action_at, error
     </sql>

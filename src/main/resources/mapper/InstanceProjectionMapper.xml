@@ -209,7 +209,11 @@
           </if>
           failure_code = #{failureCode,jdbcType=VARCHAR},
           failure_message = #{operation.failure,jdbcType=LONGVARCHAR},
-          failed_at = #{failedAt,jdbcType=TIMESTAMP},
+          failed_at = CASE
+              WHEN #{phase} = 'ACTIVE' THEN NULL
+              WHEN #{phase} = 'FAILED' THEN COALESCE(failed_at, #{failedAt,jdbcType=TIMESTAMP})
+              ELSE failed_at
+          END,
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>
@@ -229,7 +233,10 @@
           phase = #{phase},
           failure_code = #{failureCode,jdbcType=VARCHAR},
           failure_message = #{failureMessage,jdbcType=LONGVARCHAR},
-          failed_at = #{failedAt,jdbcType=TIMESTAMP},
+          failed_at = CASE
+              WHEN #{phase} = 'ACTIVE' THEN NULL
+              ELSE COALESCE(failed_at, #{failedAt,jdbcType=TIMESTAMP})
+          END,
           updated_at = #{updatedAt},
           workflow_version = #{version}
         <include refid="newerWorkflow"/>

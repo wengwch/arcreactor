@@ -62,6 +62,12 @@ public class LeaseController {
         return mutationResponse(leaseService.renew(leaseId));
     }
 
+    @PostMapping("/{leaseId}/resume")
+    public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> resumeLease(
+            @PathVariable("leaseId") String leaseId) {
+        return mutationResponse(leaseService.resume(leaseId));
+    }
+
     @PostMapping("/{leaseId}/terminate")
     public CompletionStage<ResponseEntity<RespWrapper<LeaseView.Mutation, Object>>> terminateLease(
             @PathVariable("leaseId") String leaseId) {

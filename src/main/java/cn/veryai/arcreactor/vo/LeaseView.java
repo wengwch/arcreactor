@@ -30,7 +30,7 @@ public record LeaseView(String leaseId, String userId, LeaseState.Phase phase, l
         // The renewal plan and revision cannot change while a purchase is pending.
         LeasePurchase pendingRenewal = view.getPendingOrderId() == null ? null
                 : new LeasePurchase(view.getPendingOrderId(), view.getPeriodSeq() + 1,
-                        renewalPlan, view.getPendingAmount(), view.getPlanRevision());
+                        renewalPlan, view.getPendingAmount(), view.getPlanRevision(), view.getPendingStartsAt());
         LeaseSettlement pendingSettlement = view.getSettlementOrderId() == null ? null
                 : new LeaseSettlement(view.getSettlementOrderId(),
                         view.getSettlementAmount(), view.getSettlementDeductAmount());

@@ -26,6 +26,7 @@ public class LeaseViewEntity {
     private boolean autoRenew;
     private String pendingOrderId;
     private BigDecimal pendingAmount;
+    private Instant pendingStartsAt;
     private String settlementOrderId;
     private BigDecimal settlementAmount;
     private BigDecimal settlementDeductAmount;

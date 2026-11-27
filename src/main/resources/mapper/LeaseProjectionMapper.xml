@@ -30,6 +30,7 @@
     <sql id="clearPendingPurchase">
         pending_order_id = NULL,
         pending_amount = NULL,
+        pending_starts_at = NULL,
     </sql>
 
     <insert id="insertCreated">
@@ -71,6 +72,7 @@
         SET phase = 'WAITING_LOCK',
             pending_order_id = #{orderId,jdbcType=VARCHAR},
             pending_amount = #{amount,jdbcType=DECIMAL},
+            pending_starts_at = #{startsAt,javaType=java.time.Instant,jdbcType=TIMESTAMP,typeHandler=org.apache.ibatis.type.InstantTypeHandler},
             error = NULL,
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
@@ -116,6 +118,16 @@
         SET settlement_order_id = NULL,
             settlement_amount = NULL,
             settlement_deduct_amount = NULL,
+            <include refid="advanceVersion"/>
+        <include refid="expectedVersion"/>
+    </update>
+
+    <update id="updateSuspended">
+        UPDATE lease_view
+        SET phase = 'SUSPENDED',
+            <include refid="clearCurrentPeriod"/>
+            <include refid="clearPendingPurchase"/>
+            error = 'INSTANCE_FAILED',
             <include refid="advanceVersion"/>
         <include refid="expectedVersion"/>
     </update>
